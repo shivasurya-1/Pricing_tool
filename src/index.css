@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Neutral / surface */
+  --color-surface: #f4f6f8;
+  --color-surface-alt: #ffffff;
+  --color-border: #e2e5ea;
+  --color-ink: #10192b;
+  --color-ink-soft: #4b5768;
+  --color-ink-faint: #8792a2;
+
+  /* Role / status accents */
+  --color-navy: #10192b;
+  --color-navy-700: #1c2a45;
+  --color-blue: #2563eb;
+  --color-blue-50: #eff4ff;
+  --color-blue-100: #dbe6fe;
+  --color-green: #16a34a;
+  --color-green-50: #eefdf3;
+  --color-green-100: #d8f5e2;
+  --color-amber: #d97706;
+  --color-amber-50: #fff8ec;
+  --color-amber-100: #ffedc7;
+  --color-red: #dc2626;
+  --color-red-50: #fef2f2;
+  --color-red-100: #fde0e0;
+  --color-purple: #7c3aed;
+  --color-purple-50: #f5f0fe;
+  --color-purple-100: #ece2fd;
+  --color-teal: #0d9488;
+  --color-teal-50: #eefbf9;
+  --color-teal-100: #d3f3ee;
+  --color-orange: #ea580c;
+  --color-orange-50: #fff4ed;
+  --color-orange-100: #ffe3cf;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+/* driver.js theming to match the enterprise palette */
+.driver-popover.rfq-tour-popover {
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(16, 25, 43, 0.25);
+  font-family: var(--font-sans);
+}
+.driver-popover.rfq-tour-popover .driver-popover-title {
+  color: var(--color-navy);
+  font-size: 15px;
+}
+.driver-popover.rfq-tour-popover .driver-popover-description {
+  color: var(--color-ink-soft);
+}
+.driver-popover.rfq-tour-popover button {
+  font-family: var(--font-sans);
+}
+.driver-popover.rfq-tour-popover .driver-popover-next-btn,
+.driver-popover.rfq-tour-popover .driver-popover-prev-btn {
+  background-color: var(--color-blue);
+  color: white;
+  text-shadow: none;
+  border: none;
+  border-radius: 6px;
+}
+.driver-popover.rfq-tour-popover .driver-popover-prev-btn {
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #print-area, #print-area * {
+    visibility: visible;
+  }
+  #print-area {
+    position: absolute;
+    inset: 0;
+  }
+}
