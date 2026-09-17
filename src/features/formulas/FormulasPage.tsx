@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Info, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { Info, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardHeader } from '@/components/ui/Card'
@@ -52,10 +52,12 @@ const SECTION_ORDER = Object.keys(SECTION_LABELS)
 
 export function FormulasPage() {
   const rfqs = useDataStore((s) => s.rfqs)
-  const { loaded, loading, formulas, costRates, techDataFields, updateFormula, createTechDataField, deleteTechDataField } = useFormulaStore()
+  const { loaded, loading, formulas, costRates, techDataFields, updateFormula, createTechDataField, updateTechDataField, deleteTechDataField } =
+    useFormulaStore()
   const pushToast = useUiStore((s) => s.pushToast)
   const [addFieldOpen, setAddFieldOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<TechDataFieldDto | null>(null)
+  const [editTarget, setEditTarget] = useState<TechDataFieldDto | null>(null)
 
   const rfqsWithTechData = useMemo(() => rfqs.filter((r) => r.items.some((it) => isTechDataFilled(it.technicalData))), [rfqs])
   const [rfqId, setRfqId] = useState(rfqsWithTechData[0]?.id ?? '')
@@ -183,7 +185,13 @@ export function FormulasPage() {
         <CardHeader title="Technical Data Sheet — Field Schema" description="Every field on the sheet Sales/Operations fill in. Add a new one below, Manual or Auto." />
         <div className="space-y-5">
           {techDataSections.map((section) => (
-            <TechDataFieldSectionCard key={section} title={section} fields={techDataBySection[section]} onDelete={setDeleteTarget} />
+            <TechDataFieldSectionCard
+              key={section}
+              title={section}
+              fields={techDataBySection[section]}
+              onEdit={setEditTarget}
+              onDelete={setDeleteTarget}
+            />
           ))}
         </div>
       </div>
@@ -223,6 +231,22 @@ export function FormulasPage() {
         confirmLabel="Delete"
         danger
       />
+
+      <EditTechDataFieldModal
+        field={editTarget}
+        existingSections={techDataSections}
+        onClose={() => setEditTarget(null)}
+        onSave={async (patch) => {
+          if (!editTarget) return
+          try {
+            await updateTechDataField(editTarget.key, patch)
+            pushToast(`'${patch.label ?? editTarget.label}' updated.`, 'success')
+            setEditTarget(null)
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to update field.', 'error')
+          }
+        }}
+      />
     </div>
   )
 }
@@ -230,10 +254,12 @@ export function FormulasPage() {
 function TechDataFieldSectionCard({
   title,
   fields,
+  onEdit,
   onDelete,
 }: {
   title: string
   fields: TechDataFieldDto[]
+  onEdit: (field: TechDataFieldDto) => void
   onDelete: (field: TechDataFieldDto) => void
 }) {
   return (
@@ -274,11 +300,16 @@ function TechDataFieldSectionCard({
                   )}
                 </td>
                 <td className="px-4 py-2.5 text-right">
-                  {!f.is_core && (
-                    <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => onDelete(f)}>
-                      Delete
+                  <div className="flex justify-end gap-1.5">
+                    <Button size="sm" variant="secondary" icon={<Pencil size={12} />} onClick={() => onEdit(f)}>
+                      Edit
                     </Button>
-                  )}
+                    {!f.is_core && (
+                      <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => onDelete(f)}>
+                        Delete
+                      </Button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -575,6 +606,116 @@ function AddTechDataFieldModal({
                 Preview: <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span> (against the RFQ selected above, unfilled variables read as 0)
               </p>
             )}
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+function EditTechDataFieldModal({
+  field,
+  existingSections,
+  onClose,
+  onSave,
+}: {
+  field: TechDataFieldDto | null
+  existingSections: string[]
+  onClose: () => void
+  onSave: (patch: { label: string; section: string; unit: string; options: string[] }) => Promise<void>
+}) {
+  const [label, setLabel] = useState('')
+  const [section, setSection] = useState('')
+  const [newSection, setNewSection] = useState('')
+  const [unit, setUnit] = useState('')
+  const [optionsText, setOptionsText] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  // Re-seed local state whenever a different field is opened for editing.
+  const [openedKey, setOpenedKey] = useState<string | null>(null)
+  if (field && field.key !== openedKey) {
+    setOpenedKey(field.key)
+    setLabel(field.label)
+    setSection(field.section)
+    setNewSection('')
+    setUnit(field.unit)
+    setOptionsText(field.options.join(', '))
+  }
+
+  if (!field) return null
+
+  const isManualSelect = field.field_type === 'select' && !field.is_auto && !field.is_catalog_derived
+  const effectiveSection = section === '__new__' ? newSection.trim() : section
+  const canSave = label.trim() && effectiveSection
+
+  const handleSave = async () => {
+    setSaving(true)
+    await onSave({
+      label: label.trim(),
+      section: effectiveSection,
+      unit,
+      options: isManualSelect ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : field.options,
+    })
+    setSaving(false)
+  }
+
+  return (
+    <Modal
+      open={!!field}
+      onClose={onClose}
+      title={`Edit Field — ${field.key}`}
+      width="max-w-xl"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSave} disabled={!canSave || saving}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <p className="text-xs text-[var(--color-ink-faint)]">
+          Key (<code className="font-mono">{field.key}</code>) and Type (<span className="capitalize">{field.field_type}</span>) can&rsquo;t
+          be changed after creation.
+          {field.is_auto && (
+            <>
+              {' '}
+              To change the formula, edit it in the table above under{' '}
+              <span className="font-medium text-[var(--color-ink)]">Technical Data Sheet — Auto Fields</span>.
+            </>
+          )}
+        </p>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Label</label>
+          <input value={label} onChange={(e) => setLabel(e.target.value)} className={inputClass} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Section</label>
+            <select value={section} onChange={(e) => setSection(e.target.value)} className={inputClass}>
+              {existingSections.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+              <option value="__new__">+ New section...</option>
+            </select>
+            {section === '__new__' && (
+              <input value={newSection} onChange={(e) => setNewSection(e.target.value)} className={clsx(inputClass, 'mt-1.5')} placeholder="Section title" />
+            )}
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Unit</label>
+            <input value={unit} onChange={(e) => setUnit(e.target.value)} className={inputClass} />
+          </div>
+        </div>
+        {isManualSelect && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
+            <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} />
           </div>
         )}
       </div>

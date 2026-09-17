@@ -89,6 +89,7 @@ interface FormulaState {
   previewFormula: (key: string, expression: string, variables: Record<string, number>) => Promise<FormulaPreviewResult>
 
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
+  updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'options' | 'order'>>) => Promise<void>
   deleteTechDataField: (key: string) => Promise<void>
 
   createCostRate: (input: NewCostRateInput) => Promise<void>
@@ -153,6 +154,11 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
     const created = await api.post<TechDataFieldDto>('/formulas/tech-data-fields/', input)
     set((s) => ({ techDataFields: { ...s.techDataFields, [created.key]: created } }))
     return created
+  },
+
+  updateTechDataField: async (key, patch) => {
+    const updated = await api.patch<TechDataFieldDto>(`/formulas/tech-data-fields/${key}/`, patch)
+    set((s) => ({ techDataFields: { ...s.techDataFields, [key]: updated } }))
   },
 
   deleteTechDataField: async (key) => {
