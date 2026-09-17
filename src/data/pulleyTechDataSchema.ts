@@ -8,6 +8,7 @@
 import { BRG_CATALOG, SLEEVE_CATALOG, HOUSING_CATALOG, LAGGING_CATALOG, LOCKING_DEVICE_CATALOG } from '@/data/pulleyCatalogs'
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
+import { useReferenceStore } from '@/store/referenceStore'
 
 export type FieldType = 'text' | 'number' | 'select'
 
@@ -236,7 +237,36 @@ export function useTechDataSections(): TechDataSection[] {
   return buildTechDataSectionsFromDto(Object.values(techDataFields))
 }
 
+/**
+ * Catalog-driven fields are a deliberate exception to the rest of this codebase's
+ * static-fallback contract: once the backend has been reached (`referenceStore.loaded`
+ * is true), an empty catalog means genuinely no options — no substituting the old
+ * static demo data — because an admin having not added any bearings yet is real state,
+ * not a failure. Static data is used ONLY when the backend itself is unreachable
+ * (`loaded` is false), the same "app still works if the backend is down" contract as
+ * everywhere else. Not a hook — see getFieldLabel()'s note just above for why a
+ * non-reactive snapshot read here is fine. */
 export function getOptionsForField(fieldKey: string): string[] {
+  const ref = useReferenceStore.getState()
+  if (!ref.loaded) return getStaticOptionsForField(fieldKey)
+  switch (fieldKey) {
+    case 'bearing1Designation':
+    case 'bearing2Designation':
+      return ref.bearings.map((b) => b.designation)
+    case 'sleeveCode':
+      return [...new Set(ref.sleeves.map((s) => s.sleeve_code))].filter(Boolean)
+    case 'housingDesignation':
+      return [...new Set(ref.housings.map((h) => h.housing_designation))].filter(Boolean)
+    case 'laggingType':
+      return ref.lagging.map((l) => l.lagging_type)
+    case 'lockingDeviceType':
+      return ref.lockingDevices.map((l) => l.model)
+    default:
+      return []
+  }
+}
+
+function getStaticOptionsForField(fieldKey: string): string[] {
   switch (fieldKey) {
     case 'bearing1Designation':
     case 'bearing2Designation':
@@ -254,8 +284,29 @@ export function getOptionsForField(fieldKey: string): string[] {
   }
 }
 
-/** Auto-priced fields whose value can be looked up from a catalog once its designation is picked. */
+/** Auto-priced fields whose value can be looked up from a catalog once its designation
+ * is picked. Same loaded/empty-means-empty contract as getOptionsForField() above. */
 export function lookupCatalogPrice(fieldKey: string, designation: string): number | null {
+  const ref = useReferenceStore.getState()
+  if (!ref.loaded) return lookupStaticCatalogPrice(fieldKey, designation)
+  switch (fieldKey) {
+    case 'bearing1Price':
+    case 'bearing2Price':
+      return ref.bearings.find((b) => b.designation === designation)?.price_inr ?? null
+    case 'sleevePrice':
+      return ref.sleeves.find((s) => s.sleeve_code === designation)?.price_inr ?? null
+    case 'housingPrice':
+      return ref.housings.find((h) => h.housing_designation === designation)?.price_inr ?? null
+    case 'lockingDevicePrice':
+      return ref.lockingDevices.find((l) => l.model === designation)?.negotiated_rate_inr ?? null
+    case 'laggingRate':
+      return ref.lagging.find((l) => l.lagging_type === designation)?.price_inr_per_m2 ?? null
+    default:
+      return null
+  }
+}
+
+function lookupStaticCatalogPrice(fieldKey: string, designation: string): number | null {
   switch (fieldKey) {
     case 'bearing1Price':
     case 'bearing2Price':

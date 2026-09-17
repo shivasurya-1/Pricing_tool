@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
 import { useFormulaStore } from '@/store/formulaStore'
+import { useReferenceStore } from '@/store/referenceStore'
 import { setNavigateRef } from '@/lib/navigation'
 import { AppShell } from '@/components/layout/AppShell'
 import { LoginPage } from '@/features/auth/LoginPage'
@@ -54,6 +55,10 @@ export default function App() {
     // RFQs/customers/vendors/products/quotations are real shared backend data now —
     // see dataStore.loadAll()'s note on why there's no local fallback here.
     useDataStore.getState().loadAll()
+    // Catalogs/raw-forging-rates/in-house-hours — same static-fallback contract as
+    // formulaStore, but see pulleyTechDataSchema.ts for why an empty (not missing)
+    // catalog does NOT fall back once this has loaded.
+    useReferenceStore.getState().loadAll()
   }, [])
 
   return (

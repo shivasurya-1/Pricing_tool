@@ -122,3 +122,22 @@ class LockingDeviceCatalogEntry(ReferenceOwnedModel):
 
     def __str__(self) -> str:
         return self.model_name
+
+
+class InHouseHourRate(ReferenceOwnedModel):
+    """Mirrors src/data/inHouseHoursRates.ts's InHouseHourRate — the "In-House Hours"
+    page's simple MHR-rate legend table (informational; not consumed by any
+    calculation, unlike CostRateValue's per-operation labour rates)."""
+
+    cost_head = models.CharField(max_length=100)
+    operation = models.CharField(max_length=150)
+    cost_centre = models.CharField(max_length=30, blank=True)
+    activity_description = models.CharField(max_length=150)
+    mhr_rate = models.FloatField()
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["order", "cost_head"]
+
+    def __str__(self) -> str:
+        return f"{self.cost_head}: {self.mhr_rate}"

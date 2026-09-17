@@ -4,6 +4,7 @@ from .models import (
     BearingCatalogEntry,
     CostRateValue,
     HousingCatalogEntry,
+    InHouseHourRate,
     LaggingCatalogEntry,
     LockingDeviceCatalogEntry,
     RawForgingRate,
@@ -17,3 +18,4 @@ admin.site.register(SleeveCatalogEntry, list_display=["sleeve_code", "for_bearin
 admin.site.register(HousingCatalogEntry, list_display=["housing_designation", "for_bearing", "price_inr"])
 admin.site.register(LaggingCatalogEntry, list_display=["lagging_type", "thickness_mm", "price_inr_per_m2"])
 admin.site.register(LockingDeviceCatalogEntry, list_display=["model_name", "negotiated_rate_inr"])
+admin.site.register(InHouseHourRate, list_display=["cost_head", "operation", "mhr_rate", "order"])

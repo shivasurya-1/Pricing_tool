@@ -45,6 +45,15 @@ export interface TechDataFieldDto {
   updated_at: string
 }
 
+export interface NewCostRateInput {
+  key: string
+  label: string
+  category: string
+  value: number
+  unit?: string
+  order?: number
+}
+
 export interface NewTechDataFieldInput {
   key: string
   label: string
@@ -81,6 +90,17 @@ interface FormulaState {
 
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
   deleteTechDataField: (key: string) => Promise<void>
+
+  createCostRate: (input: NewCostRateInput) => Promise<void>
+  updateCostRate: (id: number, patch: Partial<Pick<CostRateValueDto, 'value'>>) => Promise<void>
+  deleteCostRate: (id: number) => Promise<void>
+}
+
+function reindexCostRates(costRatesFull: CostRateValueDto[]) {
+  return {
+    costRatesFull,
+    costRates: Object.fromEntries(costRatesFull.map((r) => [r.key, r.value])),
+  }
 }
 
 export const useFormulaStore = create<FormulaState>((set, get) => ({
@@ -142,5 +162,20 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       delete next[key]
       return { techDataFields: next }
     })
+  },
+
+  createCostRate: async (input) => {
+    const created = await api.post<CostRateValueDto>('/reference/cost-rates/', input)
+    set((s) => reindexCostRates([...s.costRatesFull, created]))
+  },
+
+  updateCostRate: async (id, patch) => {
+    const updated = await api.patch<CostRateValueDto>(`/reference/cost-rates/${id}/`, patch)
+    set((s) => reindexCostRates(s.costRatesFull.map((r) => (r.id === id ? updated : r))))
+  },
+
+  deleteCostRate: async (id) => {
+    await api.delete(`/reference/cost-rates/${id}/`)
+    set((s) => reindexCostRates(s.costRatesFull.filter((r) => r.id !== id)))
   },
 }))

@@ -19,6 +19,7 @@ from reference.models import (
     CostRateCategory,
     CostRateValue,
     HousingCatalogEntry,
+    InHouseHourRate,
     LaggingCatalogEntry,
     LockingDeviceCatalogEntry,
     RawForgingRate,
@@ -70,6 +71,7 @@ class Command(BaseCommand):
         self.seed_cost_rates()
         self.seed_raw_forging_rates()
         self.seed_catalogs()
+        self.seed_in_house_hours()
         self.stdout.write(self.style.SUCCESS("Reference data seeded."))
 
     def seed_cost_rates(self):
@@ -173,3 +175,19 @@ class Command(BaseCommand):
             f"  catalogs: {len(bearings)} bearings, {len(sleeves)} sleeves, {len(housings)} housings, "
             f"{len(lagging)} lagging, {len(locking)} locking devices"
         )
+
+    def seed_in_house_hours(self):
+        hours_ts = (FRONTEND_SRC / "inHouseHoursRates.ts").read_text(encoding="utf-8")
+        rows = parse_ts_array(hours_ts, "IN_HOUSE_HOURS_RATES")
+        for order, row in enumerate(rows):
+            InHouseHourRate.objects.update_or_create(
+                cost_head=row["costHead"],
+                defaults={
+                    "operation": row["operation"],
+                    "cost_centre": row.get("costCentre", ""),
+                    "activity_description": row["activityDescription"],
+                    "mhr_rate": row["mhrRate"],
+                    "order": order,
+                },
+            )
+        self.stdout.write(f"  in-house hour rates: {len(rows)}")

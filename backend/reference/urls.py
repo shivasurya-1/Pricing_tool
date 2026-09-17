@@ -4,6 +4,7 @@ from .views import (
     BearingCatalogViewSet,
     CostRateValueViewSet,
     HousingCatalogViewSet,
+    InHouseHourRateViewSet,
     LaggingCatalogViewSet,
     LockingDeviceCatalogViewSet,
     RawForgingRateViewSet,
@@ -18,5 +19,6 @@ router.register("catalogs/sleeves", SleeveCatalogViewSet, basename="sleeve-catal
 router.register("catalogs/housings", HousingCatalogViewSet, basename="housing-catalog")
 router.register("catalogs/lagging", LaggingCatalogViewSet, basename="lagging-catalog")
 router.register("catalogs/locking-devices", LockingDeviceCatalogViewSet, basename="locking-device-catalog")
+router.register("in-house-hours", InHouseHourRateViewSet, basename="in-house-hour-rate")
 
 urlpatterns = router.urls

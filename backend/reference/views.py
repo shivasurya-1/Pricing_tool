@@ -5,6 +5,7 @@ from .models import (
     BearingCatalogEntry,
     CostRateValue,
     HousingCatalogEntry,
+    InHouseHourRate,
     LaggingCatalogEntry,
     LockingDeviceCatalogEntry,
     RawForgingRate,
@@ -12,10 +13,13 @@ from .models import (
 )
 from .serializers import (
     BearingCatalogEntrySerializer,
+    CostRateValueCreateSerializer,
     CostRateValueSerializer,
     HousingCatalogEntrySerializer,
+    InHouseHourRateSerializer,
     LaggingCatalogEntrySerializer,
     LockingDeviceCatalogEntrySerializer,
+    RawForgingRateCreateSerializer,
     RawForgingRateSerializer,
     SleeveCatalogEntrySerializer,
 )
@@ -35,13 +39,21 @@ class BaseReferenceViewSet(viewsets.ModelViewSet):
 class CostRateValueViewSet(BaseReferenceViewSet):
     queryset = CostRateValue.objects.all()
     serializer_class = CostRateValueSerializer
-    http_method_names = ["get", "patch", "put", "head", "options"]  # values are seeded, not created/deleted via API
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return CostRateValueCreateSerializer
+        return CostRateValueSerializer
 
 
 class RawForgingRateViewSet(BaseReferenceViewSet):
     queryset = RawForgingRate.objects.all()
     serializer_class = RawForgingRateSerializer
-    http_method_names = ["get", "patch", "put", "head", "options"]
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return RawForgingRateCreateSerializer
+        return RawForgingRateSerializer
 
 
 class BearingCatalogViewSet(BaseReferenceViewSet):
@@ -67,3 +79,8 @@ class LaggingCatalogViewSet(BaseReferenceViewSet):
 class LockingDeviceCatalogViewSet(BaseReferenceViewSet):
     queryset = LockingDeviceCatalogEntry.objects.all()
     serializer_class = LockingDeviceCatalogEntrySerializer
+
+
+class InHouseHourRateViewSet(BaseReferenceViewSet):
+    queryset = InHouseHourRate.objects.all()
+    serializer_class = InHouseHourRateSerializer
