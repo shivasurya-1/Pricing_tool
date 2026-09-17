@@ -19,6 +19,13 @@ class EvaluatorTests(TestCase):
         result = evaluate_formula("pow(x, 2) * PI", {"x": 2})
         self.assertAlmostEqual(result, 4 * math.pi)
 
+    def test_pow_with_huge_exponent_is_rejected_not_computed(self):
+        # pow() called as a function bypassed simpleeval's own `**`-operator DoS guard
+        # (MAX_POWER) entirely — this must raise instantly, not spend seconds/memory
+        # computing a number with tens of millions of digits.
+        with self.assertRaises(FormulaError):
+            evaluate_formula("pow(x, y)", {"x": 99999999, "y": 99999999})
+
     def test_iff_true_and_false_branches(self):
         self.assertEqual(evaluate_formula("iff(x > 0, 1, 2)", {"x": 5}), 1)
         self.assertEqual(evaluate_formula("iff(x > 0, 1, 2)", {"x": -5}), 2)

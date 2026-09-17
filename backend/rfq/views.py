@@ -213,9 +213,10 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
         rfq = self.get_object()
-        actor_name, _role = self._actor(request)
+        actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Draft")
+            require_role_can_act(role, "Draft")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         append_audit(rfq, user=actor_name, role="Sales", module="RFQ", record=rfq.rfq_number,
@@ -229,6 +230,12 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     @action(detail=True, methods=["patch"], url_path="operations-review")
     def save_operations_review(self, request, pk=None):
         rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_stage(rfq, "Operations Review")
+            require_role_can_act(role, "Operations Review")
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
         rfq.operations_review = request.data.get("review")
         touch(rfq)
         return Response(self.get_serializer(rfq).data)
@@ -258,6 +265,11 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         the backend just persists it, so the pulley geometry/formula logic isn't
         duplicated here."""
         rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_role_can_act(role, rfq.stage)
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
         item = get_object_or_404(RFQItem, pk=request.data.get("itemId"), rfq=rfq)
         item.technical_data = request.data.get("technicalData") or {}
         item.save(update_fields=["technical_data"])
@@ -267,6 +279,12 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     @action(detail=True, methods=["patch"], url_path="item-sourcing-confirmed")
     def confirm_item_sourcing(self, request, pk=None):
         rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_stage(rfq, "Sourcing")
+            require_role_can_act(role, "Sourcing")
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
         item = get_object_or_404(RFQItem, pk=request.data.get("itemId"), rfq=rfq)
         item.sourcing_confirmed = bool(request.data.get("confirmed"))
         item.save(update_fields=["sourcing_confirmed"])
@@ -276,6 +294,12 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     @action(detail=True, methods=["patch"], url_path="item-process-vendor")
     def assign_process_vendor(self, request, pk=None):
         rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_stage(rfq, "Sourcing")
+            require_role_can_act(role, "Sourcing")
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
         item = get_object_or_404(RFQItem, pk=request.data.get("itemId"), rfq=rfq)
         process_key = request.data.get("processKey")
         others = [p for p in (item.process_vendors or []) if p.get("processKey") != process_key]
@@ -289,6 +313,12 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     @action(detail=True, methods=["patch"], url_path="sourcing-comment")
     def save_sourcing_comment(self, request, pk=None):
         rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_stage(rfq, "Sourcing")
+            require_role_can_act(role, "Sourcing")
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
         rfq.sourcing_comments = request.data.get("comment", "")
         touch(rfq)
         return Response(self.get_serializer(rfq).data)
@@ -316,6 +346,12 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     @action(detail=True, methods=["post"], url_path="cost-breakdown")
     def save_cost_breakdown(self, request, pk=None):
         rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_stage(rfq, "Controlling")
+            require_role_can_act(role, "Controlling")
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
         lines = request.data.get("lines", [])
         total_value = 0.0
         for line in lines:
@@ -377,14 +413,17 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     def send_back(self, request, pk=None):
         rfq = self.get_object()
         actor_name, role = self._actor(request)
-        actor_role = request.data.get("actorRole", role)
         target_stage = request.data.get("targetStage")
         comment = request.data.get("comment", "")
         try:
             require_valid_send_back(rfq.stage, target_stage)
+            require_role_can_act(role, rfq.stage)
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
-        append_audit(rfq, user=actor_name, role=actor_role, module="RFQ", record=rfq.rfq_number,
+        # `role` is the real authenticated role — never trust a client-supplied
+        # "actorRole" for the audit trail, or a client could write any role it likes
+        # into the one record this system exists to make trustworthy.
+        append_audit(rfq, user=actor_name, role=role, module="RFQ", record=rfq.rfq_number,
                      action_text=f"Sent back to {STAGE_OWNER.get(target_stage, target_stage)}",
                      previous_status=rfq.stage, new_status=target_stage, comment=comment)
         append_notification(message=f"{rfq.rfq_number} was returned with comments.", kind="warning", target_role=STAGE_OWNER.get(target_stage), rfq=rfq)
@@ -397,14 +436,14 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     def reject(self, request, pk=None):
         rfq = self.get_object()
         actor_name, role = self._actor(request)
-        actor_role = request.data.get("actorRole", role)
         reason = request.data.get("reason", "")
         comment = request.data.get("comment", "")
         try:
             require_rejectable(rfq.stage)
+            require_role_can_act(role, rfq.stage)
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
-        append_audit(rfq, user=actor_name, role=actor_role, module="RFQ", record=rfq.rfq_number,
+        append_audit(rfq, user=actor_name, role=role, module="RFQ", record=rfq.rfq_number,
                      action_text=f"Rejected RFQ — {reason}", previous_status=rfq.stage, new_status="Rejected", comment=comment)
         append_notification(message=f"{rfq.rfq_number} was rejected.", kind="error", target_role="Sales", rfq=rfq)
         rfq.stage = "Rejected"

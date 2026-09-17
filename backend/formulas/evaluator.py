@@ -14,7 +14,7 @@ sides — see the "Safety" section of the backend build plan.
 
 import math
 
-from simpleeval import EvalWithCompoundTypes, InvalidExpression, NameNotDefined
+from simpleeval import EvalWithCompoundTypes, InvalidExpression, NameNotDefined, safe_power
 
 def _iff(condition: float, if_true: float, if_false: float) -> float:
     """`iff(cond, a, b)` stands in for a ternary — one syntax valid on both the
@@ -29,7 +29,11 @@ ALLOWED_FUNCTIONS = {
     "round": round,
     "abs": abs,
     "sqrt": math.sqrt,
-    "pow": pow,
+    # simpleeval's own `**` operator is bounded by safe_power/MAX_POWER, but calling
+    # Python's builtin pow() as a plain function bypasses that guard entirely —
+    # pow(99999999, 99999999) would peg the server computing a tens-of-millions-digit
+    # number. Reuse simpleeval's own bounded version instead of Python's builtin.
+    "pow": safe_power,
     "iff": _iff,
 }
 

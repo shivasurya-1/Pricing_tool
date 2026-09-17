@@ -210,3 +210,79 @@ class RFQWorkflowTests(TestCase):
         rfq = RFQ.objects.get(id=rfq_id)
         self.assertEqual(rfq.stage, "Won")
         self.assertEqual(rfq.status, "Won")
+
+
+class RFQWorkflowSecurityRegressionTests(TestCase):
+    """Every action that mutates an RFQ must reject a caller whose role doesn't own
+    the RFQ's current stage — these previously had no such check at all. Regression
+    coverage for the audit finding, not just the happy path already covered above."""
+
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-2", code="CUST-002", name="Acme Pulleys")
+        self.product = Product.objects.create(id="prod-2", code="PROD-2", name="6 inch pulley", unit="Nos")
+        self.sales = client_as("Sales")
+        self.operations = client_as("Operations")
+        self.sourcing = client_as("Sourcing")
+        self.controlling = client_as("Controlling")
+
+        create = self.sales.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "actorName": "Sales", "submit": True, "items": [{"productId": self.product.id, "quantity": 1, "targetPrice": 100}]},
+            format="json",
+        )
+        self.rfq_id = create.data["id"]  # now in Operations Review
+        self.item_id = create.data["items"][0]["id"]
+
+    def test_wrong_role_cannot_save_operations_review(self):
+        response = self.sales.patch(f"/api/rfq/rfqs/{self.rfq_id}/operations-review/", {"review": {}}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_wrong_role_cannot_edit_item_tech_data(self):
+        response = self.sourcing.patch(
+            f"/api/rfq/rfqs/{self.rfq_id}/item-tech-data/", {"itemId": self.item_id, "technicalData": {"shellOD": 999}}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_wrong_role_cannot_confirm_item_sourcing(self):
+        # Still in Operations Review, not Sourcing yet — Sourcing itself is the wrong stage here.
+        response = self.sourcing.patch(
+            f"/api/rfq/rfqs/{self.rfq_id}/item-sourcing-confirmed/", {"itemId": self.item_id, "confirmed": True}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_wrong_role_cannot_save_cost_breakdown(self):
+        # Sales trying to set its own selling price while the RFQ sits in Operations
+        # Review — this is exactly the "Sales overrides Controlling's pricing" gap.
+        response = self.sales.post(
+            f"/api/rfq/rfqs/{self.rfq_id}/cost-breakdown/",
+            {"lines": [{"itemId": self.item_id, "baseCost": 1, "sellingPrice": 999999, "finalPrice": 999999}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(CostBreakdownLine.objects.filter(item_id=self.item_id).exists())
+
+    def test_wrong_role_cannot_send_back(self):
+        response = self.sales.post(
+            f"/api/rfq/rfqs/{self.rfq_id}/send-back/",
+            {"actorName": "Sales", "targetStage": "Draft", "comment": "trying to send back my own RFQ"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_wrong_role_cannot_reject(self):
+        response = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/reject/", {"actorName": "Sales", "reason": "x"}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_client_supplied_actor_role_does_not_reach_the_audit_trail(self):
+        """A client authenticated as Operations claiming actorRole=Admin (or anything
+        else) must not get that fabricated role written into the permanent audit log —
+        only the real authenticated role can ever be recorded."""
+        response = self.operations.post(
+            f"/api/rfq/rfqs/{self.rfq_id}/send-back/",
+            {"actorName": "Fake Admin", "actorRole": "Admin", "targetStage": "Draft", "comment": "spoofed role"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        event = RFQ.objects.get(id=self.rfq_id).audit_events.first()
+        self.assertEqual(event.role, "Operations")
+        self.assertNotEqual(event.role, "Admin")
