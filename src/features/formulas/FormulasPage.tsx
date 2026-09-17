@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Info, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
@@ -19,6 +19,14 @@ import { formatCurrency } from '@/lib/format'
 import { ApiError } from '@/lib/apiClient'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-blue)]'
+
+// Rate-lookup variables the in-house-hours Auto formulas can reference — not fields
+// themselves (see backend/formulas/views.py's INJECTED_RATE_VARIABLES), but valid to
+// use in a new formula, so they're offered in the "Insert" picker and recognized by
+// the variable-detection scan below.
+const INJECTED_RATE_VARIABLES = ['c1RateInrPerHour', 'c2RateInrPerHour', 'c3RateInrPerHour', 'c4RateInrPerHour', 'c5RateInrPerHour', 'c6RateInrPerHour', 'c7RateInrPerHour']
+
+const OPERATOR_TOKENS = ['+', '-', '*', '/', '(', ')']
 
 function slugifyToCamelCase(label: string): string {
   const words = label
@@ -305,6 +313,7 @@ function AddTechDataFieldModal({
     output_unit: string
   }) => Promise<void>
 }) {
+  const techDataFields = useFormulaStore((s) => s.techDataFields)
   const [label, setLabel] = useState('')
   const [key, setKey] = useState('')
   const [keyEdited, setKeyEdited] = useState(false)
@@ -315,8 +324,9 @@ function AddTechDataFieldModal({
   const [optionsText, setOptionsText] = useState('')
   const [isAuto, setIsAuto] = useState(false)
   const [expression, setExpression] = useState('')
-  const [varsText, setVarsText] = useState('')
+  const [insertKey, setInsertKey] = useState('')
   const [saving, setSaving] = useState(false)
+  const expressionRef = useRef<HTMLTextAreaElement>(null)
 
   const reset = () => {
     setLabel('')
@@ -329,7 +339,7 @@ function AddTechDataFieldModal({
     setOptionsText('')
     setIsAuto(false)
     setExpression('')
-    setVarsText('')
+    setInsertKey('')
   }
 
   const handleLabelChange = (v: string) => {
@@ -337,15 +347,45 @@ function AddTechDataFieldModal({
     if (!keyEdited) setKey(slugifyToCamelCase(v))
   }
 
-  const inputVariables = varsText
-    .split(',')
-    .map((v) => v.trim())
-    .filter(Boolean)
+  // Sorted for the picker; the field currently being created is excluded (referencing
+  // itself in its own formula would always be a circular-dependency mistake).
+  const insertableFields = useMemo(
+    () =>
+      Object.values(techDataFields)
+        .filter((f) => f.key !== key)
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [techDataFields, key],
+  )
+
+  const insertToken = (token: string) => {
+    const el = expressionRef.current
+    const start = el?.selectionStart ?? expression.length
+    const end = el?.selectionEnd ?? expression.length
+    const needsLeadingSpace = start > 0 && !/\s$/.test(expression.slice(0, start)) && /[a-zA-Z0-9_]/.test(token[0])
+    const insert = (needsLeadingSpace ? ' ' : '') + token
+    const next = expression.slice(0, start) + insert + expression.slice(end)
+    setExpression(next)
+    requestAnimationFrame(() => {
+      const pos = start + insert.length
+      el?.focus()
+      el?.setSelectionRange(pos, pos)
+    })
+  }
+
+  // Variables are detected from the expression itself (word-boundary match against
+  // every known field key, plus the injected rate-lookup variables) rather than typed
+  // separately — one fewer place to make a typo, and it can never drift out of sync
+  // with what the expression actually references.
+  const knownKeys = useMemo(() => [...Object.keys(techDataFields), ...INJECTED_RATE_VARIABLES], [techDataFields])
+  const detectedVariables = useMemo(
+    () => knownKeys.filter((k) => k !== key && new RegExp(`\\b${k}\\b`).test(expression)),
+    [expression, knownKeys, key],
+  )
 
   const preview = (() => {
     if (!isAuto || !expression.trim()) return null
     try {
-      const vars = Object.fromEntries(inputVariables.map((v) => [v, sampleVars[v] ?? 0]))
+      const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
       return { value: evaluateFormula(expression, vars), error: null as string | null }
     } catch (err) {
       return { value: null as number | null, error: err instanceof FormulaError ? err.message : 'Invalid expression' }
@@ -367,7 +407,7 @@ function AddTechDataFieldModal({
       options: fieldType === 'select' ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : [],
       is_auto: isAuto,
       expression,
-      input_variables: inputVariables,
+      input_variables: detectedVariables,
       output_unit: unit,
     })
     setSaving(false)
@@ -464,19 +504,70 @@ function AddTechDataFieldModal({
 
         {isAuto && (
           <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Variables used (comma-separated)</label>
-              <input value={varsText} onChange={(e) => setVarsText(e.target.value)} className={inputClass} placeholder="e.g. shellOD, shaftLength" />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Insert a field</label>
+                <select
+                  value={insertKey}
+                  onChange={(e) => {
+                    if (e.target.value) insertToken(e.target.value)
+                    setInsertKey('')
+                  }}
+                  className={inputClass}
+                >
+                  <option value="">Pick a field to insert...</option>
+                  {insertableFields.map((f) => (
+                    <option key={f.key} value={f.key}>
+                      {f.label} ({f.key})
+                    </option>
+                  ))}
+                  <optgroup label="Labour rate lookups">
+                    {INJECTED_RATE_VARIABLES.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Operators</label>
+                <div className="flex gap-1">
+                  {OPERATOR_TOKENS.map((op) => (
+                    <button
+                      key={op}
+                      type="button"
+                      onClick={() => insertToken(op)}
+                      className="flex-1 rounded-md border border-[var(--color-border)] py-1.5 font-mono text-sm hover:border-[var(--color-blue)] hover:bg-[var(--color-blue-50)]"
+                    >
+                      {op}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Expression</label>
               <textarea
+                ref={expressionRef}
                 value={expression}
                 onChange={(e) => setExpression(e.target.value)}
                 rows={2}
                 className="w-full rounded-md border border-[var(--color-border)] px-2 py-1.5 font-mono text-xs outline-none focus:border-[var(--color-blue)]"
-                placeholder="e.g. shellOD * 2"
+                placeholder="Pick a field above, or type e.g. shellOD * 2 — type numbers and + - * / directly"
               />
+              <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
+                Detected variables:{' '}
+                {detectedVariables.length > 0 ? (
+                  detectedVariables.map((v) => (
+                    <Badge key={v} tone="neutral" className="ml-1">
+                      {v}
+                    </Badge>
+                  ))
+                ) : (
+                  <span className="italic">none yet</span>
+                )}
+              </p>
             </div>
             {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
             {preview && preview.value !== null && (
