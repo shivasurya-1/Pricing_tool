@@ -49,16 +49,20 @@ export function RFQDetailPage() {
   const canAct = canRoleActOnStage(role, rfq.stage)
   const summary = summarizeCostBreakdown(rfq.costBreakdown)
 
-  const primaryAction = () => {
+  const primaryAction = async () => {
     if (rfq.stage === 'Draft') {
       submitRFQ(rfq.id, userName)
       pushToast(`${rfq.rfqNumber} submitted for Operations review.`, 'success')
       return
     }
     if (rfq.stage === 'Approved') {
-      const quotation = generateQuotation(rfq.id, userName)
-      pushToast('Quotation generated.', 'success')
-      navigate(`/quotations/${quotation.id}`)
+      try {
+        const quotation = await generateQuotation(rfq.id, userName)
+        pushToast('Quotation generated.', 'success')
+        navigate(`/quotations/${quotation.id}`)
+      } catch {
+        // Error toast already shown by the store.
+      }
       return
     }
     navigate(actionRouteForRfq(rfq))

@@ -41,11 +41,11 @@ export function SettingsPage() {
         onClose={() => setConfirmReset(false)}
         onConfirm={() => {
           resetDemoData()
-          pushToast('Demo data has been reset to its original state.', 'success')
+          pushToast('Local prototype settings reset — reloading shared RFQ data from the server.', 'success')
         }}
-        title="Reset Demo Data"
-        description="This will discard every change made in this session and restore all RFQs, quotations, and masters to the original demo dataset. This cannot be undone."
-        confirmLabel="Reset Data"
+        title="Reset Local Data"
+        description="RFQs, quotations, and masters are now shared data stored on the server — this only resets local prototype settings (users, in-house capability list) and reloads the latest shared data from the server."
+        confirmLabel="Reset Local Data"
         danger
       />
     </div>

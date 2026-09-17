@@ -10,7 +10,6 @@ import { DataTable, type Column } from '@/components/ui/DataTable'
 import { Drawer } from '@/components/ui/Drawer'
 import { formatDate } from '@/lib/format'
 import type { Customer } from '@/types'
-import { uid } from '@/lib/id'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-2 text-sm outline-none focus:border-[var(--color-blue)]'
 
@@ -23,7 +22,7 @@ export function CustomersPage() {
 
   const openNew = () => {
     setEditing({
-      id: uid('cust'),
+      id: '',
       code: `CUST-${String(customers.length + 1).padStart(3, '0')}`,
       name: '',
       contact: '',

@@ -169,25 +169,33 @@ export function RFQCreatePage() {
     customerNotes,
   })
 
-  const saveDraft = () => {
+  const saveDraft = async () => {
     if (!customerId) {
       pushToast('Please select a customer before saving.', 'error')
       return
     }
-    const rfq = createRFQ(buildInput(), name, false)
-    pushToast(`${rfq.rfqNumber} saved as draft.`, 'success')
-    navigate(`/rfqs/${rfq.id}`)
+    try {
+      const rfq = await createRFQ(buildInput(), name, false)
+      pushToast(`${rfq.rfqNumber} saved as draft.`, 'success')
+      navigate(`/rfqs/${rfq.id}`)
+    } catch {
+      // Error toast already shown by the store.
+    }
   }
 
-  const submit = () => {
+  const submit = async () => {
     const error = validate()
     if (error) {
       pushToast(error, 'error')
       return
     }
-    const rfq = createRFQ(buildInput(), name, true)
-    pushToast(`${rfq.rfqNumber} submitted for Operations review.`, 'success')
-    navigate(`/rfqs/${rfq.id}`)
+    try {
+      const rfq = await createRFQ(buildInput(), name, true)
+      pushToast(`${rfq.rfqNumber} submitted for Operations review.`, 'success')
+      navigate(`/rfqs/${rfq.id}`)
+    } catch {
+      // Error toast already shown by the store.
+    }
   }
 
   return (

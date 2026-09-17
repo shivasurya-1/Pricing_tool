@@ -1,6 +1,7 @@
 import { useEffect, type ReactElement } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
+import { useDataStore } from '@/store/dataStore'
 import { useFormulaStore } from '@/store/formulaStore'
 import { setNavigateRef } from '@/lib/navigation'
 import { AppShell } from '@/components/layout/AppShell'
@@ -50,6 +51,9 @@ export default function App() {
     // Best-effort: if the backend isn't running/deployed, calc modules use their
     // static fallback — see formulaStore.loadAll() and MhrLhrCalculatorPage's note.
     useFormulaStore.getState().loadAll()
+    // RFQs/customers/vendors/products/quotations are real shared backend data now —
+    // see dataStore.loadAll()'s note on why there's no local fallback here.
+    useDataStore.getState().loadAll()
   }, [])
 
   return (

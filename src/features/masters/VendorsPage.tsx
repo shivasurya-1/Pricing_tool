@@ -9,7 +9,6 @@ import { Badge } from '@/components/ui/Badge'
 import { DataTable, type Column } from '@/components/ui/DataTable'
 import { Drawer } from '@/components/ui/Drawer'
 import type { Vendor } from '@/types'
-import { uid } from '@/lib/id'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-2 text-sm outline-none focus:border-[var(--color-blue)]'
 
@@ -22,7 +21,7 @@ export function VendorsPage() {
 
   const openNew = () => {
     setEditing({
-      id: uid('vend'),
+      id: '',
       code: `VND-${String(vendors.length + 1).padStart(3, '0')}`,
       name: '',
       category: '',

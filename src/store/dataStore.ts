@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 import type {
   AppNotification,
   AuditEvent,
@@ -10,7 +9,6 @@ import type {
   Product,
   Quotation,
   QuotationStatus,
-  RateCard,
   RFQ,
   RFQItem,
   Role,
@@ -18,10 +16,18 @@ import type {
   User,
   Vendor,
 } from '@/types'
-import { createSeedData } from '@/data/mockSeed'
-import { NEXT_STAGE, STAGE_OWNER } from '@/lib/workflow'
-import { nextQuotationNumber, nextRfqNumber, uid } from '@/lib/id'
+import { buildInHouseCapabilities, buildUsers } from '@/data/mockSeed'
 import { applyFieldChange } from '@/lib/pulleyTechDataCalc'
+import { api, ApiError } from '@/lib/apiClient'
+import { useUiStore } from '@/store/uiStore'
+
+/**
+ * RFQs, Quotations, Customers, Vendors, Products, the audit log, and notifications are
+ * now real, shared backend data (see /backend/rfq) instead of per-browser localStorage —
+ * every action here calls the Django API and refreshes in-memory state from its
+ * response. `users`, `inHouseCapabilities` have no backend model (out of scope for this
+ * migration) and stay as static prototype data, same as before.
+ */
 
 export interface NewRFQInput {
   customerId: string
@@ -52,448 +58,258 @@ export interface NewRFQInput {
 }
 
 interface DataState {
+  // Static prototype data — no backend model exists for these (out of scope).
   users: User[]
+  inHouseCapabilities: InHouseCapability[]
+
+  // Backend-driven — see loadAll().
+  loaded: boolean
+  loading: boolean
   customers: Customer[]
   vendors: Vendor[]
-  inHouseCapabilities: InHouseCapability[]
   products: Product[]
-  rateCard: RateCard
   rfqs: RFQ[]
   quotations: Quotation[]
   auditLog: AuditEvent[]
   notifications: AppNotification[]
 
+  loadAll: () => Promise<void>
   resetDemoData: () => void
 
-  createRFQ: (input: NewRFQInput, actorName: string, submit: boolean) => RFQ
-  updateRFQ: (id: string, patch: Partial<RFQ>) => void
-  submitRFQ: (id: string, actorName: string) => void
+  createRFQ: (input: NewRFQInput, actorName: string, submit: boolean) => Promise<RFQ>
+  submitRFQ: (id: string, actorName: string) => Promise<void>
 
-  saveOperationsReview: (id: string, review: OperationsReview) => void
-  approveOperations: (id: string, actorName: string) => void
+  saveOperationsReview: (id: string, review: OperationsReview) => Promise<void>
+  approveOperations: (id: string, actorName: string) => Promise<void>
 
-  updateItemTechData: (id: string, itemId: string, fieldKey: string, value: string | number) => void
-  confirmItemSourcing: (id: string, itemId: string, confirmed: boolean) => void
-  assignProcessVendor: (id: string, itemId: string, processKey: string, vendorId: string, vendorName: string) => void
-  saveSourcingComment: (id: string, comment: string) => void
-  submitSourcing: (id: string, actorName: string) => void
+  updateItemTechData: (id: string, itemId: string, fieldKey: string, value: string | number) => Promise<void>
+  confirmItemSourcing: (id: string, itemId: string, confirmed: boolean) => Promise<void>
+  assignProcessVendor: (id: string, itemId: string, processKey: string, vendorId: string, vendorName: string) => Promise<void>
+  saveSourcingComment: (id: string, comment: string) => Promise<void>
+  submitSourcing: (id: string, actorName: string) => Promise<void>
 
-  saveCostBreakdown: (id: string, lines: CostBreakdownLine[]) => void
-  submitControlling: (id: string, actorName: string) => void
+  saveCostBreakdown: (id: string, lines: CostBreakdownLine[]) => Promise<void>
+  submitControlling: (id: string, actorName: string) => Promise<void>
 
-  approveFinal: (id: string, actorName: string, comment?: string) => void
-  sendBack: (id: string, targetStage: Stage, actorRole: Role, actorName: string, comment: string) => void
-  rejectRFQ: (id: string, actorRole: Role, actorName: string, reason: string, comment: string) => void
+  approveFinal: (id: string, actorName: string, comment?: string) => Promise<void>
+  sendBack: (id: string, targetStage: Stage, actorRole: Role, actorName: string, comment: string) => Promise<void>
+  rejectRFQ: (id: string, actorRole: Role, actorName: string, reason: string, comment: string) => Promise<void>
 
-  generateQuotation: (id: string, actorName: string) => Quotation
-  sendQuotation: (id: string, actorName: string) => void
-  updateQuotationStatus: (quotationId: string, status: QuotationStatus, actorName: string, lossReason?: string) => void
+  generateQuotation: (id: string, actorName: string) => Promise<Quotation>
+  sendQuotation: (id: string, actorName: string) => Promise<void>
+  updateQuotationStatus: (quotationId: string, status: QuotationStatus, actorName: string, lossReason?: string) => Promise<void>
 
-  markNotificationRead: (id: string) => void
-  markAllNotificationsRead: () => void
+  markNotificationRead: (id: string) => Promise<void>
+  markAllNotificationsRead: () => Promise<void>
 
-  upsertCustomer: (c: Customer) => void
-  upsertVendor: (v: Vendor) => void
-  upsertProduct: (p: Product) => void
+  upsertCustomer: (c: Customer) => Promise<void>
+  upsertVendor: (v: Vendor) => Promise<void>
 }
 
-function appendAudit(
-  state: Pick<DataState, 'auditLog'>,
-  entry: Omit<AuditEvent, 'id' | 'timestamp'>,
-): AuditEvent {
-  const event: AuditEvent = { ...entry, id: uid('audit'), timestamp: new Date().toISOString() }
-  state.auditLog.unshift(event)
-  return event
+/** Every mutating action runs through this so a failed request surfaces a toast even
+ * when the call site doesn't await/catch (most don't — they fire-and-forget the way
+ * the old synchronous actions did). Rethrows so callers that DO await (createRFQ,
+ * generateQuotation) still see the failure and can skip navigating on error. */
+async function withErrorToast<T>(action: () => Promise<T>): Promise<T> {
+  try {
+    return await action()
+  } catch (err) {
+    const message = err instanceof ApiError ? err.message : 'Something went wrong — please try again.'
+    useUiStore.getState().pushToast(message, 'error')
+    throw err
+  }
 }
 
-function appendNotification(
-  state: Pick<DataState, 'notifications'>,
-  message: string,
-  kind: AppNotification['kind'],
-  targetRole: Role | undefined,
-  rfqId?: string,
-  quotationId?: string,
-): void {
-  state.notifications.unshift({
-    id: uid('notif'),
-    message,
-    timestamp: new Date().toISOString(),
-    read: false,
-    kind,
-    rfqId,
-    quotationId,
-    targetRole,
-  })
+function replaceRfq(rfqs: RFQ[], updated: RFQ): RFQ[] {
+  return rfqs.map((r) => (r.id === updated.id ? updated : r))
 }
 
-function touch(rfq: RFQ): RFQ {
-  return { ...rfq, updatedAt: new Date().toISOString() }
-}
+export const useDataStore = create<DataState>()((set, get) => ({
+  users: buildUsers(),
+  inHouseCapabilities: buildInHouseCapabilities(),
 
-export const useDataStore = create<DataState>()(
-  persist(
-    (set, get) => ({
-      ...createSeedData(),
+  loaded: false,
+  loading: false,
+  customers: [],
+  vendors: [],
+  products: [],
+  rfqs: [],
+  quotations: [],
+  auditLog: [],
+  notifications: [],
 
-      resetDemoData: () => set({ ...createSeedData() }),
+  loadAll: async () => {
+    if (get().loading) return
+    set({ loading: true })
+    try {
+      const [customers, vendors, products, rfqs, quotations, auditLog, notifications] = await Promise.all([
+        api.get<Customer[]>('/rfq/customers/'),
+        api.get<Vendor[]>('/rfq/vendors/'),
+        api.get<Product[]>('/rfq/products/'),
+        api.get<RFQ[]>('/rfq/rfqs/'),
+        api.get<Quotation[]>('/rfq/quotations/'),
+        api.get<AuditEvent[]>('/rfq/audit-log/'),
+        api.get<AppNotification[]>('/rfq/notifications/'),
+      ])
+      set({ customers, vendors, products, rfqs, quotations, auditLog, notifications, loaded: true, loading: false })
+    } catch {
+      // Backend not running/deployed — leave `loaded: false`. There is deliberately no
+      // local fallback here (unlike formulaStore): RFQ/customer/vendor data is shared,
+      // multi-user state, so fabricating local mock data on failure would just recreate
+      // the "two browsers, two realities" problem this migration exists to fix.
+      useUiStore.getState().pushToast('Could not reach the server — RFQ data may be out of date.', 'error')
+      set({ loading: false })
+    }
+  },
 
-      createRFQ: (input, actorName, submit) => {
-        const state = get()
-        const customer = state.customers.find((c) => c.id === input.customerId)!
-        const rfqNumber = nextRfqNumber(state.rfqs.map((r) => r.rfqNumber))
-        const now = new Date().toISOString()
-        const stage: Stage = submit ? 'Operations Review' : 'Draft'
-        const rfq: RFQ = {
-          id: rfqNumber.toLowerCase(),
-          rfqNumber,
-          customerId: customer.id,
-          customerCode: customer.code,
-          contactPerson: input.contactPerson,
-          contactEmail: input.contactEmail,
-          contactPhone: input.contactPhone,
-          customerReference: input.customerReference,
-          rfqReceivedDate: input.rfqReceivedDate,
-          projectName: input.projectName,
-          projectCode: input.projectCode,
-          quoteReference: input.quoteReference,
-          endCustomer: input.endCustomer || customer.name,
-          location: input.location,
-          industry: input.industry,
-          requiredDeliveryDate: input.requiredDeliveryDate,
-          priority: input.priority,
-          currency: input.currency,
-          paymentTerms: input.paymentTerms,
-          deliveryTerms: input.deliveryTerms,
-          quotationValidity: input.quotationValidity,
-          incoterms: input.incoterms,
-          taxApplicability: input.taxApplicability,
-          freightRequirement: input.freightRequirement,
-          customerRemarks: input.customerRemarks,
-          items: input.items.map((it, i) => ({ ...it, id: uid('item'), itemNo: i + 1 })),
-          attachments: [],
-          internalNotes: input.internalNotes,
-          customerNotes: input.customerNotes,
-          stage,
-          status: stage,
-          salesPerson: actorName,
-          createdAt: now,
-          updatedAt: now,
-          value: input.items.reduce((s, it) => s + it.targetPrice * it.quantity, 0),
-          costBreakdown: [],
-          targetMarginPercent: 15,
-        }
+  resetDemoData: () => {
+    set({ users: buildUsers(), inHouseCapabilities: buildInHouseCapabilities() })
+    get().loadAll()
+  },
 
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          appendAudit({ auditLog }, {
-            rfqId: rfq.id, user: actorName, role: 'Sales', module: 'RFQ',
-            record: rfq.rfqNumber, action: 'Created RFQ', newStatus: 'Draft',
-          })
-          const notifications = [...s.notifications]
-          if (submit) {
-            appendAudit({ auditLog }, {
-              rfqId: rfq.id, user: actorName, role: 'Sales', module: 'RFQ',
-              record: rfq.rfqNumber, action: 'Submitted RFQ for Operations review',
-              previousStatus: 'Draft', newStatus: 'Operations Review',
-            })
-            appendNotification({ notifications }, `${rfq.rfqNumber} has been submitted for Operations review.`, 'info', 'Operations', rfq.id)
-          }
-          return { rfqs: [rfq, ...s.rfqs], auditLog, notifications }
-        })
-
-        return rfq
-      },
-
-      updateRFQ: (id, patch) => {
-        set((s) => ({ rfqs: s.rfqs.map((r) => (r.id === id ? touch({ ...r, ...patch }) : r)) }))
-      },
-
-      submitRFQ: (id, actorName) => {
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            appendAudit({ auditLog }, {
-              rfqId: r.id, user: actorName, role: 'Sales', module: 'RFQ', record: r.rfqNumber,
-              action: 'Submitted RFQ for Operations review', previousStatus: r.stage, newStatus: 'Operations Review',
-            })
-            appendNotification({ notifications }, `${r.rfqNumber} has been submitted for Operations review.`, 'info', 'Operations', r.id)
-            return touch({ ...r, stage: 'Operations Review', status: 'Operations Review' })
-          })
-          return { rfqs, auditLog, notifications }
-        })
-      },
-
-      saveOperationsReview: (id, review) => {
-        set((s) => ({ rfqs: s.rfqs.map((r) => (r.id === id ? touch({ ...r, operationsReview: review }) : r)) }))
-      },
-
-      approveOperations: (id, actorName) => {
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            appendAudit({ auditLog }, {
-              rfqId: r.id, user: actorName, role: 'Operations', module: 'RFQ', record: r.rfqNumber,
-              action: 'Approved — technically feasible, forwarded to Sourcing',
-              previousStatus: r.stage, newStatus: 'Sourcing',
-            })
-            appendNotification({ notifications }, `${r.rfqNumber} is awaiting vendor sourcing.`, 'success', 'Sourcing', r.id)
-            return touch({ ...r, stage: 'Sourcing', status: 'Sourcing' })
-          })
-          return { rfqs, auditLog, notifications }
-        })
-      },
-
-      updateItemTechData: (id, itemId, fieldKey, value) => {
-        set((s) => ({
-          rfqs: s.rfqs.map((r) =>
-            r.id !== id
-              ? r
-              : touch({
-                  ...r,
-                  items: r.items.map((it) =>
-                    it.id !== itemId ? it : { ...it, technicalData: applyFieldChange(it.technicalData ?? {}, fieldKey, value) },
-                  ),
-                }),
-          ),
-        }))
-      },
-
-      confirmItemSourcing: (id, itemId, confirmed) => {
-        set((s) => ({
-          rfqs: s.rfqs.map((r) =>
-            r.id !== id ? r : touch({ ...r, items: r.items.map((it) => (it.id !== itemId ? it : { ...it, sourcingConfirmed: confirmed })) }),
-          ),
-        }))
-      },
-
-      assignProcessVendor: (id, itemId, processKey, vendorId, vendorName) => {
-        set((s) => ({
-          rfqs: s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            return touch({
-              ...r,
-              items: r.items.map((it) => {
-                if (it.id !== itemId) return it
-                const others = (it.processVendors ?? []).filter((p) => p.processKey !== processKey)
-                return { ...it, processVendors: [...others, { processKey, vendorId, vendorName }] }
-              }),
-            })
-          }),
-        }))
-      },
-
-      saveSourcingComment: (id, comment) => {
-        set((s) => ({ rfqs: s.rfqs.map((r) => (r.id === id ? touch({ ...r, sourcingComments: comment }) : r)) }))
-      },
-
-      submitSourcing: (id, actorName) => {
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            appendAudit({ auditLog }, {
-              rfqId: r.id, user: actorName, role: 'Sourcing', module: 'RFQ', record: r.rfqNumber,
-              action: 'Best vendor selected, submitted to Controlling',
-              previousStatus: r.stage, newStatus: 'Controlling',
-            })
-            appendNotification({ notifications }, `${r.rfqNumber} is awaiting commercial pricing.`, 'info', 'Controlling', r.id)
-            return touch({ ...r, stage: 'Controlling', status: 'Controlling' })
-          })
-          return { rfqs, auditLog, notifications }
-        })
-      },
-
-      saveCostBreakdown: (id, lines) => {
-        set((s) => ({
-          rfqs: s.rfqs.map((r) =>
-            r.id === id
-              ? touch({ ...r, costBreakdown: lines, value: lines.reduce((sum, l) => sum + l.finalPrice, 0) })
-              : r,
-          ),
-        }))
-      },
-
-      submitControlling: (id, actorName) => {
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            appendAudit({ auditLog }, {
-              rfqId: r.id, user: actorName, role: 'Controlling', module: 'RFQ', record: r.rfqNumber,
-              action: 'Commercial pricing calculated, submitted for approval',
-              previousStatus: r.stage, newStatus: 'Approval Pending',
-            })
-            appendNotification({ notifications }, `Quotation for ${r.rfqNumber} is awaiting final approval.`, 'info', 'Approval Panel', r.id)
-            return touch({ ...r, stage: 'Approval Pending', status: 'Approval Pending' })
-          })
-          return { rfqs, auditLog, notifications }
-        })
-      },
-
-      approveFinal: (id, actorName, comment) => {
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            appendAudit({ auditLog }, {
-              rfqId: r.id, user: actorName, role: 'Approval Panel', module: 'RFQ', record: r.rfqNumber,
-              action: 'Final quotation approved', previousStatus: r.stage, newStatus: 'Approved', comment,
-            })
-            appendNotification({ notifications }, `${r.rfqNumber} was approved.`, 'success', 'Sales', r.id)
-            return touch({ ...r, stage: 'Approved', status: 'Approved' })
-          })
-          return { rfqs, auditLog, notifications }
-        })
-      },
-
-      sendBack: (id, targetStage, actorRole, actorName, comment) => {
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            appendAudit({ auditLog }, {
-              rfqId: r.id, user: actorName, role: actorRole, module: 'RFQ', record: r.rfqNumber,
-              action: `Sent back to ${STAGE_OWNER[targetStage] ?? targetStage}`,
-              previousStatus: r.stage, newStatus: targetStage, comment,
-            })
-            appendNotification({ notifications }, `${r.rfqNumber} was returned with comments.`, 'warning', STAGE_OWNER[targetStage] ?? undefined, r.id)
-            return touch({ ...r, stage: targetStage, status: targetStage })
-          })
-          return { rfqs, auditLog, notifications }
-        })
-      },
-
-      rejectRFQ: (id, actorRole, actorName, reason, comment) => {
-        set((s) => {
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== id) return r
-            appendAudit({ auditLog }, {
-              rfqId: r.id, user: actorName, role: actorRole, module: 'RFQ', record: r.rfqNumber,
-              action: `Rejected RFQ — ${reason}`, previousStatus: r.stage, newStatus: 'Rejected', comment,
-            })
-            appendNotification({ notifications }, `${r.rfqNumber} was rejected.`, 'error', 'Sales', r.id)
-            return touch({ ...r, stage: 'Rejected', status: 'Rejected' })
-          })
-          return { rfqs, auditLog, notifications }
-        })
-      },
-
-      generateQuotation: (id, actorName) => {
-        let created: Quotation | undefined
-        set((s) => {
-          const rfq = s.rfqs.find((r) => r.id === id)
-          if (!rfq) return s
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          const quotationNumber = nextQuotationNumber(s.quotations.map((q) => q.quotationNumber))
-          const quotation: Quotation = {
-            id: uid('quo'),
-            quotationNumber,
-            rfqId: rfq.id,
-            rfqNumber: rfq.rfqNumber,
-            customerId: rfq.customerId,
-            customerName: rfq.endCustomer,
-            projectName: rfq.projectName,
-            quoteDate: new Date().toISOString(),
-            validUntil: new Date(Date.now() + 30 * 86400000).toISOString(),
-            currency: rfq.currency,
-            amount: rfq.value,
-            marginPercent: rfq.costBreakdown.length
-              ? rfq.costBreakdown.reduce((sum, l) => sum + l.marginPercent, 0) / rfq.costBreakdown.length
-              : rfq.targetMarginPercent,
-            status: 'Draft',
-            salesPerson: actorName,
-          }
-          appendAudit({ auditLog }, {
-            rfqId: rfq.id, user: actorName, role: 'Sales', module: 'Quotation', record: quotationNumber,
-            action: 'Quotation generated', previousStatus: rfq.stage, newStatus: 'Quotation Generated',
-          })
-          appendNotification({ notifications }, `Quotation generated for ${rfq.rfqNumber}.`, 'success', undefined, rfq.id, quotation.id)
-          const rfqs = s.rfqs.map((r) => (r.id === id ? touch({ ...r, stage: 'Quotation Generated', status: 'Quotation Generated' }) : r))
-          created = quotation
-          return { rfqs, quotations: [quotation, ...s.quotations], auditLog, notifications }
-        })
-        return created!
-      },
-
-      sendQuotation: (id, actorName) => {
-        set((s) => {
-          const rfq = s.rfqs.find((r) => r.id === id)
-          if (!rfq) return s
-          const auditLog = [...s.auditLog]
-          const notifications = [...s.notifications]
-          appendAudit({ auditLog }, {
-            rfqId: rfq.id, user: actorName, role: 'Sales', module: 'Quotation', record: rfq.rfqNumber,
-            action: 'Quotation sent to customer', previousStatus: rfq.stage, newStatus: 'Quotation Sent',
-          })
-          appendNotification({ notifications }, `Quotation for ${rfq.rfqNumber} was sent to the customer.`, 'success', undefined, rfq.id)
-          const rfqs = s.rfqs.map((r) => (r.id === id ? touch({ ...r, stage: 'Quotation Sent', status: 'Quotation Sent' }) : r))
-          const quotations = s.quotations.map((q) => (q.rfqId === id ? { ...q, status: 'Sent' as QuotationStatus } : q))
-          return { rfqs, quotations, auditLog, notifications }
-        })
-      },
-
-      updateQuotationStatus: (quotationId, status, actorName, lossReason) => {
-        set((s) => {
-          const quotation = s.quotations.find((q) => q.id === quotationId)
-          if (!quotation) return s
-          const auditLog = [...s.auditLog]
-          appendAudit({ auditLog }, {
-            rfqId: quotation.rfqId, user: actorName, role: 'Sales', module: 'Quotation', record: quotation.quotationNumber,
-            action: `Customer response updated: ${status}`, comment: lossReason ? `Loss reason: ${lossReason}` : undefined,
-          })
-          const quotations = s.quotations.map((q) => (q.id === quotationId ? { ...q, status, lossReason: lossReason ?? q.lossReason } : q))
-          const rfqs = s.rfqs.map((r) => {
-            if (r.id !== quotation.rfqId) return r
-            if (status === 'Won') return touch({ ...r, stage: 'Won', status: 'Won' })
-            if (status === 'Lost') return touch({ ...r, stage: 'Lost', status: 'Lost', lossReason })
-            return touch(r)
-          })
-          return { quotations, rfqs, auditLog }
-        })
-      },
-
-      markNotificationRead: (id) => {
-        set((s) => ({ notifications: s.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)) }))
-      },
-      markAllNotificationsRead: () => {
-        set((s) => ({ notifications: s.notifications.map((n) => ({ ...n, read: true })) }))
-      },
-
-      upsertCustomer: (c) => {
-        set((s) => {
-          const exists = s.customers.some((x) => x.id === c.id)
-          return { customers: exists ? s.customers.map((x) => (x.id === c.id ? c : x)) : [c, ...s.customers] }
-        })
-      },
-      upsertVendor: (v) => {
-        set((s) => {
-          const exists = s.vendors.some((x) => x.id === v.id)
-          return { vendors: exists ? s.vendors.map((x) => (x.id === v.id ? v : x)) : [v, ...s.vendors] }
-        })
-      },
-      upsertProduct: (p) => {
-        set((s) => {
-          const exists = s.products.some((x) => x.id === p.id)
-          return { products: exists ? s.products.map((x) => (x.id === p.id ? p : x)) : [p, ...s.products] }
-        })
-      },
+  createRFQ: (input, actorName, submit) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>('/rfq/rfqs/', { ...input, actorName, submit })
+      set((s) => ({ rfqs: [rfq, ...s.rfqs] }))
+      return rfq
     }),
-    { name: 'rfq-prototype-data' },
-  ),
-)
 
-export function getNextStageOwner(stage: Stage): Role | null {
-  const next = NEXT_STAGE[stage]
-  return next ? STAGE_OWNER[next] : null
-}
+  submitRFQ: (id, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/submit/`, { actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  saveOperationsReview: (id, review) =>
+    withErrorToast(async () => {
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/operations-review/`, { review })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  approveOperations: (id, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/approve-operations/`, { actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  updateItemTechData: (id, itemId, fieldKey, value) =>
+    withErrorToast(async () => {
+      const current = get().rfqs.find((r) => r.id === id)?.items.find((it) => it.id === itemId)
+      const technicalData = applyFieldChange(current?.technicalData ?? {}, fieldKey, value)
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-tech-data/`, { itemId, technicalData })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  confirmItemSourcing: (id, itemId, confirmed) =>
+    withErrorToast(async () => {
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-sourcing-confirmed/`, { itemId, confirmed })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  assignProcessVendor: (id, itemId, processKey, vendorId, vendorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-process-vendor/`, { itemId, processKey, vendorId, vendorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  saveSourcingComment: (id, comment) =>
+    withErrorToast(async () => {
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/sourcing-comment/`, { comment })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  submitSourcing: (id, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/submit-sourcing/`, { actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  saveCostBreakdown: (id, lines) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/cost-breakdown/`, { lines })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  submitControlling: (id, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/submit-controlling/`, { actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  approveFinal: (id, actorName, comment) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/approve-final/`, { actorName, comment })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  sendBack: (id, targetStage, actorRole, actorName, comment) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/send-back/`, { targetStage, actorRole, actorName, comment })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  rejectRFQ: (id, actorRole, actorName, reason, comment) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/reject/`, { actorRole, actorName, reason, comment })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  generateQuotation: (id, actorName) =>
+    withErrorToast(async () => {
+      const quotation = await api.post<Quotation>(`/rfq/rfqs/${id}/generate-quotation/`, { actorName })
+      const rfq = await api.get<RFQ>(`/rfq/rfqs/${id}/`)
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq), quotations: [quotation, ...s.quotations] }))
+      return quotation
+    }),
+
+  sendQuotation: (id, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/send-quotation/`, { actorName })
+      set((s) => ({
+        rfqs: replaceRfq(s.rfqs, rfq),
+        quotations: s.quotations.map((q) => (q.rfqId === id ? { ...q, status: 'Sent' as QuotationStatus } : q)),
+      }))
+    }),
+
+  updateQuotationStatus: (quotationId, status, actorName, lossReason) =>
+    withErrorToast(async () => {
+      const quotation = await api.patch<Quotation>(`/rfq/quotations/${quotationId}/status/`, { status, actorName, lossReason })
+      const rfq = await api.get<RFQ>(`/rfq/rfqs/${quotation.rfqId}/`)
+      set((s) => ({
+        quotations: s.quotations.map((q) => (q.id === quotationId ? quotation : q)),
+        rfqs: replaceRfq(s.rfqs, rfq),
+      }))
+    }),
+
+  markNotificationRead: (id) =>
+    withErrorToast(async () => {
+      const notif = await api.patch<AppNotification>(`/rfq/notifications/${id}/read/`, {})
+      set((s) => ({ notifications: s.notifications.map((n) => (n.id === id ? notif : n)) }))
+    }),
+
+  markAllNotificationsRead: () =>
+    withErrorToast(async () => {
+      await api.post(`/rfq/notifications/mark-all-read/`, {})
+      set((s) => ({ notifications: s.notifications.map((n) => ({ ...n, read: true })) }))
+    }),
+
+  upsertCustomer: (c) =>
+    withErrorToast(async () => {
+      const isNew = !c.id
+      const saved = isNew
+        ? await api.post<Customer>('/rfq/customers/', c)
+        : await api.patch<Customer>(`/rfq/customers/${c.id}/`, c)
+      set((s) => ({
+        customers: isNew ? [saved, ...s.customers] : s.customers.map((x) => (x.id === saved.id ? saved : x)),
+      }))
+    }),
+
+  upsertVendor: (v) =>
+    withErrorToast(async () => {
+      const isNew = !v.id
+      const saved = isNew ? await api.post<Vendor>('/rfq/vendors/', v) : await api.patch<Vendor>(`/rfq/vendors/${v.id}/`, v)
+      set((s) => ({
+        vendors: isNew ? [saved, ...s.vendors] : s.vendors.map((x) => (x.id === saved.id ? saved : x)),
+      }))
+    }),
+}))
