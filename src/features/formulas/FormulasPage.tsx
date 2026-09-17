@@ -1,19 +1,35 @@
 import { useMemo, useState } from 'react'
-import { Info, RotateCcw, Save } from 'lucide-react'
+import { Info, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { EmptyState } from '@/components/EmptyState'
+import { Modal } from '@/components/ui/Modal'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useDataStore } from '@/store/dataStore'
-import { useFormulaStore, type FormulaDefinitionDto } from '@/store/formulaStore'
+import { useFormulaStore, type FormulaDefinitionDto, type TechDataFieldDto } from '@/store/formulaStore'
 import { useUiStore } from '@/store/uiStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { toNumericVars } from '@/lib/pulleyTechDataCalc'
 import { computePulleyPricing, buildPricingVariables } from '@/lib/pulleyPricingCalc'
 import { evaluateFormula, FormulaError } from '@/lib/formulaEval'
 import { formatCurrency } from '@/lib/format'
+import { ApiError } from '@/lib/apiClient'
+
+const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-blue)]'
+
+function slugifyToCamelCase(label: string): string {
+  const words = label
+    .trim()
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+  if (words.length === 0) return ''
+  return words
+    .map((w, i) => (i === 0 ? w.charAt(0).toLowerCase() + w.slice(1) : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join('')
+}
 
 const SECTION_LABELS: Record<string, string> = {
   TechDataAuto: 'Technical Data Sheet — Auto Fields',
@@ -28,8 +44,10 @@ const SECTION_ORDER = Object.keys(SECTION_LABELS)
 
 export function FormulasPage() {
   const rfqs = useDataStore((s) => s.rfqs)
-  const { loaded, loading, formulas, costRates, updateFormula } = useFormulaStore()
+  const { loaded, loading, formulas, costRates, techDataFields, updateFormula, createTechDataField, deleteTechDataField } = useFormulaStore()
   const pushToast = useUiStore((s) => s.pushToast)
+  const [addFieldOpen, setAddFieldOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<TechDataFieldDto | null>(null)
 
   const rfqsWithTechData = useMemo(() => rfqs.filter((r) => r.items.some((it) => isTechDataFilled(it.technicalData))), [rfqs])
   const [rfqId, setRfqId] = useState(rfqsWithTechData[0]?.id ?? '')
@@ -66,6 +84,17 @@ export function FormulasPage() {
     return bySection
   }, [formulas])
 
+  const techDataSections = useMemo(() => [...new Set(Object.values(techDataFields).map((f) => f.section))].sort(), [techDataFields])
+  const techDataBySection = useMemo(() => {
+    const bySection: Record<string, TechDataFieldDto[]> = {}
+    for (const f of Object.values(techDataFields)) {
+      bySection[f.section] = bySection[f.section] ?? []
+      bySection[f.section].push(f)
+    }
+    for (const list of Object.values(bySection)) list.sort((a, b) => a.order - b.order)
+    return bySection
+  }, [techDataFields])
+
   if (loading) return <EmptyState title="Loading formulas..." />
   if (!loaded) {
     return (
@@ -84,6 +113,11 @@ export function FormulasPage() {
       <PageHeader
         title="Formulas"
         description="Edit the real expression behind every auto-calculated field — not just a rate, the actual formula. Changes apply everywhere immediately once saved."
+        actions={
+          <Button variant="primary" icon={<Plus size={15} />} onClick={() => setAddFieldOpen(true)}>
+            Add Field
+          </Button>
+        }
       />
 
       <div className="mb-5 flex items-start gap-2 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-4 py-3 text-sm text-[var(--color-blue)]">
@@ -136,7 +170,324 @@ export function FormulasPage() {
           />
         ))}
       </div>
+
+      <div className="mt-8">
+        <CardHeader title="Technical Data Sheet — Field Schema" description="Every field on the sheet Sales/Operations fill in. Add a new one below, Manual or Auto." />
+        <div className="space-y-5">
+          {techDataSections.map((section) => (
+            <TechDataFieldSectionCard key={section} title={section} fields={techDataBySection[section]} onDelete={setDeleteTarget} />
+          ))}
+        </div>
+      </div>
+
+      <AddTechDataFieldModal
+        open={addFieldOpen}
+        onClose={() => setAddFieldOpen(false)}
+        existingSections={techDataSections}
+        sampleVars={sampleVars}
+        onCreate={async (input) => {
+          try {
+            await createTechDataField(input)
+            pushToast(`'${input.label}' added to the Technical Data Sheet.`, 'success')
+            setAddFieldOpen(false)
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to create field.', 'error')
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={async () => {
+          if (!deleteTarget) return
+          try {
+            await deleteTechDataField(deleteTarget.key)
+            pushToast(`'${deleteTarget.label}' removed.`, 'success')
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to delete field.', 'error')
+          } finally {
+            setDeleteTarget(null)
+          }
+        }}
+        title="Delete Field"
+        description={`Remove '${deleteTarget?.label}' from the Technical Data Sheet? This can't be undone.`}
+        confirmLabel="Delete"
+        danger
+      />
     </div>
+  )
+}
+
+function TechDataFieldSectionCard({
+  title,
+  fields,
+  onDelete,
+}: {
+  title: string
+  fields: TechDataFieldDto[]
+  onDelete: (field: TechDataFieldDto) => void
+}) {
+  return (
+    <Card>
+      <CardHeader title={title} />
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[700px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-[var(--color-border)] text-left text-xs uppercase text-[var(--color-ink-faint)]">
+              <th className="px-4 py-2 min-w-[220px]">Field</th>
+              <th className="px-4 py-2">Key</th>
+              <th className="px-4 py-2">Type</th>
+              <th className="px-4 py-2"></th>
+              <th className="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {fields.map((f) => (
+              <tr key={f.key} className="border-b border-[var(--color-border)] last:border-0">
+                <td className="px-4 py-2.5 font-medium">
+                  {f.label}
+                  {f.unit && <span className="ml-1 text-xs text-[var(--color-ink-faint)]">({f.unit})</span>}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[var(--color-ink-faint)]">{f.key}</td>
+                <td className="px-4 py-2.5 capitalize">{f.field_type}</td>
+                <td className="px-4 py-2.5">
+                  {f.is_auto ? (
+                    <Badge tone="blue">Auto</Badge>
+                  ) : f.is_catalog_derived ? (
+                    <Badge tone="purple">Catalog</Badge>
+                  ) : (
+                    <Badge tone="neutral">Manual</Badge>
+                  )}
+                  {!f.is_core && (
+                    <Badge tone="green" className="ml-1">
+                      Custom
+                    </Badge>
+                  )}
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  {!f.is_core && (
+                    <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => onDelete(f)}>
+                      Delete
+                    </Button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
+}
+
+function AddTechDataFieldModal({
+  open,
+  onClose,
+  existingSections,
+  sampleVars,
+  onCreate,
+}: {
+  open: boolean
+  onClose: () => void
+  existingSections: string[]
+  sampleVars: Record<string, number>
+  onCreate: (input: {
+    key: string
+    label: string
+    section: string
+    unit: string
+    field_type: 'text' | 'number' | 'select'
+    options: string[]
+    is_auto: boolean
+    expression: string
+    input_variables: string[]
+    output_unit: string
+  }) => Promise<void>
+}) {
+  const [label, setLabel] = useState('')
+  const [key, setKey] = useState('')
+  const [keyEdited, setKeyEdited] = useState(false)
+  const [section, setSection] = useState(existingSections[0] ?? '')
+  const [newSection, setNewSection] = useState('')
+  const [unit, setUnit] = useState('')
+  const [fieldType, setFieldType] = useState<'text' | 'number' | 'select'>('text')
+  const [optionsText, setOptionsText] = useState('')
+  const [isAuto, setIsAuto] = useState(false)
+  const [expression, setExpression] = useState('')
+  const [varsText, setVarsText] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const reset = () => {
+    setLabel('')
+    setKey('')
+    setKeyEdited(false)
+    setSection(existingSections[0] ?? '')
+    setNewSection('')
+    setUnit('')
+    setFieldType('text')
+    setOptionsText('')
+    setIsAuto(false)
+    setExpression('')
+    setVarsText('')
+  }
+
+  const handleLabelChange = (v: string) => {
+    setLabel(v)
+    if (!keyEdited) setKey(slugifyToCamelCase(v))
+  }
+
+  const inputVariables = varsText
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean)
+
+  const preview = (() => {
+    if (!isAuto || !expression.trim()) return null
+    try {
+      const vars = Object.fromEntries(inputVariables.map((v) => [v, sampleVars[v] ?? 0]))
+      return { value: evaluateFormula(expression, vars), error: null as string | null }
+    } catch (err) {
+      return { value: null as number | null, error: err instanceof FormulaError ? err.message : 'Invalid expression' }
+    }
+  })()
+
+  const effectiveSection = section === '__new__' ? newSection.trim() : section
+  const canSave =
+    label.trim() && key.trim() && effectiveSection && (fieldType !== 'select' || isAuto || optionsText.trim()) && (!isAuto || (expression.trim() && !preview?.error))
+
+  const handleSave = async () => {
+    setSaving(true)
+    await onCreate({
+      key: key.trim(),
+      label: label.trim(),
+      section: effectiveSection,
+      unit,
+      field_type: fieldType,
+      options: fieldType === 'select' ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : [],
+      is_auto: isAuto,
+      expression,
+      input_variables: inputVariables,
+      output_unit: unit,
+    })
+    setSaving(false)
+    reset()
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={() => {
+        onClose()
+        reset()
+      }}
+      title="Add Technical Data Sheet Field"
+      width="max-w-xl"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSave} disabled={!canSave || saving}>
+            Add Field
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Label</label>
+          <input value={label} onChange={(e) => handleLabelChange(e.target.value)} className={inputClass} placeholder="e.g. Coupling Weight" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Key (variable name used in formulas)</label>
+          <input
+            value={key}
+            onChange={(e) => {
+              setKey(e.target.value)
+              setKeyEdited(true)
+            }}
+            className={clsx(inputClass, 'font-mono')}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Section</label>
+            <select value={section} onChange={(e) => setSection(e.target.value)} className={inputClass}>
+              {existingSections.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+              <option value="__new__">+ New section...</option>
+            </select>
+            {section === '__new__' && (
+              <input value={newSection} onChange={(e) => setNewSection(e.target.value)} className={clsx(inputClass, 'mt-1.5')} placeholder="Section title" />
+            )}
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Unit</label>
+            <input value={unit} onChange={(e) => setUnit(e.target.value)} className={inputClass} placeholder="e.g. kg, INR, mm" />
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Type</label>
+          <div className="flex gap-2">
+            {(['text', 'number', 'select'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setFieldType(t)}
+                className={clsx(
+                  'flex-1 rounded-md border px-3 py-1.5 text-sm capitalize',
+                  fieldType === t ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)] text-[var(--color-blue)]' : 'border-[var(--color-border)]',
+                )}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {fieldType === 'select' && !isAuto && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
+            <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} placeholder="Option A, Option B, Option C" />
+          </div>
+        )}
+
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={isAuto} onChange={(e) => setIsAuto(e.target.checked)} className="rounded border-[var(--color-border)]" />
+          Auto — computed from a formula, read-only on the sheet
+        </label>
+
+        {isAuto && (
+          <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Variables used (comma-separated)</label>
+              <input value={varsText} onChange={(e) => setVarsText(e.target.value)} className={inputClass} placeholder="e.g. shellOD, shaftLength" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Expression</label>
+              <textarea
+                value={expression}
+                onChange={(e) => setExpression(e.target.value)}
+                rows={2}
+                className="w-full rounded-md border border-[var(--color-border)] px-2 py-1.5 font-mono text-xs outline-none focus:border-[var(--color-blue)]"
+                placeholder="e.g. shellOD * 2"
+              />
+            </div>
+            {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
+            {preview && preview.value !== null && (
+              <p className="text-xs text-[var(--color-ink-faint)]">
+                Preview: <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span> (against the RFQ selected above, unfilled variables read as 0)
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
   )
 }
 

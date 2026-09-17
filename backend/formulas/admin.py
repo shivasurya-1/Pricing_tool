@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import FormulaDefinition, FormulaVersion
+from .models import FormulaDefinition, FormulaVersion, TechDataFieldDefinition
 
 
 class FormulaVersionInline(admin.TabularInline):
@@ -16,3 +16,10 @@ class FormulaDefinitionAdmin(admin.ModelAdmin):
     list_filter = ["section"]
     search_fields = ["key", "label", "expression"]
     inlines = [FormulaVersionInline]
+
+
+@admin.register(TechDataFieldDefinition)
+class TechDataFieldDefinitionAdmin(admin.ModelAdmin):
+    list_display = ["key", "label", "section", "field_type", "is_auto", "is_core", "order"]
+    list_filter = ["section", "field_type", "is_core"]
+    search_fields = ["key", "label"]

@@ -1,13 +1,14 @@
 import type { PulleyTechDataValues } from '@/types'
-import { TECH_DATA_SECTIONS } from '@/data/pulleyTechDataSchema'
+import { useTechDataSections } from '@/data/pulleyTechDataSchema'
 
 /** Read-only, sectioned display of a captured Technical Data Sheet — for review
  * screens (Operations, Sourcing, Controlling, Approval) where a team needs to see
  * the full spec before making a call, not edit it. */
 export function PulleyTechDataView({ values }: { values: PulleyTechDataValues | undefined }) {
+  const techDataSections = useTechDataSections()
   if (!values) return <p className="text-sm text-[var(--color-ink-faint)]">No technical data captured for this item.</p>
 
-  const sectionsWithData = TECH_DATA_SECTIONS.map((section) => ({
+  const sectionsWithData = techDataSections.map((section) => ({
     ...section,
     fields: section.fields.filter((f) => {
       const v = values[f.key]

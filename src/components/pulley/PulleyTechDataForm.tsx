@@ -1,6 +1,6 @@
 import clsx from 'clsx'
 import type { PulleyTechDataValues } from '@/types'
-import { TECH_DATA_SECTIONS, getOptionsForField, type TechDataField } from '@/data/pulleyTechDataSchema'
+import { useTechDataSections, getOptionsForField, type TechDataField } from '@/data/pulleyTechDataSchema'
 import { Badge } from '@/components/ui/Badge'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-blue)]'
@@ -12,9 +12,10 @@ export function PulleyTechDataForm({
   values: PulleyTechDataValues
   onChange: (fieldKey: string, value: string | number) => void
 }) {
+  const techDataSections = useTechDataSections()
   return (
     <div className="space-y-5">
-      {TECH_DATA_SECTIONS.map((section) => (
+      {techDataSections.map((section) => (
         <div key={section.title}>
           <p className="mb-2 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--color-blue)]">
             {section.title}

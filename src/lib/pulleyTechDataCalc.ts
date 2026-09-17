@@ -34,31 +34,63 @@ export function toNumericVars(values: PulleyTechDataValues): Record<string, numb
   return out
 }
 
+/**
+ * Evaluates every Auto Technical Data Sheet field (the ~21 known ones plus any custom
+ * field added later via the Formulas page's "Add Field" flow) in dependency order,
+ * rather than a hand-maintained call sequence — so a new Auto field that depends on
+ * another Auto field's output just works regardless of when it was declared.
+ *
+ * An auto field only depends on OTHER auto fields for ordering purposes: a dependency
+ * on a manual field, or on an injected rate-lookup variable (c1RateInrPerHour etc.),
+ * is already sitting in `vars` before evaluation starts and needs no ordering at all.
+ * Kahn's algorithm; a cycle throws (caught by computeAutoFields(), which falls back to
+ * computeAutoFieldsStatic()) rather than ever silently mis-evaluating.
+ */
 function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataValues {
-  const { formulas, costRates } = useFormulaStore.getState()
+  const { techDataFields, costRates } = useFormulaStore.getState()
   const vars = toNumericVars(values)
   const out: PulleyTechDataValues = {}
 
-  const evalKey = (key: string) => {
-    const f = formulas[key]
-    if (!f) throw new Error(`Formula not loaded: ${key}`)
-    const result = evaluateFormula(f.expression, vars)
-    vars[key] = result
-    out[key] = round2(result)
+  for (const op of IN_HOUSE_OPERATIONS) {
+    vars[`${op.key}RateInrPerHour`] = costRates[op.rateKey] ?? PULLEY_COST_RATES.labourRatesInrPerHour[op.rateKey]
   }
 
-  evalKey('sheetLength')
-  evalKey('shellPlateWeight')
-  evalKey('hubMass')
-  evalKey('shaftMass')
-  evalKey('laggingArea')
-  evalKey('laggingCost')
-  evalKey('totalBearingsHousings')
+  const autoFields = Object.values(techDataFields).filter((f) => f.is_auto)
+  if (autoFields.length === 0) throw new Error('No Auto fields loaded from the backend')
+  const autoKeys = new Set(autoFields.map((f) => f.key))
 
-  for (const op of IN_HOUSE_OPERATIONS) {
-    evalKey(`${op.key}TotalHours`)
-    vars[`${op.key}RateInrPerHour`] = costRates[op.rateKey] ?? PULLEY_COST_RATES.labourRatesInrPerHour[op.rateKey]
-    evalKey(`${op.key}Cost`)
+  const dependsOn = new Map<string, Set<string>>()
+  const dependents = new Map<string, Set<string>>()
+  for (const f of autoFields) {
+    const deps = new Set((f.input_variables ?? []).filter((v) => autoKeys.has(v) && v !== f.key))
+    dependsOn.set(f.key, deps)
+    for (const d of deps) {
+      if (!dependents.has(d)) dependents.set(d, new Set())
+      dependents.get(d)!.add(f.key)
+    }
+  }
+
+  const ready = autoFields.filter((f) => dependsOn.get(f.key)!.size === 0).map((f) => f.key)
+  const order: string[] = []
+  while (ready.length > 0) {
+    const key = ready.shift()!
+    order.push(key)
+    for (const dependent of dependents.get(key) ?? []) {
+      const deps = dependsOn.get(dependent)!
+      deps.delete(key)
+      if (deps.size === 0) ready.push(dependent)
+    }
+  }
+  if (order.length !== autoFields.length) {
+    throw new Error('Circular dependency among Auto Technical Data Sheet fields')
+  }
+
+  const byKey = new Map(autoFields.map((f) => [f.key, f]))
+  for (const key of order) {
+    const f = byKey.get(key)!
+    const result = evaluateFormula(f.expression as string, vars)
+    vars[key] = result
+    out[key] = round2(result)
   }
 
   return out

@@ -7,6 +7,7 @@
 
 import { BRG_CATALOG, SLEEVE_CATALOG, HOUSING_CATALOG, LAGGING_CATALOG, LOCKING_DEVICE_CATALOG } from '@/data/pulleyCatalogs'
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
+import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
 
 export type FieldType = 'text' | 'number' | 'select'
 
@@ -182,12 +183,57 @@ export const TECH_DATA_SECTIONS: TechDataSection[] = [
   },
 ]
 
-const FIELD_LABEL_MAP: Record<string, string> = Object.fromEntries(
+const STATIC_FIELD_LABEL_MAP: Record<string, string> = Object.fromEntries(
   TECH_DATA_SECTIONS.flatMap((s) => s.fields.map((f) => [f.key, f.unit ? `${f.label} (${f.unit})` : f.label])),
 )
 
+/** Not a hook — called from inside component render bodies (e.g. RFQDetailPage's audit
+ * trail) that already re-render for other reasons, so a non-reactive snapshot read here
+ * is fine; it just means a field added mid-session shows its real label on the next
+ * unrelated re-render rather than instantly. Falls back to the static map (then the raw
+ * key) exactly like every other calc in this codebase falls back when the backend hasn't
+ * loaded or a key is genuinely unknown. */
 export function getFieldLabel(fieldKey: string): string {
-  return FIELD_LABEL_MAP[fieldKey] ?? fieldKey
+  const dynamic = useFormulaStore.getState().techDataFields[fieldKey]
+  if (dynamic) return dynamic.unit ? `${dynamic.label} (${dynamic.unit})` : dynamic.label
+  return STATIC_FIELD_LABEL_MAP[fieldKey] ?? fieldKey
+}
+
+/** Builds the same TechDataSection[] shape as the static TECH_DATA_SECTIONS, from the
+ * backend's field list — grouped by section, ordered by each field's `order` within it.
+ * Section display order falls out naturally: every section title here is prefixed
+ * "1. ", "2. ", … "9. ", which already sorts correctly as plain strings. */
+function buildTechDataSectionsFromDto(fields: TechDataFieldDto[]): TechDataSection[] {
+  const bySection = new Map<string, { order: number; field: TechDataField }[]>()
+  for (const f of fields) {
+    const field: TechDataField = {
+      key: f.key,
+      label: f.label,
+      unit: f.unit || undefined,
+      type: f.field_type,
+      options: f.field_type === 'select' && f.options.length > 0 ? f.options : undefined,
+      auto: f.is_read_only,
+    }
+    if (!bySection.has(f.section)) bySection.set(f.section, [])
+    bySection.get(f.section)!.push({ order: f.order, field })
+  }
+  return Array.from(bySection.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([title, entries]) => ({
+      title,
+      fields: entries.sort((a, b) => a.order - b.order).map((e) => e.field),
+    }))
+}
+
+/** The Technical Data Sheet's live field list — dynamic (backend-editable, including any
+ * custom fields added via the Formulas page) once loaded, falling back to the static
+ * TECH_DATA_SECTIONS above whenever the backend isn't reachable — same static-fallback
+ * contract as computeAutoFields()/computePulleyPricing(). */
+export function useTechDataSections(): TechDataSection[] {
+  const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const loaded = useFormulaStore((s) => s.loaded)
+  if (!loaded || Object.keys(techDataFields).length === 0) return TECH_DATA_SECTIONS
+  return buildTechDataSectionsFromDto(Object.values(techDataFields))
 }
 
 export function getOptionsForField(fieldKey: string): string[] {
