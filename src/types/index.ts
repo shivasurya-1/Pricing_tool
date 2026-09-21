@@ -190,6 +190,15 @@ export interface OperationsReview {
   notes?: string
 }
 
+export interface RFQAttachment {
+  id: string
+  name: string
+  contentType: string
+  sizeBytes: number
+  uploadedByName: string
+  uploadedAt: string
+}
+
 export interface RFQ {
   id: string
   rfqNumber: string
@@ -220,7 +229,7 @@ export interface RFQ {
   customerRemarks: string
 
   items: RFQItem[]
-  attachments: { id: string; name: string }[]
+  attachments: RFQAttachment[]
   internalNotes: string
   customerNotes: string
 

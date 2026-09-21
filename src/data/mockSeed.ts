@@ -733,7 +733,10 @@ function buildRfq(
     freightRequirement: 'To be arranged by supplier',
     customerRemarks: '',
     items,
-    attachments: rng.rand() > 0.5 ? [{ id: `${rfqId}-att-1`, name: 'Customer_RFQ_Drawing.pdf' }] : [],
+    attachments:
+      rng.rand() > 0.5
+        ? [{ id: `${rfqId}-att-1`, name: 'Customer_RFQ_Drawing.pdf', contentType: 'application/pdf', sizeBytes: 245000, uploadedByName: config.salesPerson, uploadedAt: receivedIso }]
+        : [],
     internalNotes: '',
     customerNotes: '',
     stage: config.stage,

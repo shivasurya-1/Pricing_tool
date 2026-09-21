@@ -32,10 +32,13 @@ function authHeaders(): Record<string, string> {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  // FormData bodies (file uploads) must NOT get a manual Content-Type — the browser
+  // sets the multipart boundary itself; forcing 'application/json' here would break it.
+  const isFormData = options.body instanceof FormData
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...authHeaders(),
       ...options.headers,
     },
@@ -59,4 +62,24 @@ export const api = {
   patch: <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   post: <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  postForm: <T>(path: string, formData: FormData) => request<T>(path, { method: 'POST', body: formData }),
+}
+
+/**
+ * A plain `<a href>` can't carry the `Authorization: Token ...` header a download
+ * needs, so this fetches the file with the same auth as every other call, then
+ * triggers a save via a throwaway object URL.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, { headers: { ...authHeaders() } })
+  if (!res.ok) throw new ApiError(res.status, res.statusText)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }

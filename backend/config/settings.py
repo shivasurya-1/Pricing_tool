@@ -99,6 +99,11 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# Uploaded RFQ attachments — deliberately private (no MEDIA_URL, no Nginx serving).
+# All access goes through RFQViewSet's authenticated upload/download/delete actions,
+# same as every other piece of data in this app — see rfq/views.py.
+MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- DRF ---

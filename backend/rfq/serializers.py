@@ -2,7 +2,7 @@ import re
 
 from rest_framework import serializers
 
-from .models import AppNotification, AuditEvent, Customer, CostBreakdownLine, Product, Quotation, RFQ, RFQItem, Vendor
+from .models import AppNotification, AuditEvent, Customer, CostBreakdownLine, Product, Quotation, RFQ, RFQAttachment, RFQItem, Vendor
 
 
 def to_camel(s: str) -> str:
@@ -105,10 +105,27 @@ class QuotationSerializer(CamelCaseSerializer):
         ]
 
 
+class RFQAttachmentSerializer(CamelCaseSerializer):
+    """`name` (not `original_filename`) so the frontend's existing {id, name}
+    attachment shape extends rather than breaks. No raw storage path/url is
+    exposed — downloads go through RFQViewSet's authenticated download action."""
+
+    name = serializers.CharField(source="original_filename", read_only=True)
+    uploaded_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RFQAttachment
+        fields = ["id", "name", "content_type", "size_bytes", "uploaded_by_name", "uploaded_at"]
+
+    def get_uploaded_by_name(self, obj):
+        return obj.uploaded_by.username if obj.uploaded_by_id else ""
+
+
 class RFQSerializer(CamelCaseSerializer):
     items = RFQItemSerializer(many=True, read_only=True)
     customer_id = serializers.CharField(source="customer.id", read_only=True)
     cost_breakdown = serializers.SerializerMethodField()
+    attachments = RFQAttachmentSerializer(source="attachment_files", many=True, read_only=True)
 
     class Meta:
         model = RFQ

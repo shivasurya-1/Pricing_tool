@@ -1,6 +1,6 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { MoreHorizontal, Pencil, ArrowRight } from 'lucide-react'
+import { MoreHorizontal, Pencil, ArrowRight, Download, Trash2, Paperclip } from 'lucide-react'
 import { useDataStore } from '@/store/dataStore'
 import { useAuthStore } from '@/store/authStore'
 import { useUiStore } from '@/store/uiStore'
@@ -8,6 +8,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Tabs } from '@/components/ui/Tabs'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { StatusBadge } from '@/components/StatusBadge'
 import { PriorityBadge } from '@/components/PriorityBadge'
 import { Badge } from '@/components/ui/Badge'
@@ -15,11 +16,12 @@ import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { getFieldLabel } from '@/data/pulleyTechDataSchema'
 import { WorkflowTimeline } from '@/components/WorkflowTimeline'
 import { EmptyState } from '@/components/EmptyState'
-import { formatCurrency, formatDate, formatDateTime } from '@/lib/format'
+import { formatCurrency, formatDate, formatDateTime, formatFileSize } from '@/lib/format'
 import { canRoleActOnStage, STAGE_ORDER } from '@/lib/workflow'
 import { actionRouteForRfq } from '@/lib/routes'
 import { summarizeCostBreakdown, marginStatus, marginStatusColor } from '@/lib/pricing'
 import { PulleySourcingSummary } from '@/components/pulley/PulleySourcingSummary'
+import { downloadFile, ApiError } from '@/lib/apiClient'
 import clsx from 'clsx'
 
 const TABS = ['Overview', 'Items', 'Technical', 'Sourcing', 'Pricing', 'Commercials', 'Approval', 'Activity', 'Attachments']
@@ -36,7 +38,12 @@ export function RFQDetailPage() {
   const role = useAuthStore((s) => s.role)
   const userName = useAuthStore((s) => s.name)
   const pushToast = useUiStore((s) => s.pushToast)
+  const uploadRfqAttachment = useDataStore((s) => s.uploadRfqAttachment)
+  const deleteRfqAttachment = useDataStore((s) => s.deleteRfqAttachment)
   const [tab, setTab] = useState('Overview')
+  const [uploading, setUploading] = useState(false)
+  const [deleteAttachmentId, setDeleteAttachmentId] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const rfq = rfqs.find((r) => r.id === id)
   const rfqAudit = useMemo(() => auditLog.filter((a) => a.rfqId === id).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()), [auditLog, id])
@@ -366,13 +373,66 @@ export function RFQDetailPage() {
 
           {tab === 'Attachments' && (
             <div>
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs text-[var(--color-ink-faint)]">PDF, Word, Excel, or image files up to 15 MB.</p>
+                {canAct && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0]
+                        e.target.value = ''
+                        if (!file) return
+                        setUploading(true)
+                        try {
+                          await uploadRfqAttachment(rfq.id, file)
+                          pushToast(`${file.name} uploaded.`, 'success')
+                        } catch {
+                          /* toast already shown by withErrorToast */
+                        } finally {
+                          setUploading(false)
+                        }
+                      }}
+                    />
+                    <Button size="sm" icon={<Paperclip size={14} />} disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+                      {uploading ? 'Uploading...' : 'Add Attachment'}
+                    </Button>
+                  </>
+                )}
+              </div>
+
               {rfq.attachments.length === 0 ? (
                 <EmptyState title="No attachments" description="No files were uploaded with this RFQ." />
               ) : (
                 <div className="space-y-2">
                   {rfq.attachments.map((a) => (
                     <div key={a.id} className="flex items-center justify-between rounded-md border border-[var(--color-border)] px-3 py-2 text-sm">
-                      {a.name}
+                      <div>
+                        <p className="font-medium text-[var(--color-ink)]">{a.name}</p>
+                        <p className="text-xs text-[var(--color-ink-faint)]">
+                          {formatFileSize(a.sizeBytes)} · {a.uploadedByName || 'Unknown'} · {formatDateTime(a.uploadedAt)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={<Download size={14} />}
+                          onClick={async () => {
+                            try {
+                              await downloadFile(`/rfq/rfqs/${rfq.id}/attachments/${a.id}/download/`, a.name)
+                            } catch (err) {
+                              pushToast(err instanceof ApiError ? err.message : 'Failed to download file.', 'error')
+                            }
+                          }}
+                        />
+                        {canAct && (
+                          <Button size="sm" variant="ghost" icon={<Trash2 size={14} className="text-[var(--color-red)]" />} onClick={() => setDeleteAttachmentId(a.id)} />
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -381,6 +441,26 @@ export function RFQDetailPage() {
           )}
         </div>
       </Card>
+
+      <ConfirmDialog
+        open={deleteAttachmentId !== null}
+        onClose={() => setDeleteAttachmentId(null)}
+        onConfirm={async () => {
+          if (!deleteAttachmentId) return
+          try {
+            await deleteRfqAttachment(rfq.id, deleteAttachmentId)
+            pushToast('Attachment deleted.', 'success')
+          } catch {
+            /* toast already shown by withErrorToast */
+          } finally {
+            setDeleteAttachmentId(null)
+          }
+        }}
+        title="Delete Attachment"
+        description="This file will be permanently removed from the RFQ."
+        confirmLabel="Delete"
+        danger
+      />
     </div>
   )
 }

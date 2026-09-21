@@ -34,6 +34,12 @@ export function ageInDays(iso: string): number {
   return Math.max(0, Math.floor((Date.now() - d) / (1000 * 60 * 60 * 24)))
 }
 
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 export function initials(name: string): string {
   return name
     .split(' ')

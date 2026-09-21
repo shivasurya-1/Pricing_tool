@@ -1,7 +1,8 @@
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from django.test import TestCase
 
-from .models import Customer, CostBreakdownLine, Product, Quotation, RFQ, RFQItem
+from .models import Customer, CostBreakdownLine, Product, Quotation, RFQ, RFQAttachment, RFQItem
 
 
 def client_as(role: str) -> APIClient:
@@ -286,3 +287,76 @@ class RFQWorkflowSecurityRegressionTests(TestCase):
         event = RFQ.objects.get(id=self.rfq_id).audit_events.first()
         self.assertEqual(event.role, "Operations")
         self.assertNotEqual(event.role, "Admin")
+
+
+class RFQAttachmentTests(TestCase):
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-3", code="CUST-003", name="Acme Pulleys")
+        self.product = Product.objects.create(id="prod-3", code="PROD-3", name="6 inch pulley", unit="Nos")
+        self.sales = client_as("Sales")
+        self.operations = client_as("Operations")
+
+        create = self.sales.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "actorName": "Sales", "submit": False, "items": [{"productId": self.product.id, "quantity": 1, "targetPrice": 100}]},
+            format="json",
+        )
+        self.rfq_id = create.data["id"]  # Draft — Sales owns this stage
+
+    def _pdf(self, name="drawing.pdf", content=b"%PDF-1.4 fake"):
+        return SimpleUploadedFile(name, content, content_type="application/pdf")
+
+    def test_upload_succeeds_and_appears_on_the_rfq(self):
+        response = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/attachments/", {"file": self._pdf()}, format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(len(response.data["attachments"]), 1)
+        self.assertEqual(response.data["attachments"][0]["name"], "drawing.pdf")
+
+    def test_wrong_role_cannot_upload(self):
+        response = self.operations.post(f"/api/rfq/rfqs/{self.rfq_id}/attachments/", {"file": self._pdf()}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(RFQAttachment.objects.filter(rfq_id=self.rfq_id).count(), 0)
+
+    def test_disallowed_extension_is_rejected(self):
+        bad_file = SimpleUploadedFile("virus.exe", b"MZ fake exe", content_type="application/octet-stream")
+        response = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/attachments/", {"file": bad_file}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(RFQAttachment.objects.filter(rfq_id=self.rfq_id).count(), 0)
+
+    def test_oversized_file_is_rejected(self):
+        from .models import MAX_ATTACHMENT_SIZE_BYTES
+
+        huge = SimpleUploadedFile("big.pdf", b"0" * (MAX_ATTACHMENT_SIZE_BYTES + 1), content_type="application/pdf")
+        response = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/attachments/", {"file": huge}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    def test_attachment_count_cap_is_enforced(self):
+        from .models import MAX_ATTACHMENTS_PER_RFQ
+
+        rfq = RFQ.objects.get(id=self.rfq_id)
+        for i in range(MAX_ATTACHMENTS_PER_RFQ):
+            RFQAttachment.objects.create(rfq=rfq, file=self._pdf(f"f{i}.pdf"), original_filename=f"f{i}.pdf", size_bytes=10)
+        response = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/attachments/", {"file": self._pdf("one_too_many.pdf")}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    def test_download_returns_the_file_with_the_original_filename(self):
+        upload = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/attachments/", {"file": self._pdf(content=b"hello world")}, format="multipart")
+        attachment_id = upload.data["attachments"][0]["id"]
+        response = self.sales.get(f"/api/rfq/rfqs/{self.rfq_id}/attachments/{attachment_id}/download/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"hello world")
+        self.assertIn("drawing.pdf", response["Content-Disposition"])
+
+    def test_delete_removes_the_row_and_the_file_from_storage(self):
+        upload = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/attachments/", {"file": self._pdf()}, format="multipart")
+        attachment_id = upload.data["attachments"][0]["id"]
+        attachment = RFQAttachment.objects.get(id=attachment_id)
+        storage = attachment.file.storage
+        stored_name = attachment.file.name
+        self.assertTrue(storage.exists(stored_name))
+
+        response = self.sales.delete(f"/api/rfq/rfqs/{self.rfq_id}/attachments/{attachment_id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["attachments"]), 0)
+        self.assertFalse(RFQAttachment.objects.filter(id=attachment_id).exists())
+        self.assertFalse(storage.exists(stored_name))

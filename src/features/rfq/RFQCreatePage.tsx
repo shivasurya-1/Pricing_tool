@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Copy, Paperclip, X, FileSpreadsheet } from 'lucide-react'
 import { useDataStore } from '@/store/dataStore'
@@ -13,7 +13,7 @@ import { Modal } from '@/components/ui/Modal'
 import { PulleyTechDataForm, isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { applyFieldChange } from '@/lib/pulleyTechDataCalc'
 import type { Priority, RFQItem } from '@/types'
-import { formatDate } from '@/lib/format'
+import { formatDate, formatFileSize } from '@/lib/format'
 
 function summarizeTechData(values: RFQItem['technicalData']): string {
   if (!values) return ''
@@ -42,6 +42,7 @@ export function RFQCreatePage() {
   const customers = useDataStore((s) => s.customers)
   const products = useDataStore((s) => s.products)
   const createRFQ = useDataStore((s) => s.createRFQ)
+  const uploadRfqAttachment = useDataStore((s) => s.uploadRfqAttachment)
   const name = useAuthStore((s) => s.name)
   const pushToast = useUiStore((s) => s.pushToast)
 
@@ -71,7 +72,8 @@ export function RFQCreatePage() {
   const [customerRemarks, setCustomerRemarks] = useState('')
 
   const [items, setItems] = useState<Omit<RFQItem, 'id' | 'itemNo'>[]>([])
-  const [attachments, setAttachments] = useState<string[]>([])
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [internalNotes, setInternalNotes] = useState('')
   const [customerNotes, setCustomerNotes] = useState('')
 
@@ -169,6 +171,20 @@ export function RFQCreatePage() {
     customerNotes,
   })
 
+  // Files can't be uploaded before the RFQ exists (the upload endpoint needs an RFQ
+  // id) — they're staged locally and uploaded right after creation succeeds. A
+  // failure on one file surfaces a toast but doesn't block navigation; the user
+  // lands on the new RFQ's Detail page and can retry the upload there.
+  const uploadPendingFiles = async (rfqId: string) => {
+    for (const file of pendingFiles) {
+      try {
+        await uploadRfqAttachment(rfqId, file)
+      } catch {
+        // Error toast already shown by the store.
+      }
+    }
+  }
+
   const saveDraft = async () => {
     if (!customerId) {
       pushToast('Please select a customer before saving.', 'error')
@@ -176,6 +192,7 @@ export function RFQCreatePage() {
     }
     try {
       const rfq = await createRFQ(buildInput(), name, false)
+      await uploadPendingFiles(rfq.id)
       pushToast(`${rfq.rfqNumber} saved as draft.`, 'success')
       navigate(`/rfqs/${rfq.id}`)
     } catch {
@@ -191,6 +208,7 @@ export function RFQCreatePage() {
     }
     try {
       const rfq = await createRFQ(buildInput(), name, true)
+      await uploadPendingFiles(rfq.id)
       pushToast(`${rfq.rfqNumber} submitted for Operations review.`, 'success')
       navigate(`/rfqs/${rfq.id}`)
     } catch {
@@ -393,24 +411,31 @@ export function RFQCreatePage() {
         </Card>
 
         <Card>
-          <CardHeader title="5. Attachments" description="Frontend placeholder — no backend storage in this prototype" />
+          <CardHeader title="5. Attachments" description="Uploaded once the RFQ is saved — PDF, Word, Excel, or image files up to 15 MB." />
           <div className="space-y-2 p-4">
-            {attachments.map((name, i) => (
+            {pendingFiles.map((file, i) => (
               <div key={i} className="flex items-center justify-between rounded-md border border-[var(--color-border)] px-3 py-2 text-sm">
                 <span className="flex items-center gap-2">
-                  <Paperclip size={14} className="text-[var(--color-ink-faint)]" /> {name}
+                  <Paperclip size={14} className="text-[var(--color-ink-faint)]" /> {file.name}
+                  <span className="text-xs text-[var(--color-ink-faint)]">{formatFileSize(file.size)}</span>
                 </span>
-                <button onClick={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))} className="text-[var(--color-ink-faint)] hover:text-[var(--color-red)]">
+                <button onClick={() => setPendingFiles((prev) => prev.filter((_, idx) => idx !== i))} className="text-[var(--color-ink-faint)] hover:text-[var(--color-red)]">
                   <X size={14} />
                 </button>
               </div>
             ))}
-            <Button
-              size="sm"
-              variant="secondary"
-              icon={<Paperclip size={13} />}
-              onClick={() => setAttachments((prev) => [...prev, `Customer_Drawing_${prev.length + 1}.pdf`])}
-            >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                e.target.value = ''
+                if (file) setPendingFiles((prev) => [...prev, file])
+              }}
+            />
+            <Button size="sm" variant="secondary" icon={<Paperclip size={13} />} onClick={() => fileInputRef.current?.click()}>
               Add Attachment
             </Button>
           </div>

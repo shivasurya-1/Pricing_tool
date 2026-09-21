@@ -1,8 +1,10 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from accounts.models import Role
 from accounts.permissions import role_write_permission
 from django.db import transaction
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
@@ -11,7 +13,21 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .id_utils import next_quotation_number, next_rfq_number
-from .models import AppNotification, AuditEvent, Customer, CostBreakdownLine, Product, Quotation, RFQ, RFQItem, Vendor
+from .models import (
+    ALLOWED_ATTACHMENT_EXTENSIONS,
+    AppNotification,
+    AuditEvent,
+    Customer,
+    CostBreakdownLine,
+    MAX_ATTACHMENT_SIZE_BYTES,
+    MAX_ATTACHMENTS_PER_RFQ,
+    Product,
+    Quotation,
+    RFQ,
+    RFQAttachment,
+    RFQItem,
+    Vendor,
+)
 from .serializers import (
     AppNotificationSerializer,
     AuditEventSerializer,
@@ -76,6 +92,16 @@ def require_positive(value, field_name: str) -> float:
     if number <= 0:
         raise ValidationError({field_name: "Must be greater than zero."})
     return number
+
+
+def validate_attachment_upload(uploaded_file, existing_count: int) -> None:
+    if existing_count >= MAX_ATTACHMENTS_PER_RFQ:
+        raise ValidationError({"file": f"Maximum {MAX_ATTACHMENTS_PER_RFQ} attachments per RFQ."})
+    if uploaded_file.size > MAX_ATTACHMENT_SIZE_BYTES:
+        raise ValidationError({"file": "File exceeds the 15 MB limit."})
+    ext = Path(uploaded_file.name).suffix.lower()
+    if ext not in ALLOWED_ATTACHMENT_EXTENSIONS:
+        raise ValidationError({"file": f"'{ext}' files aren't allowed. Allowed: {', '.join(sorted(ALLOWED_ATTACHMENT_EXTENSIONS))}"})
 
 
 class CustomerViewSet(viewsets.ModelViewSet):
@@ -210,7 +236,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
                 payment_terms=data.get("paymentTerms", ""), delivery_terms=data.get("deliveryTerms", ""),
                 quotation_validity=data.get("quotationValidity", ""), incoterms=data.get("incoterms", ""),
                 tax_applicability=data.get("taxApplicability", ""), freight_requirement=data.get("freightRequirement", ""),
-                customer_remarks=data.get("customerRemarks", ""), attachments=[], internal_notes=data.get("internalNotes", ""),
+                customer_remarks=data.get("customerRemarks", ""), internal_notes=data.get("internalNotes", ""),
                 customer_notes=data.get("customerNotes", ""), stage=stage, status=stage, sales_person=actor_name,
                 created_at=now, updated_at=now,
                 value=sum(float(it.get("targetPrice", 0) or 0) * float(it.get("quantity", 0) or 0) for it in items_data),
@@ -336,6 +362,45 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         item.save(update_fields=["process_vendors"])
         touch(rfq)
         return Response(self.get_serializer(rfq).data)
+
+    # ---- attachments --------------------------------------------------------------
+    @action(detail=True, methods=["post"], url_path="attachments")
+    def upload_attachment(self, request, pk=None):
+        rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_role_can_act(role, rfq.stage)
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
+        uploaded_file = request.FILES.get("file")
+        if not uploaded_file:
+            raise ValidationError({"file": "Required."})
+        validate_attachment_upload(uploaded_file, rfq.attachment_files.count())
+        RFQAttachment.objects.create(
+            rfq=rfq, file=uploaded_file, original_filename=uploaded_file.name,
+            content_type=uploaded_file.content_type or "", size_bytes=uploaded_file.size,
+            uploaded_by=request.user,
+        )
+        return Response(self.get_serializer(rfq).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["delete"], url_path=r"attachments/(?P<attachment_id>[^/.]+)")
+    def delete_attachment(self, request, pk=None, attachment_id=None):
+        rfq = self.get_object()
+        _actor_name, role = self._actor(request)
+        try:
+            require_role_can_act(role, rfq.stage)
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
+        attachment = get_object_or_404(RFQAttachment, pk=attachment_id, rfq=rfq)
+        attachment.file.delete(save=False)
+        attachment.delete()
+        return Response(self.get_serializer(rfq).data)
+
+    @action(detail=True, methods=["get"], url_path=r"attachments/(?P<attachment_id>[^/.]+)/download")
+    def download_attachment(self, request, pk=None, attachment_id=None):
+        rfq = self.get_object()
+        attachment = get_object_or_404(RFQAttachment, pk=attachment_id, rfq=rfq)
+        return FileResponse(attachment.file.open("rb"), as_attachment=True, filename=attachment.original_filename)
 
     # ---- sourcing --------------------------------------------------------------
     @action(detail=True, methods=["patch"], url_path="sourcing-comment")

@@ -78,6 +78,8 @@ interface DataState {
 
   createRFQ: (input: NewRFQInput, actorName: string, submit: boolean) => Promise<RFQ>
   submitRFQ: (id: string, actorName: string) => Promise<void>
+  uploadRfqAttachment: (id: string, file: File) => Promise<void>
+  deleteRfqAttachment: (id: string, attachmentId: string) => Promise<void>
 
   saveOperationsReview: (id: string, review: OperationsReview) => Promise<void>
   approveOperations: (id: string, actorName: string) => Promise<void>
@@ -177,6 +179,19 @@ export const useDataStore = create<DataState>()((set, get) => ({
   submitRFQ: (id, actorName) =>
     withErrorToast(async () => {
       const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/submit/`, { actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  uploadRfqAttachment: (id, file) =>
+    withErrorToast(async () => {
+      const formData = new FormData()
+      formData.append('file', file)
+      const rfq = await api.postForm<RFQ>(`/rfq/rfqs/${id}/attachments/`, formData)
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+  deleteRfqAttachment: (id, attachmentId) =>
+    withErrorToast(async () => {
+      const rfq = await api.delete<RFQ>(`/rfq/rfqs/${id}/attachments/${attachmentId}/`)
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
     }),
 

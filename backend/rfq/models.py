@@ -7,6 +7,7 @@ see generate_id() below, which mirrors src/lib/id.ts's uid() helper.
 
 import uuid
 
+from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 
@@ -62,6 +63,19 @@ def generate_audit_id() -> str:
 
 def generate_notification_id() -> str:
     return generate_id("notif")
+
+
+def generate_attachment_id() -> str:
+    return generate_id("att")
+
+
+ALLOWED_ATTACHMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".png", ".jpg", ".jpeg"}
+MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024
+MAX_ATTACHMENTS_PER_RFQ = 20
+
+
+def attachment_upload_path(instance, filename: str) -> str:
+    return f"rfq_attachments/{instance.rfq_id}/{uuid.uuid4().hex[:10]}_{filename}"
 
 
 class Customer(models.Model):
@@ -145,7 +159,6 @@ class RFQ(models.Model):
     freight_requirement = models.CharField(max_length=200, blank=True)
     customer_remarks = models.TextField(blank=True)
 
-    attachments = models.JSONField(default=list, blank=True)
     internal_notes = models.TextField(blank=True)
     customer_notes = models.TextField(blank=True)
 
@@ -188,6 +201,23 @@ class RFQItem(models.Model):
 
     class Meta:
         ordering = ["item_no"]
+
+
+class RFQAttachment(models.Model):
+    id = models.CharField(primary_key=True, max_length=40, default=generate_attachment_id)
+    rfq = models.ForeignKey(RFQ, on_delete=models.CASCADE, related_name="attachment_files")
+    file = models.FileField(upload_to=attachment_upload_path, max_length=500)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100, blank=True)
+    size_bytes = models.PositiveIntegerField(default=0)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+
+    def __str__(self) -> str:
+        return self.original_filename
 
 
 class CostBreakdownLine(models.Model):
