@@ -107,6 +107,8 @@ interface DataState {
 
   upsertCustomer: (c: Customer) => Promise<void>
   upsertVendor: (v: Vendor) => Promise<void>
+  upsertProduct: (p: Product) => Promise<void>
+  deleteProduct: (id: string) => Promise<void>
 }
 
 /** Every mutating action runs through this so a failed request surfaces a toast even
@@ -333,5 +335,19 @@ export const useDataStore = create<DataState>()((set, get) => ({
       set((s) => ({
         vendors: isNew ? [saved, ...s.vendors] : s.vendors.map((x) => (x.id === saved.id ? saved : x)),
       }))
+    }),
+
+  upsertProduct: (p) =>
+    withErrorToast(async () => {
+      const isNew = !p.id
+      const saved = isNew ? await api.post<Product>('/rfq/products/', p) : await api.patch<Product>(`/rfq/products/${p.id}/`, p)
+      set((s) => ({
+        products: isNew ? [saved, ...s.products] : s.products.map((x) => (x.id === saved.id ? saved : x)),
+      }))
+    }),
+  deleteProduct: (id) =>
+    withErrorToast(async () => {
+      await api.delete(`/rfq/products/${id}/`)
+      set((s) => ({ products: s.products.filter((x) => x.id !== id) }))
     }),
 }))

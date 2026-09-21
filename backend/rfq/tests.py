@@ -183,9 +183,35 @@ class RFQWorkflowTests(TestCase):
         response = self.sales.post("/api/rfq/customers/", {"code": "CUST-999", "name": "New Co"}, format="json")
         self.assertEqual(response.status_code, 201)
 
-    def test_products_are_read_only_for_everyone(self):
-        response = self.sales.post("/api/rfq/products/", {"code": "PROD-999", "name": "New pulley"}, format="json")
-        self.assertEqual(response.status_code, 405)
+    # ---- products CRUD ------------------------------------------------------------
+
+    def test_only_controlling_or_admin_can_write_products(self):
+        response = self.sales.post("/api/rfq/products/", {"code": "PROD-999", "name": "New pulley", "unit": "Nos"}, format="json")
+        self.assertEqual(response.status_code, 403)
+        response = self.controlling.post("/api/rfq/products/", {"code": "PROD-999", "name": "New pulley", "unit": "Nos"}, format="json")
+        self.assertEqual(response.status_code, 201)
+
+    def test_anyone_authenticated_can_read_products(self):
+        response = self.sales.get("/api/rfq/products/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_product_can_be_updated_and_deleted(self):
+        created = self.controlling.post("/api/rfq/products/", {"code": "PROD-998", "name": "Temp pulley", "unit": "Nos"}, format="json")
+        product_id = created.data["id"]
+
+        response = self.controlling.patch(f"/api/rfq/products/{product_id}/", {"name": "Renamed pulley"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["name"], "Renamed pulley")
+
+        response = self.controlling.delete(f"/api/rfq/products/{product_id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Product.objects.filter(id=product_id).exists())
+
+    def test_deleting_a_product_still_used_by_an_rfq_item_is_rejected(self):
+        self._create_rfq()  # uses self.product
+        response = self.controlling.delete(f"/api/rfq/products/{self.product.id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Product.objects.filter(id=self.product.id).exists())
 
     # ---- quotation status update -------------------------------------------------
 

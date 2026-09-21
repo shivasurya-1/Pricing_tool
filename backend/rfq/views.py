@@ -4,6 +4,7 @@ from pathlib import Path
 from accounts.models import Role
 from accounts.permissions import role_write_permission
 from django.db import transaction
+from django.db.models import ProtectedError
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import mixins, status, viewsets
@@ -121,12 +122,16 @@ class VendorViewSet(viewsets.ModelViewSet):
     permission_classes = [role_write_permission(("Sourcing", "Controlling"))]
 
 
-class ProductViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    """Read-only in the frontend too — no add/edit UI exists for the pulley catalog."""
-
+class ProductViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all().order_by("name")
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [role_write_permission(("Controlling",))]
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            return super().destroy(request, *args, **kwargs)
+        except ProtectedError:
+            raise ValidationError({"detail": "This product is used by one or more RFQ items and can't be deleted."})
 
 
 class AuditEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
