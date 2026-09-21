@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge, type Tone } from '@/components/ui/Badge'
 import { DataTable, type Column } from '@/components/ui/DataTable'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { downloadCsv } from '@/lib/csv'
 import type { Quotation, QuotationStatus } from '@/types'
 import { useUiStore } from '@/store/uiStore'
 
@@ -55,13 +56,22 @@ export function QuotationListPage() {
 
   const statuses: QuotationStatus[] = ['Draft', 'Pending Approval', 'Approved', 'Sent', 'Viewed', 'Negotiation', 'Won', 'Lost', 'Expired']
 
+  const exportCsv = () => {
+    downloadCsv(
+      'quotations.csv',
+      ['Quotation #', 'RFQ #', 'Customer', 'Quote Date', 'Amount', 'Currency', 'Margin %', 'Status', 'Valid Until', 'Sales Person'],
+      filtered.map((q) => [q.quotationNumber, q.rfqNumber, q.customerName, formatDate(q.quoteDate), q.amount, q.currency, q.marginPercent.toFixed(1), q.status, formatDate(q.validUntil), q.salesPerson]),
+    )
+    pushToast(`${filtered.length} quotations exported.`, 'success')
+  }
+
   return (
     <div>
       <PageHeader
         title="Quotations"
         description={`${filtered.length} of ${quotations.length} quotations`}
         actions={
-          <Button variant="secondary" icon={<Download size={15} />} onClick={() => pushToast('Quotation list exported (mock).', 'success')}>
+          <Button variant="secondary" icon={<Download size={15} />} onClick={exportCsv}>
             Export
           </Button>
         }

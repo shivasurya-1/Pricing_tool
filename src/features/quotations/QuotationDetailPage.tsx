@@ -13,6 +13,7 @@ import { Modal } from '@/components/ui/Modal'
 import { QuotationPreview } from '@/features/quotations/QuotationPreview'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { LOSS_REASONS } from '@/lib/workflow'
+import { downloadFile, ApiError } from '@/lib/apiClient'
 import type { QuotationStatus } from '@/types'
 
 const RESPONSE_OPTIONS: QuotationStatus[] = ['Sent', 'Viewed', 'Negotiation', 'Won', 'Lost']
@@ -30,6 +31,7 @@ export function QuotationDetailPage() {
   const [showPreview, setShowPreview] = useState(false)
   const [lossModalOpen, setLossModalOpen] = useState(false)
   const [lossReason, setLossReason] = useState('')
+  const [downloading, setDownloading] = useState(false)
 
   const quotation = quotations.find((q) => q.id === id)
   const rfq = rfqs.find((r) => r.id === quotation?.rfqId)
@@ -57,13 +59,27 @@ export function QuotationDetailPage() {
               {showPreview ? 'Hide Preview' : 'Preview'}
             </Button>
             <Button variant="secondary" icon={<Printer size={14} />} onClick={() => window.print()}>
-              Generate PDF
+              Print
             </Button>
             <Button variant="secondary" icon={<Mail size={14} />} onClick={() => pushToast('Quotation emailed to customer (mock).', 'success')}>
               Send Email
             </Button>
-            <Button variant="secondary" icon={<Download size={14} />} onClick={() => pushToast('Download started (mock).', 'success')}>
-              Download
+            <Button
+              variant="secondary"
+              icon={<Download size={14} />}
+              disabled={downloading}
+              onClick={async () => {
+                setDownloading(true)
+                try {
+                  await downloadFile(`/rfq/quotations/${quotation.id}/pdf/`, `${quotation.quotationNumber}.pdf`)
+                } catch (err) {
+                  pushToast(err instanceof ApiError ? err.message : 'Failed to download PDF.', 'error')
+                } finally {
+                  setDownloading(false)
+                }
+              }}
+            >
+              {downloading ? 'Downloading...' : 'Download PDF'}
             </Button>
             {quotation.status === 'Draft' && (
               <Button

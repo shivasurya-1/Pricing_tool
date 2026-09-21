@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button'
 import { CategoryBarChart, DonutChart } from '@/components/charts/Charts'
 import { CATEGORICAL } from '@/components/charts/palette'
 import { formatCurrency } from '@/lib/format'
+import { downloadCsv } from '@/lib/csv'
 import { STAGE_ORDER } from '@/lib/workflow'
 
 function ToggleView({ mode, onChange }: { mode: 'chart' | 'table'; onChange: (m: 'chart' | 'table') => void }) {
@@ -80,13 +81,36 @@ export function ReportsPage() {
     }))
   }, [rfqs])
 
+  const exportCsv = () => {
+    const rows: (string | number)[][] = []
+    const section = (title: string, data: { name: string; value: string | number }[]) => {
+      rows.push([title])
+      rows.push(...data.map((d) => [d.name, d.value]))
+      rows.push([])
+    }
+    section('RFQ by Status', rfqByStatus)
+    section('RFQ by Sales Person', rfqBySales)
+    section('Quotations by Status', quotesByStatus)
+    section('Avg Margin % by Customer', marginByCustomer.map((m) => ({ name: m.name, value: m.margin })))
+    section('Team Performance', teamPerformance.map((t) => ({ name: t.name, value: `${t.handled} handled, ${t.won} won` })))
+    section('Audit Summary', [
+      { name: 'Total audit events', value: auditLog.length },
+      { name: 'Approvals recorded', value: auditLog.filter((a) => a.action.toLowerCase().includes('approv')).length },
+      { name: 'Rejections recorded', value: auditLog.filter((a) => a.action.toLowerCase().includes('reject')).length },
+      { name: 'Send-backs recorded', value: auditLog.filter((a) => a.action.toLowerCase().includes('sent back')).length },
+      { name: 'Total value quoted', value: formatCurrency(quotations.reduce((s, q) => s + q.amount, 0)) },
+    ])
+    downloadCsv('reports.csv', ['Metric', 'Value'], rows)
+    pushToast('Report exported.', 'success')
+  }
+
   return (
     <div>
       <PageHeader
         title="Reports"
         description="Operational reporting across RFQs, quotations, pricing and team performance"
         actions={
-          <Button variant="secondary" icon={<Download size={15} />} onClick={() => pushToast('Report exported (mock).', 'success')}>
+          <Button variant="secondary" icon={<Download size={15} />} onClick={exportCsv}>
             Export
           </Button>
         }

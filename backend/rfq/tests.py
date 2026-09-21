@@ -360,3 +360,49 @@ class RFQAttachmentTests(TestCase):
         self.assertEqual(len(response.data["attachments"]), 0)
         self.assertFalse(RFQAttachment.objects.filter(id=attachment_id).exists())
         self.assertFalse(storage.exists(stored_name))
+
+
+class QuotationPdfTests(TestCase):
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-4", code="CUST-004", name="Acme Pulleys")
+        self.product = Product.objects.create(id="prod-4", code="PROD-4", name="6 inch pulley", unit="Nos")
+        self.sales = client_as("Sales")
+        self.operations = client_as("Operations")
+        self.sourcing = client_as("Sourcing")
+        self.controlling = client_as("Controlling")
+        self.approval = client_as("Approval Panel")
+
+        create = self.sales.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "actorName": "Sales", "submit": True, "items": [{"productId": self.product.id, "quantity": 2, "targetPrice": 100}]},
+            format="json",
+        )
+        rfq_id = create.data["id"]
+        item_id = create.data["items"][0]["id"]
+        self.operations.post(f"/api/rfq/rfqs/{rfq_id}/approve-operations/", {"actorName": "Ops"}, format="json")
+        self.sourcing.patch(f"/api/rfq/rfqs/{rfq_id}/item-sourcing-confirmed/", {"itemId": item_id, "confirmed": True}, format="json")
+        self.sourcing.post(f"/api/rfq/rfqs/{rfq_id}/submit-sourcing/", {"actorName": "Sourcing"}, format="json")
+        self.controlling.post(
+            f"/api/rfq/rfqs/{rfq_id}/cost-breakdown/",
+            {"lines": [{"itemId": item_id, "baseCost": 80, "sellingPrice": 100, "finalPrice": 220}]},
+            format="json",
+        )
+        self.controlling.post(f"/api/rfq/rfqs/{rfq_id}/submit-controlling/", {"actorName": "Controlling"}, format="json")
+        self.approval.post(f"/api/rfq/rfqs/{rfq_id}/approve-final/", {"actorName": "Approver"}, format="json")
+        gen = self.sales.post(f"/api/rfq/rfqs/{rfq_id}/generate-quotation/", {"actorName": "Sales"}, format="json")
+        self.quotation_id = gen.data["id"]
+
+    def test_pdf_download_returns_a_real_pdf(self):
+        response = self.sales.get(f"/api/rfq/quotations/{self.quotation_id}/pdf/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.assertGreater(len(response.content), 1000)
+
+    def test_any_authenticated_role_can_download(self):
+        response = self.operations.get(f"/api/rfq/quotations/{self.quotation_id}/pdf/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_unauthenticated_request_is_rejected(self):
+        response = APIClient().get(f"/api/rfq/quotations/{self.quotation_id}/pdf/")
+        self.assertIn(response.status_code, (401, 403))

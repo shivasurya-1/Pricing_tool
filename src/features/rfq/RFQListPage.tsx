@@ -9,6 +9,7 @@ import { DataTable, type Column } from '@/components/ui/DataTable'
 import { StatusBadge } from '@/components/StatusBadge'
 import { PriorityBadge } from '@/components/PriorityBadge'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { downloadCsv } from '@/lib/csv'
 import type { RFQ } from '@/types'
 import { useUiStore } from '@/store/uiStore'
 
@@ -57,6 +58,18 @@ export function RFQListPage() {
     },
   ]
 
+  const exportCsv = () => {
+    downloadCsv(
+      'rfqs.csv',
+      ['RFQ Number', 'Customer', 'Project', 'Sales Person', 'RFQ Date', 'Required Delivery', 'Items', 'Value', 'Currency', 'Stage', 'Priority', 'Last Updated'],
+      filtered.map((r) => [
+        r.rfqNumber, r.endCustomer, r.projectName, r.salesPerson, formatDate(r.rfqReceivedDate), formatDate(r.requiredDeliveryDate),
+        r.items.length, r.value, r.currency, r.stage, r.priority, formatDate(r.updatedAt),
+      ]),
+    )
+    pushToast(`${filtered.length} RFQs exported.`, 'success')
+  }
+
   const clearFilters = () => {
     setSearch('')
     setStageFilter('')
@@ -71,7 +84,7 @@ export function RFQListPage() {
         description={`${filtered.length} of ${rfqs.length} RFQs`}
         actions={
           <>
-            <Button variant="secondary" icon={<Download size={15} />} onClick={() => pushToast('RFQ list exported (mock).', 'success')}>
+            <Button variant="secondary" icon={<Download size={15} />} onClick={exportCsv}>
               Export
             </Button>
             <Button variant="primary" icon={<Plus size={15} />} onClick={() => navigate('/rfqs/new')} data-tour="primary-action">

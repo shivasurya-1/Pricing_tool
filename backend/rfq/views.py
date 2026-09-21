@@ -4,7 +4,7 @@ from pathlib import Path
 from accounts.models import Role
 from accounts.permissions import role_write_permission
 from django.db import transaction
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
@@ -13,6 +13,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .id_utils import next_quotation_number, next_rfq_number
+from .pdf import build_quotation_pdf
 from .models import (
     ALLOWED_ATTACHMENT_EXTENSIONS,
     AppNotification,
@@ -190,6 +191,14 @@ class QuotationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             touch(rfq)
 
         return Response(self.get_serializer(quotation).data)
+
+    @action(detail=True, methods=["get"], url_path="pdf")
+    def download_pdf(self, request, pk=None):
+        quotation = self.get_object()
+        pdf_bytes = build_quotation_pdf(quotation, quotation.rfq)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{quotation.quotation_number}.pdf"'
+        return response
 
 
 class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
