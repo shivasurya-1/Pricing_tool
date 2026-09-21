@@ -7,14 +7,26 @@ from pathlib import Path
 
 import dj_database_url
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-dev-only-change-me")
+_INSECURE_DEFAULT_SECRET_KEY = "django-insecure-dev-only-change-me"
+SECRET_KEY = os.environ.get("SECRET_KEY", _INSECURE_DEFAULT_SECRET_KEY)
 DEBUG = os.environ.get("DEBUG", "true").lower() == "true"
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+
+# Fail loudly instead of silently serving production traffic with a guessable,
+# repo-visible key — this can only happen if a deployment's .env is missing
+# SECRET_KEY entirely, but "insecure key + DEBUG=False" is exactly the state that
+# looks fine until someone forges a session/signed cookie.
+if not DEBUG and SECRET_KEY == _INSECURE_DEFAULT_SECRET_KEY:
+    raise ImproperlyConfigured(
+        "SECRET_KEY is missing from the environment and DEBUG=False — refusing to "
+        "start with the insecure default key in production. Set SECRET_KEY in .env."
+    )
 
 INSTALLED_APPS = [
     "django.contrib.admin",

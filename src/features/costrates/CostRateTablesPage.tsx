@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useFormulaStore, type CostRateValueDto } from '@/store/formulaStore'
 import { useReferenceStore, type LaggingCatalogDto } from '@/store/referenceStore'
 import { formatCurrency } from '@/lib/format'
@@ -28,8 +29,8 @@ const CATEGORY_SECTIONS: { category: string; title: string; description?: string
 ]
 
 export function CostRateTablesPage() {
-  const { costRatesFull, createCostRate, updateCostRate, deleteCostRate } = useFormulaStore()
-  const { lagging, createLagging, deleteLagging } = useReferenceStore()
+  const { loaded: formulasLoaded, loading: formulasLoading, costRatesFull, createCostRate, updateCostRate, deleteCostRate } = useFormulaStore()
+  const { loaded: refLoaded, loading: refLoading, lagging, createLagging, deleteLagging } = useReferenceStore()
 
   const byCategory = useMemo(() => {
     const grouped: Record<string, CostRateValueDto[]> = {}
@@ -50,6 +51,7 @@ export function CostRateTablesPage() {
         <p>Add, edit, or delete a rate here and every Pricing Tool calculation picks it up immediately.</p>
       </div>
 
+      <RequireLoaded loaded={formulasLoaded && refLoaded} loading={formulasLoading || refLoading}>
       <div className="space-y-5">
         {CATEGORY_SECTIONS.map((section) => (
           <ReferenceCrudTable
@@ -92,6 +94,7 @@ export function CostRateTablesPage() {
           onDelete={deleteLagging}
         />
       </div>
+      </RequireLoaded>
     </div>
   )
 }

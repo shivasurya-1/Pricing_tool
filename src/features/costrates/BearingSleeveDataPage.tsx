@@ -1,6 +1,7 @@
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useReferenceStore, type BearingCatalogDto, type HousingCatalogDto, type SleeveCatalogDto } from '@/store/referenceStore'
 import { formatCurrency } from '@/lib/format'
 
@@ -27,7 +28,8 @@ const housingColumns: ReferenceColumn<HousingCatalogDto>[] = [
 ]
 
 export function BearingSleeveDataPage() {
-  const { bearings, sleeves, housings, createBearing, deleteBearing, createSleeve, deleteSleeve, createHousing, deleteHousing } = useReferenceStore()
+  const { loaded, loading, bearings, sleeves, housings, createBearing, deleteBearing, createSleeve, deleteSleeve, createHousing, deleteHousing } =
+    useReferenceStore()
 
   return (
     <div>
@@ -44,6 +46,7 @@ export function BearingSleeveDataPage() {
         </p>
       </div>
 
+      <RequireLoaded loaded={loaded} loading={loading}>
       <div className="space-y-5">
         <ReferenceCrudTable
           title="A. Spherical Roller Bearings"
@@ -100,6 +103,7 @@ export function BearingSleeveDataPage() {
           onDelete={deleteHousing}
         />
       </div>
+      </RequireLoaded>
     </div>
   )
 }

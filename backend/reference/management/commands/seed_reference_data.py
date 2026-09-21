@@ -177,8 +177,18 @@ class Command(BaseCommand):
         )
 
     def seed_in_house_hours(self):
-        hours_ts = (FRONTEND_SRC / "inHouseHoursRates.ts").read_text(encoding="utf-8")
-        rows = parse_ts_array(hours_ts, "IN_HOUSE_HOURS_RATES")
+        # Hand-transcribed, same as seed_cost_rates()/seed_raw_forging_rates() above —
+        # the frontend's inHouseHoursRates.ts this used to be parsed from has since
+        # been deleted (it had no importers left once MhrLhrCalculatorPage.tsx moved
+        # to reading this same data live from the backend).
+        rows = [
+            dict(costHead="10b. Rolling / Bending Shell", operation="Rolling / bending", costCentre="—", activityDescription="C1. Rolling / Bending Shell", mhrRate=79.01),
+            dict(costHead="10c. Welding – Shell & Hub", operation="Welding (MIG/MAG) / Grinding-finishing", costCentre="—", activityDescription="C2. Welding – Shell & Hub", mhrRate=24.52),
+            dict(costHead="10d. Machining / Turning Body", operation="Lathe turning", costCentre="—", activityDescription="C3. Machining / Turning Body", mhrRate=42.90),
+            dict(costHead="10p. Assembly + Engineering", operation="Engineering / design", costCentre="—", activityDescription="C4. Assembly + Engineering", mhrRate=17.03),
+            dict(costHead="10q. Testing / Inspection / QC", operation="Testing / Inspection", costCentre="—", activityDescription="C5. Testing / Inspection / QC", mhrRate=12.96),
+            dict(costHead="10o. Painting & Surface Prep", operation="Engineering / design", costCentre="—", activityDescription="C6. Painting & Surface Prep", mhrRate=0),
+        ]
         for order, row in enumerate(rows):
             InHouseHourRate.objects.update_or_create(
                 cost_head=row["costHead"],

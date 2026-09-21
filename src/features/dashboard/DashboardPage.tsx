@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
+import { useDataStore } from '@/store/dataStore'
 import { PageHeader } from '@/components/PageHeader'
+import { EmptyState } from '@/components/EmptyState'
 import { startTour } from '@/lib/tour'
 import { SalesDashboard } from '@/features/dashboard/SalesDashboard'
 import { OperationsDashboard } from '@/features/dashboard/OperationsDashboard'
@@ -23,6 +25,10 @@ export function DashboardPage() {
   const name = useAuthStore((s) => s.name)
   const toursSeen = useAuthStore((s) => s.toursSeen)
   const markTourSeen = useAuthStore((s) => s.markTourSeen)
+  // The very first thing a user sees after logging in — without this, a slow initial
+  // fetch renders every KPI card/chart as "0" for a couple of seconds, which reads as
+  // "the app is broken" rather than "still loading."
+  const dataLoading = useDataStore((s) => s.loading)
 
   useEffect(() => {
     if (!toursSeen[role]) {
@@ -40,7 +46,7 @@ export function DashboardPage() {
   return (
     <div>
       <PageHeader title={`${role} Dashboard`} description={`Welcome back, ${name}. Here's what needs your attention today.`} />
-      <Dashboard />
+      {dataLoading ? <EmptyState title="Loading your dashboard..." /> : <Dashboard />}
     </div>
   )
 }

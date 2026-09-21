@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useReferenceStore, type RawForgingRateDto } from '@/store/referenceStore'
 import { formatCurrency } from '@/lib/format'
 
@@ -27,7 +28,7 @@ const columns: ReferenceColumn<RawForgingRateDto>[] = [
 ]
 
 export function RawForgingPricesPage() {
-  const { rawForgingRates, createRawForgingRate, updateRawForgingRate, deleteRawForgingRate } = useReferenceStore()
+  const { loaded, loading, rawForgingRates, createRawForgingRate, updateRawForgingRate, deleteRawForgingRate } = useReferenceStore()
 
   const shaftRows = useMemo(() => rawForgingRates.filter((r) => r.part === 'shaft'), [rawForgingRates])
   const shellRows = useMemo(() => rawForgingRates.filter((r) => r.part === 'shell'), [rawForgingRates])
@@ -41,6 +42,7 @@ export function RawForgingPricesPage() {
         <p>The row flagged as the active default is the one this app's Pricing Tool actually uses for its fallback rate.</p>
       </div>
 
+      <RequireLoaded loaded={loaded} loading={loading}>
       <div className="space-y-5">
         <ReferenceCrudTable
           title="Shaft"
@@ -85,6 +87,7 @@ export function RawForgingPricesPage() {
           onDelete={deleteRawForgingRate}
         />
       </div>
+      </RequireLoaded>
     </div>
   )
 }

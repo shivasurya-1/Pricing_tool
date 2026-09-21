@@ -7,6 +7,7 @@ see generate_id() below, which mirrors src/lib/id.ts's uid() helper.
 
 import uuid
 
+from django.core.validators import MinValueValidator
 from django.db import models
 
 STATUS_ACTIVE_INACTIVE = [("Active", "Active"), ("Inactive", "Inactive")]
@@ -175,11 +176,11 @@ class RFQItem(models.Model):
     product_code = models.CharField(max_length=30, blank=True)
     product_name = models.CharField(max_length=200, blank=True)
     description = models.TextField(blank=True)
-    quantity = models.FloatField(default=1)
+    quantity = models.FloatField(default=1, validators=[MinValueValidator(0)])
     unit = models.CharField(max_length=30, blank=True)
     specification = models.TextField(blank=True)
     required_delivery = models.CharField(max_length=40, blank=True)
-    target_price = models.FloatField(default=0)
+    target_price = models.FloatField(default=0, validators=[MinValueValidator(0)])
     remarks = models.TextField(blank=True)
     technical_data = models.JSONField(default=dict, blank=True)
     sourcing_confirmed = models.BooleanField(default=False)
@@ -190,19 +191,23 @@ class RFQItem(models.Model):
 
 
 class CostBreakdownLine(models.Model):
+    # adjusted_cost/margin_percent/margin_value/tax_percent/tax_value are derived and
+    # deliberately left unrestricted (e.g. margin_value is legitimately negative if
+    # Controlling is knowingly pricing an item below cost) — only the inputs a client
+    # submits directly are constrained to non-negative, matching the view-level checks.
     item = models.OneToOneField(RFQItem, on_delete=models.CASCADE, related_name="cost_breakdown")
-    base_cost = models.FloatField(default=0)
-    freight = models.FloatField(default=0)
-    duties = models.FloatField(default=0)
-    other_charges = models.FloatField(default=0)
-    discount = models.FloatField(default=0)
+    base_cost = models.FloatField(default=0, validators=[MinValueValidator(0)])
+    freight = models.FloatField(default=0, validators=[MinValueValidator(0)])
+    duties = models.FloatField(default=0, validators=[MinValueValidator(0)])
+    other_charges = models.FloatField(default=0, validators=[MinValueValidator(0)])
+    discount = models.FloatField(default=0, validators=[MinValueValidator(0)])
     adjusted_cost = models.FloatField(default=0)
     margin_percent = models.FloatField(default=0)
     margin_value = models.FloatField(default=0)
-    selling_price = models.FloatField(default=0)
+    selling_price = models.FloatField(default=0, validators=[MinValueValidator(0)])
     tax_percent = models.FloatField(default=0)
     tax_value = models.FloatField(default=0)
-    final_price = models.FloatField(default=0)
+    final_price = models.FloatField(default=0, validators=[MinValueValidator(0)])
 
 
 class Quotation(models.Model):

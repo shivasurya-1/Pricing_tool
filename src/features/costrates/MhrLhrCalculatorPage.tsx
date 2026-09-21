@@ -1,6 +1,7 @@
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useReferenceStore, type InHouseHourRateDto } from '@/store/referenceStore'
 import { formatCurrency } from '@/lib/format'
 
@@ -13,7 +14,7 @@ const columns: ReferenceColumn<InHouseHourRateDto>[] = [
 ]
 
 export function MhrLhrCalculatorPage() {
-  const { inHouseHourRates, createInHouseHourRate, updateInHouseHourRate, deleteInHouseHourRate } = useReferenceStore()
+  const { loaded, loading, inHouseHourRates, createInHouseHourRate, updateInHouseHourRate, deleteInHouseHourRate } = useReferenceStore()
 
   return (
     <div>
@@ -27,6 +28,7 @@ export function MhrLhrCalculatorPage() {
         </p>
       </div>
 
+      <RequireLoaded loaded={loaded} loading={loading}>
       <ReferenceCrudTable
         title="In-House Hours"
         rows={inHouseHourRates}
@@ -45,6 +47,7 @@ export function MhrLhrCalculatorPage() {
         onUpdate={updateInHouseHourRate}
         onDelete={deleteInHouseHourRate}
       />
+      </RequireLoaded>
     </div>
   )
 }

@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/EmptyState'
 import { useDataStore } from '@/store/dataStore'
+import { useFormulaStore } from '@/store/formulaStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { formatDate } from '@/lib/format'
 import {
@@ -52,6 +53,10 @@ function baselineStateForItem(item: RFQItem | undefined): Record<string, RowStat
 export function DeliverySchedulePage() {
   const navigate = useNavigate()
   const rfqs = useDataStore((s) => s.rfqs)
+  const costRates = useFormulaStore((s) => s.costRates)
+  // "deliverySafetyFactor" is a live-editable Global cost rate (Cost Rate Tables page) —
+  // fall back to the static default only if the backend never loaded.
+  const deliverySafetyFactor = costRates.deliverySafetyFactor ?? PULLEY_COST_RATES.deliverySafetyFactor
   const rfqsWithTechData = useMemo(() => rfqs.filter((r) => r.items.some((it) => isTechDataFilled(it.technicalData))), [rfqs])
 
   const [rfqId, setRfqId] = useState(rfqsWithTechData[0]?.id ?? '')
@@ -84,8 +89,8 @@ export function DeliverySchedulePage() {
   const maxGroupDays = Math.max(0, ...MAX_GROUP_KEYS.map((k) => days[k] ?? 0))
   const sumGroupDays = SUM_GROUP_KEYS.reduce((sum, k) => sum + (days[k] ?? 0), 0)
   const totalCalendarDays = maxGroupDays + sumGroupDays
-  const deliveryWeeks = (totalCalendarDays / 7) * PULLEY_COST_RATES.deliverySafetyFactor
-  const expectedDispatchDate = new Date(Date.now() + totalCalendarDays * PULLEY_COST_RATES.deliverySafetyFactor * 86400000)
+  const deliveryWeeks = (totalCalendarDays / 7) * deliverySafetyFactor
+  const expectedDispatchDate = new Date(Date.now() + totalCalendarDays * deliverySafetyFactor * 86400000)
 
   const requiredDate = item ? new Date(item.requiredDelivery) : undefined
   const atRisk = requiredDate ? expectedDispatchDate.getTime() > requiredDate.getTime() : false

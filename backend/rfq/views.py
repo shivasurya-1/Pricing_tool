@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from accounts.models import Role
 from accounts.permissions import role_write_permission
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
@@ -56,6 +57,27 @@ def touch(rfq: RFQ) -> None:
     rfq.save()
 
 
+def require_non_negative(value, field_name: str) -> float:
+    """create()/save_cost_breakdown() build model instances directly from raw request
+    data rather than through a ModelSerializer, so nothing was rejecting a negative
+    quantity or price before this — a client could submit -5 units or a negative
+    selling price and it would just save."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValidationError({field_name: "Must be a number."})
+    if number < 0:
+        raise ValidationError({field_name: "Cannot be negative."})
+    return number
+
+
+def require_positive(value, field_name: str) -> float:
+    number = require_non_negative(value, field_name)
+    if number <= 0:
+        raise ValidationError({field_name: "Must be greater than zero."})
+    return number
+
+
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all().order_by("-updated_at")
     serializer_class = CustomerSerializer
@@ -89,7 +111,7 @@ class AuditEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
 
 class NotificationViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    queryset = AppNotification.objects.all()
+    queryset = AppNotification.objects.select_related("rfq", "quotation").all()
     serializer_class = AppNotificationSerializer
     permission_classes = [IsAuthenticated]
 
@@ -166,38 +188,44 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         actor_name = data.get("actorName", "")
         stage = "Operations Review" if submit else "Draft"
 
+        items_data = data.get("items", [])
+        for i, it in enumerate(items_data):
+            require_positive(it.get("quantity", 1), f"items[{i}].quantity")
+            require_non_negative(it.get("targetPrice", 0), f"items[{i}].targetPrice")
+
         existing_numbers = list(RFQ.objects.values_list("rfq_number", flat=True))
         rfq_number = next_rfq_number(existing_numbers)
         now = now_iso()
 
-        rfq = RFQ.objects.create(
-            id=rfq_number.lower(), rfq_number=rfq_number, customer=customer, customer_code=customer.code,
-            contact_person=data.get("contactPerson", ""), contact_email=data.get("contactEmail", ""),
-            contact_phone=data.get("contactPhone", ""), customer_reference=data.get("customerReference", ""),
-            rfq_received_date=data.get("rfqReceivedDate", ""), project_name=data.get("projectName", ""),
-            project_code=data.get("projectCode", ""), quote_reference=data.get("quoteReference", ""),
-            end_customer=data.get("endCustomer") or customer.name, location=data.get("location", ""),
-            industry=data.get("industry", ""), required_delivery_date=data.get("requiredDeliveryDate", ""),
-            priority=data.get("priority", "Medium"), currency=data.get("currency", "INR"),
-            payment_terms=data.get("paymentTerms", ""), delivery_terms=data.get("deliveryTerms", ""),
-            quotation_validity=data.get("quotationValidity", ""), incoterms=data.get("incoterms", ""),
-            tax_applicability=data.get("taxApplicability", ""), freight_requirement=data.get("freightRequirement", ""),
-            customer_remarks=data.get("customerRemarks", ""), attachments=[], internal_notes=data.get("internalNotes", ""),
-            customer_notes=data.get("customerNotes", ""), stage=stage, status=stage, sales_person=actor_name,
-            created_at=now, updated_at=now,
-            value=sum(float(it.get("targetPrice", 0) or 0) * float(it.get("quantity", 0) or 0) for it in data.get("items", [])),
-            target_margin_percent=15,
-        )
-
-        for i, it in enumerate(data.get("items", [])):
-            product = get_object_or_404(Product, pk=it.get("productId"))
-            RFQItem.objects.create(
-                rfq=rfq, item_no=i + 1, product=product, product_code=it.get("productCode", product.code),
-                product_name=it.get("productName", product.name), description=it.get("description", ""),
-                quantity=it.get("quantity", 1), unit=it.get("unit", ""), specification=it.get("specification", ""),
-                required_delivery=it.get("requiredDelivery", ""), target_price=it.get("targetPrice", 0),
-                remarks=it.get("remarks", ""), technical_data=it.get("technicalData") or {},
+        with transaction.atomic():
+            rfq = RFQ.objects.create(
+                id=rfq_number.lower(), rfq_number=rfq_number, customer=customer, customer_code=customer.code,
+                contact_person=data.get("contactPerson", ""), contact_email=data.get("contactEmail", ""),
+                contact_phone=data.get("contactPhone", ""), customer_reference=data.get("customerReference", ""),
+                rfq_received_date=data.get("rfqReceivedDate", ""), project_name=data.get("projectName", ""),
+                project_code=data.get("projectCode", ""), quote_reference=data.get("quoteReference", ""),
+                end_customer=data.get("endCustomer") or customer.name, location=data.get("location", ""),
+                industry=data.get("industry", ""), required_delivery_date=data.get("requiredDeliveryDate", ""),
+                priority=data.get("priority", "Medium"), currency=data.get("currency", "INR"),
+                payment_terms=data.get("paymentTerms", ""), delivery_terms=data.get("deliveryTerms", ""),
+                quotation_validity=data.get("quotationValidity", ""), incoterms=data.get("incoterms", ""),
+                tax_applicability=data.get("taxApplicability", ""), freight_requirement=data.get("freightRequirement", ""),
+                customer_remarks=data.get("customerRemarks", ""), attachments=[], internal_notes=data.get("internalNotes", ""),
+                customer_notes=data.get("customerNotes", ""), stage=stage, status=stage, sales_person=actor_name,
+                created_at=now, updated_at=now,
+                value=sum(float(it.get("targetPrice", 0) or 0) * float(it.get("quantity", 0) or 0) for it in items_data),
+                target_margin_percent=15,
             )
+
+            for i, it in enumerate(items_data):
+                product = get_object_or_404(Product, pk=it.get("productId"))
+                RFQItem.objects.create(
+                    rfq=rfq, item_no=i + 1, product=product, product_code=it.get("productCode", product.code),
+                    product_name=it.get("productName", product.name), description=it.get("description", ""),
+                    quantity=it.get("quantity", 1), unit=it.get("unit", ""), specification=it.get("specification", ""),
+                    required_delivery=it.get("requiredDelivery", ""), target_price=it.get("targetPrice", 0),
+                    remarks=it.get("remarks", ""), technical_data=it.get("technicalData") or {},
+                )
 
         append_audit(rfq, user=actor_name, role="Sales", module="RFQ", record=rfq.rfq_number, action_text="Created RFQ", new_status="Draft")
         if submit:
@@ -353,23 +381,28 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         lines = request.data.get("lines", [])
+        for i, line in enumerate(lines):
+            for field in ("baseCost", "freight", "duties", "otherCharges", "discount", "sellingPrice", "finalPrice"):
+                require_non_negative(line.get(field, 0), f"lines[{i}].{field}")
+
         total_value = 0.0
-        for line in lines:
-            item = get_object_or_404(RFQItem, pk=line.get("itemId"), rfq=rfq)
-            CostBreakdownLine.objects.update_or_create(
-                item=item,
-                defaults={
-                    "base_cost": line.get("baseCost", 0), "freight": line.get("freight", 0), "duties": line.get("duties", 0),
-                    "other_charges": line.get("otherCharges", 0), "discount": line.get("discount", 0),
-                    "adjusted_cost": line.get("adjustedCost", 0), "margin_percent": line.get("marginPercent", 0),
-                    "margin_value": line.get("marginValue", 0), "selling_price": line.get("sellingPrice", 0),
-                    "tax_percent": line.get("taxPercent", 0), "tax_value": line.get("taxValue", 0),
-                    "final_price": line.get("finalPrice", 0),
-                },
-            )
-            total_value += float(line.get("finalPrice", 0) or 0)
-        rfq.value = total_value
-        touch(rfq)
+        with transaction.atomic():
+            for line in lines:
+                item = get_object_or_404(RFQItem, pk=line.get("itemId"), rfq=rfq)
+                CostBreakdownLine.objects.update_or_create(
+                    item=item,
+                    defaults={
+                        "base_cost": line.get("baseCost", 0), "freight": line.get("freight", 0), "duties": line.get("duties", 0),
+                        "other_charges": line.get("otherCharges", 0), "discount": line.get("discount", 0),
+                        "adjusted_cost": line.get("adjustedCost", 0), "margin_percent": line.get("marginPercent", 0),
+                        "margin_value": line.get("marginValue", 0), "selling_price": line.get("sellingPrice", 0),
+                        "tax_percent": line.get("taxPercent", 0), "tax_value": line.get("taxValue", 0),
+                        "final_price": line.get("finalPrice", 0),
+                    },
+                )
+                total_value += float(line.get("finalPrice", 0) or 0)
+            rfq.value = total_value
+            touch(rfq)
         return Response(self.get_serializer(rfq).data)
 
     @action(detail=True, methods=["post"], url_path="submit-controlling")
