@@ -3,7 +3,7 @@ from django.test import TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from .models import CostRateCategory, CostRateValue, InHouseHourRate, RawForgingRate
+from .models import CostRateCategory, CostRateValue, InHouseHourRate, OrganizationSettings, RawForgingRate
 
 User = get_user_model()
 
@@ -90,6 +90,47 @@ class ReferenceApiTests(TestCase):
         bearing_id = response.data["id"]
         response = self.admin_client.delete(f"/api/reference/catalogs/bearings/{bearing_id}/")
         self.assertEqual(response.status_code, 204)
+
+
+class OrganizationSettingsApiTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser("orgadmin", "orgadmin@example.com", "adminpass123", role="Admin")
+        self.sales = User.objects.create_user("orgsales", password="salespass123", role="Sales")
+        self.admin_client = APIClient()
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.sales_client = APIClient()
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+
+    def test_get_creates_the_singleton_with_defaults_on_first_call(self):
+        self.assertEqual(OrganizationSettings.objects.count(), 0)
+        response = self.sales_client.get("/api/reference/organization-settings/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["default_currency"], "INR")
+        self.assertEqual(OrganizationSettings.objects.count(), 1)
+
+    def test_multiple_gets_never_create_a_second_row(self):
+        self.sales_client.get("/api/reference/organization-settings/")
+        self.sales_client.get("/api/reference/organization-settings/")
+        self.admin_client.get("/api/reference/organization-settings/")
+        self.assertEqual(OrganizationSettings.objects.count(), 1)
+
+    def test_any_authenticated_user_can_read(self):
+        response = self.sales_client.get("/api/reference/organization-settings/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_only_admin_can_write(self):
+        response = self.sales_client.patch("/api/reference/organization-settings/", {"company_name": "Nope"}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+        response = self.admin_client.patch("/api/reference/organization-settings/", {"company_name": "Acme Pulleys"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["company_name"], "Acme Pulleys")
+        self.assertEqual(OrganizationSettings.objects.count(), 1)
+
+    def test_update_records_updated_by(self):
+        self.admin_client.patch("/api/reference/organization-settings/", {"company_name": "Acme"}, format="json")
+        settings_obj = OrganizationSettings.load()
+        self.assertEqual(settings_obj.updated_by, self.admin)
 
 
 class SeedReferenceDataTests(TestCase):

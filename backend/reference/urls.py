@@ -1,3 +1,4 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
@@ -7,6 +8,7 @@ from .views import (
     InHouseHourRateViewSet,
     LaggingCatalogViewSet,
     LockingDeviceCatalogViewSet,
+    OrganizationSettingsView,
     RawForgingRateViewSet,
     SleeveCatalogViewSet,
 )
@@ -21,4 +23,6 @@ router.register("catalogs/lagging", LaggingCatalogViewSet, basename="lagging-cat
 router.register("catalogs/locking-devices", LockingDeviceCatalogViewSet, basename="locking-device-catalog")
 router.register("in-house-hours", InHouseHourRateViewSet, basename="in-house-hour-rate")
 
-urlpatterns = router.urls
+urlpatterns = router.urls + [
+    path("organization-settings/", OrganizationSettingsView.as_view(), name="organization-settings"),
+]

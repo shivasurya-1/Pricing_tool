@@ -7,6 +7,7 @@ from .models import (
     InHouseHourRate,
     LaggingCatalogEntry,
     LockingDeviceCatalogEntry,
+    OrganizationSettings,
     RawForgingRate,
     SleeveCatalogEntry,
 )
@@ -19,3 +20,4 @@ admin.site.register(HousingCatalogEntry, list_display=["housing_designation", "f
 admin.site.register(LaggingCatalogEntry, list_display=["lagging_type", "thickness_mm", "price_inr_per_m2"])
 admin.site.register(LockingDeviceCatalogEntry, list_display=["model_name", "negotiated_rate_inr"])
 admin.site.register(InHouseHourRate, list_display=["cost_head", "operation", "mhr_rate", "order"])
+admin.site.register(OrganizationSettings, list_display=["company_name", "default_currency", "updated_at"])

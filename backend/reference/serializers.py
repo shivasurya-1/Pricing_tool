@@ -7,6 +7,7 @@ from .models import (
     InHouseHourRate,
     LaggingCatalogEntry,
     LockingDeviceCatalogEntry,
+    OrganizationSettings,
     RawForgingRate,
     SleeveCatalogEntry,
 )
@@ -89,3 +90,20 @@ class InHouseHourRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = InHouseHourRate
         fields = ["id", "cost_head", "operation", "cost_centre", "activity_description", "mhr_rate", "order"]
+
+
+class OrganizationSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrganizationSettings
+        fields = [
+            "company_name", "address_line1", "address_line2", "city", "state", "postal_code",
+            "country", "phone", "email", "website", "tax_registration_number", "logo_url",
+            "default_currency",
+            "tax_registration_label", "default_tax_applicability",
+            "sla_days_operations_review", "sla_days_sourcing", "sla_days_controlling", "sla_days_approval",
+            "notify_on_stage_change", "notify_email_enabled",
+            "quotation_header_text", "quotation_footer_text", "quotation_validity_days_default",
+            "terms_and_conditions_text",
+            "updated_at",
+        ]
+        read_only_fields = ["updated_at"]

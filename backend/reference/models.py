@@ -124,6 +124,66 @@ class LockingDeviceCatalogEntry(ReferenceOwnedModel):
         return self.model_name
 
 
+class OrganizationSettings(ReferenceOwnedModel):
+    """Singleton — one row, forced to pk=1. Backs the Settings page's 7 tabs.
+    Use `OrganizationSettings.load()` to get-or-create it rather than querying
+    directly, so the first GET ever made returns sane defaults instead of 404ing."""
+
+    CURRENCY_CHOICES = [("INR", "INR"), ("USD", "USD"), ("EUR", "EUR"), ("GBP", "GBP")]
+
+    # Company Profile
+    company_name = models.CharField(max_length=200, blank=True)
+    address_line1 = models.CharField(max_length=200, blank=True)
+    address_line2 = models.CharField(max_length=200, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=100, blank=True)
+    postal_code = models.CharField(max_length=20, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+    phone = models.CharField(max_length=30, blank=True)
+    email = models.EmailField(blank=True)
+    website = models.CharField(max_length=200, blank=True)
+    tax_registration_number = models.CharField(max_length=50, blank=True)
+    logo_url = models.CharField(max_length=500, blank=True)
+
+    # Currency
+    default_currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default="INR")
+
+    # Tax Settings — identity/labeling only; the rate itself lives on Cost Rate
+    # Tables (CostRateValue, category=Global) so there's one source of truth.
+    tax_registration_label = models.CharField(max_length=50, blank=True, default="GSTIN")
+    default_tax_applicability = models.CharField(max_length=200, blank=True)
+
+    # Workflow Settings — informational SLA targets, not yet enforced/alerted.
+    sla_days_operations_review = models.PositiveIntegerField(null=True, blank=True)
+    sla_days_sourcing = models.PositiveIntegerField(null=True, blank=True)
+    sla_days_controlling = models.PositiveIntegerField(null=True, blank=True)
+    sla_days_approval = models.PositiveIntegerField(null=True, blank=True)
+
+    # Notification Preferences — inert until outbound email is built.
+    notify_on_stage_change = models.BooleanField(default=True)
+    notify_email_enabled = models.BooleanField(default=False)
+
+    # Quotation Template — feeds PDF/CSV export.
+    quotation_header_text = models.TextField(blank=True)
+    quotation_footer_text = models.TextField(blank=True)
+    quotation_validity_days_default = models.PositiveIntegerField(null=True, blank=True)
+
+    # Terms & Conditions
+    terms_and_conditions_text = models.TextField(blank=True)
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "OrganizationSettings":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self) -> str:
+        return "Organization Settings"
+
+
 class InHouseHourRate(ReferenceOwnedModel):
     """Mirrors src/data/inHouseHoursRates.ts's InHouseHourRate — the "In-House Hours"
     page's simple MHR-rate legend table (informational; not consumed by any

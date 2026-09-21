@@ -1,5 +1,5 @@
-from accounts.permissions import CanEditReferenceData
-from rest_framework import viewsets
+from accounts.permissions import CanEditReferenceData, role_write_permission
+from rest_framework import generics, viewsets
 
 from .models import (
     BearingCatalogEntry,
@@ -8,6 +8,7 @@ from .models import (
     InHouseHourRate,
     LaggingCatalogEntry,
     LockingDeviceCatalogEntry,
+    OrganizationSettings,
     RawForgingRate,
     SleeveCatalogEntry,
 )
@@ -19,6 +20,7 @@ from .serializers import (
     InHouseHourRateSerializer,
     LaggingCatalogEntrySerializer,
     LockingDeviceCatalogEntrySerializer,
+    OrganizationSettingsSerializer,
     RawForgingRateCreateSerializer,
     RawForgingRateSerializer,
     SleeveCatalogEntrySerializer,
@@ -84,3 +86,16 @@ class LockingDeviceCatalogViewSet(BaseReferenceViewSet):
 class InHouseHourRateViewSet(BaseReferenceViewSet):
     queryset = InHouseHourRate.objects.all()
     serializer_class = InHouseHourRateSerializer
+
+
+class OrganizationSettingsView(generics.RetrieveUpdateAPIView):
+    """Singleton — GET/PATCH only, no list. Admin-only write, any authenticated read."""
+
+    serializer_class = OrganizationSettingsSerializer
+    permission_classes = [role_write_permission(())]
+
+    def get_object(self):
+        return OrganizationSettings.load()
+
+    def perform_update(self, serializer):
+        serializer.save(updated_by=self.request.user)
