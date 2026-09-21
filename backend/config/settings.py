@@ -139,6 +139,23 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = True
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")  # Nginx sets this — see deployment runbook
 
+# --- Email ---
+# No SMTP credentials configured anywhere yet (dev or prod) — outbound email uses
+# Django's own console backend, which renders the email to the server log instead of
+# actually sending it. Setting EMAIL_HOST_USER/PASSWORD in .env flips this to real
+# SMTP sending with no code changes.
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@example.com")
+EMAIL_BACKEND = (
+    "django.core.mail.backends.smtp.EmailBackend"
+    if EMAIL_HOST_USER
+    else "django.core.mail.backends.console.EmailBackend"
+)
+
 # --- CORS ---
 # Wide open in DEBUG so the Vite dev server can run on whatever port is free that
 # session; locked to explicit origins (the deployed Vercel frontend) in production.

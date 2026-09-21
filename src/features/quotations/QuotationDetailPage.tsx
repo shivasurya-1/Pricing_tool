@@ -24,6 +24,7 @@ export function QuotationDetailPage() {
   const quotations = useDataStore((s) => s.quotations)
   const rfqs = useDataStore((s) => s.rfqs)
   const sendQuotation = useDataStore((s) => s.sendQuotation)
+  const sendQuotationEmail = useDataStore((s) => s.sendQuotationEmail)
   const updateQuotationStatus = useDataStore((s) => s.updateQuotationStatus)
   const name = useAuthStore((s) => s.name)
   const pushToast = useUiStore((s) => s.pushToast)
@@ -32,6 +33,7 @@ export function QuotationDetailPage() {
   const [lossModalOpen, setLossModalOpen] = useState(false)
   const [lossReason, setLossReason] = useState('')
   const [downloading, setDownloading] = useState(false)
+  const [sendingEmail, setSendingEmail] = useState(false)
 
   const quotation = quotations.find((q) => q.id === id)
   const rfq = rfqs.find((r) => r.id === quotation?.rfqId)
@@ -61,8 +63,23 @@ export function QuotationDetailPage() {
             <Button variant="secondary" icon={<Printer size={14} />} onClick={() => window.print()}>
               Print
             </Button>
-            <Button variant="secondary" icon={<Mail size={14} />} onClick={() => pushToast('Quotation emailed to customer (mock).', 'success')}>
-              Send Email
+            <Button
+              variant="secondary"
+              icon={<Mail size={14} />}
+              disabled={sendingEmail}
+              onClick={async () => {
+                setSendingEmail(true)
+                try {
+                  await sendQuotationEmail(quotation.id, name)
+                  pushToast(`Quotation emailed to ${rfq.contactEmail || 'customer'}.`, 'success')
+                } catch {
+                  // Error toast already shown by the store.
+                } finally {
+                  setSendingEmail(false)
+                }
+              }}
+            >
+              {sendingEmail ? 'Sending...' : 'Send Email'}
             </Button>
             <Button
               variant="secondary"

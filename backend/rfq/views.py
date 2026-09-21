@@ -12,6 +12,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .email import notify_role_by_email, send_quotation_email
 from .id_utils import next_quotation_number, next_rfq_number
 from .pdf import build_quotation_pdf
 from .models import (
@@ -63,7 +64,10 @@ def append_audit(rfq, *, user, role, module, record, action_text, previous_statu
 
 
 def append_notification(*, message, kind, target_role=None, rfq=None, quotation=None):
-    return AppNotification.objects.create(message=message, timestamp=now_iso(), kind=kind, target_role=target_role, rfq=rfq, quotation=quotation)
+    notif = AppNotification.objects.create(message=message, timestamp=now_iso(), kind=kind, target_role=target_role, rfq=rfq, quotation=quotation)
+    if target_role:
+        notify_role_by_email(target_role=target_role, subject=message, body=message)
+    return notif
 
 
 def touch(rfq: RFQ) -> None:
@@ -199,6 +203,19 @@ class QuotationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{quotation.quotation_number}.pdf"'
         return response
+
+    @action(detail=True, methods=["post"], url_path="send-email")
+    def send_email(self, request, pk=None):
+        quotation = self.get_object()
+        try:
+            send_quotation_email(quotation, quotation.rfq)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)})
+        append_audit(
+            quotation.rfq, user=request.data.get("actorName", ""), role="Sales", module="Quotation",
+            record=quotation.quotation_number, action_text="Quotation emailed to customer",
+        )
+        return Response(self.get_serializer(quotation).data)
 
 
 class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):

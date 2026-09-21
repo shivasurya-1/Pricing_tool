@@ -99,6 +99,7 @@ interface DataState {
 
   generateQuotation: (id: string, actorName: string) => Promise<Quotation>
   sendQuotation: (id: string, actorName: string) => Promise<void>
+  sendQuotationEmail: (quotationId: string, actorName: string) => Promise<void>
   updateQuotationStatus: (quotationId: string, status: QuotationStatus, actorName: string, lossReason?: string) => Promise<void>
 
   markNotificationRead: (id: string) => Promise<void>
@@ -284,6 +285,12 @@ export const useDataStore = create<DataState>()((set, get) => ({
         rfqs: replaceRfq(s.rfqs, rfq),
         quotations: s.quotations.map((q) => (q.rfqId === id ? { ...q, status: 'Sent' as QuotationStatus } : q)),
       }))
+    }),
+
+  sendQuotationEmail: (quotationId, actorName) =>
+    withErrorToast(async () => {
+      const quotation = await api.post<Quotation>(`/rfq/quotations/${quotationId}/send-email/`, { actorName })
+      set((s) => ({ quotations: s.quotations.map((q) => (q.id === quotationId ? quotation : q)) }))
     }),
 
   updateQuotationStatus: (quotationId, status, actorName, lossReason) =>

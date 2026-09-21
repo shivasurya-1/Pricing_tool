@@ -1,7 +1,10 @@
+from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from django.test import TestCase
 
+from accounts.models import User
+from reference.models import OrganizationSettings
 from .models import Customer, CostBreakdownLine, Product, Quotation, RFQ, RFQAttachment, RFQItem
 
 
@@ -406,3 +409,95 @@ class QuotationPdfTests(TestCase):
     def test_unauthenticated_request_is_rejected(self):
         response = APIClient().get(f"/api/rfq/quotations/{self.quotation_id}/pdf/")
         self.assertIn(response.status_code, (401, 403))
+
+
+class QuotationEmailTests(TestCase):
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-5", code="CUST-005", name="Acme Pulleys")
+        self.product = Product.objects.create(id="prod-5", code="PROD-5", name="6 inch pulley", unit="Nos")
+        self.sales = client_as("Sales")
+        self.operations = client_as("Operations")
+        self.sourcing = client_as("Sourcing")
+        self.controlling = client_as("Controlling")
+        self.approval = client_as("Approval Panel")
+
+        create = self.sales.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "actorName": "Sales", "submit": True, "contactEmail": "buyer@example.com", "items": [{"productId": self.product.id, "quantity": 2, "targetPrice": 100}]},
+            format="json",
+        )
+        self.rfq_id = create.data["id"]
+        item_id = create.data["items"][0]["id"]
+        self.operations.post(f"/api/rfq/rfqs/{self.rfq_id}/approve-operations/", {"actorName": "Ops"}, format="json")
+        self.sourcing.patch(f"/api/rfq/rfqs/{self.rfq_id}/item-sourcing-confirmed/", {"itemId": item_id, "confirmed": True}, format="json")
+        self.sourcing.post(f"/api/rfq/rfqs/{self.rfq_id}/submit-sourcing/", {"actorName": "Sourcing"}, format="json")
+        self.controlling.post(
+            f"/api/rfq/rfqs/{self.rfq_id}/cost-breakdown/",
+            {"lines": [{"itemId": item_id, "baseCost": 80, "sellingPrice": 100, "finalPrice": 220}]},
+            format="json",
+        )
+        self.controlling.post(f"/api/rfq/rfqs/{self.rfq_id}/submit-controlling/", {"actorName": "Controlling"}, format="json")
+        self.approval.post(f"/api/rfq/rfqs/{self.rfq_id}/approve-final/", {"actorName": "Approver"}, format="json")
+        gen = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/generate-quotation/", {"actorName": "Sales"}, format="json")
+        self.quotation_id = gen.data["id"]
+
+    def test_send_email_delivers_a_pdf_to_the_contact_email(self):
+        response = self.sales.post(f"/api/rfq/quotations/{self.quotation_id}/send-email/", {"actorName": "Sales"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ["buyer@example.com"])
+        self.assertEqual(len(sent.attachments), 1)
+        filename, content, mimetype = sent.attachments[0]
+        self.assertTrue(filename.endswith(".pdf"))
+        self.assertEqual(mimetype, "application/pdf")
+        self.assertTrue(content.startswith(b"%PDF"))
+
+    def test_send_email_without_a_contact_email_is_rejected(self):
+        rfq = RFQ.objects.get(id=self.rfq_id)
+        rfq.contact_email = ""
+        rfq.save(update_fields=["contact_email"])
+        response = self.sales.post(f"/api/rfq/quotations/{self.quotation_id}/send-email/", {"actorName": "Sales"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_unauthenticated_request_is_rejected(self):
+        response = APIClient().post(f"/api/rfq/quotations/{self.quotation_id}/send-email/", {}, format="json")
+        self.assertIn(response.status_code, (401, 403))
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class StageChangeNotificationEmailTests(TestCase):
+    """append_notification() (views.py) fires notify_role_by_email for every
+    target_role it's given — this covers the 9 existing call sites via one of them
+    (submit), since they all go through the same function."""
+
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-6", code="CUST-006", name="Acme Pulleys")
+        self.product = Product.objects.create(id="prod-6", code="PROD-6", name="6 inch pulley", unit="Nos")
+        self.sales = client_as("Sales")
+        User.objects.create_user("ops-notify", password="opspass123", role="Operations", email="ops@example.com")
+
+    def _create_draft_rfq(self):
+        response = self.sales.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "actorName": "Sales", "submit": False, "items": [{"productId": self.product.id, "quantity": 1, "targetPrice": 100}]},
+            format="json",
+        )
+        return response.data["id"]
+
+    def test_no_email_sent_when_notifications_are_disabled(self):
+        rfq_id = self._create_draft_rfq()
+        self.sales.post(f"/api/rfq/rfqs/{rfq_id}/submit/", {"actorName": "Sales"}, format="json")
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_emails_every_active_user_with_the_target_role_when_enabled(self):
+        settings_obj = OrganizationSettings.load()
+        settings_obj.notify_email_enabled = True
+        settings_obj.save()
+
+        rfq_id = self._create_draft_rfq()
+        self.sales.post(f"/api/rfq/rfqs/{rfq_id}/submit/", {"actorName": "Sales"}, format="json")
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["ops@example.com"])
