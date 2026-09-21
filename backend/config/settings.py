@@ -102,12 +102,26 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- DRF ---
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": [
-        "accounts.authentication.DemoRoleAuthentication",
+def build_authentication_classes(debug: bool) -> list[str]:
+    """DemoRoleAuthentication trusts a plain header with zero credentials behind it —
+    a real security hole if it's reachable in production (confirmed by audit: any
+    direct API caller, not just the browser app, could claim X-Demo-Role: Admin).
+    Real per-person login (TokenAuthentication, already live via accounts.login_view)
+    is always available; the demo bridge is now local-dev-only, so production
+    accepts only a real token. A plain function (not inline module-level logic) so
+    it's directly unit-testable without needing to reload settings mid-test-run.
+    """
+    classes = [
         "rest_framework.authentication.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
-    ],
+    ]
+    if debug:
+        classes.insert(0, "accounts.authentication.DemoRoleAuthentication")
+    return classes
+
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": build_authentication_classes(DEBUG),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],

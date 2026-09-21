@@ -19,6 +19,14 @@ class CanEditReferenceData(BasePermission):
         return Role.can_edit_reference_data(request.user.role)
 
 
+class IsAdminRole(BasePermission):
+    """Admin-only for both read and write — unlike reference data, user accounts
+    (names, emails, roles) aren't something every role should be able to browse."""
+
+    def has_permission(self, request, view) -> bool:
+        return bool(request.user and request.user.is_authenticated and request.user.role == Role.ADMIN)
+
+
 def role_write_permission(allowed_roles: tuple[str, ...]):
     """Factory: read open to any authenticated user, write restricted to the given
     roles (Admin always allowed). Mirrors the frontend's navConfig.ts role lists for

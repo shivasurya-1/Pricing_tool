@@ -43,12 +43,19 @@ function RequireAuth({ children }: { children: ReactElement }) {
 
 export default function App() {
   const navigate = useNavigate()
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
 
   useEffect(() => {
     setNavigateRef(navigate)
   }, [navigate])
 
   useEffect(() => {
+    // Gated on auth: these calls send a real Authorization header now (see
+    // apiClient.ts), so firing them before login would just 401/403 and throw an
+    // error toast right on the login screen. Runs once right after
+    // isAuthenticated flips true — on fresh login, or immediately on mount if a
+    // persisted session/demo role is already active.
+    if (!isAuthenticated) return
     // Best-effort: if the backend isn't running/deployed, calc modules use their
     // static fallback — see formulaStore.loadAll() and MhrLhrCalculatorPage's note.
     useFormulaStore.getState().loadAll()
@@ -59,7 +66,7 @@ export default function App() {
     // formulaStore, but see pulleyTechDataSchema.ts for why an empty (not missing)
     // catalog does NOT fall back once this has loaded.
     useReferenceStore.getState().loadAll()
-  }, [])
+  }, [isAuthenticated])
 
   return (
     <Routes>

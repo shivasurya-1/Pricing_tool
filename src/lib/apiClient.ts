@@ -1,9 +1,12 @@
 import { useAuthStore } from '@/store/authStore'
 
 /**
- * Talks to the Django backend (see /backend). Uses the frontend's existing demo-role
- * login (no real credentials yet) via an X-Demo-Role header, matched by the backend's
- * DemoRoleAuthentication bridge — see backend/accounts/authentication.py for why.
+ * Talks to the Django backend (see /backend). A real per-person session (token,
+ * obtained via a real username/password login) sends `Authorization: Token <token>`.
+ * The old instant demo-role bridge (`X-Demo-Role` header, see
+ * backend/accounts/authentication.py) only exists as a fallback when running in dev
+ * (`import.meta.env.DEV`) without a real token — the production build never sends it,
+ * and the backend only accepts it when DEBUG=True either way (belt and suspenders).
  *
  * If the backend isn't reachable (not running locally, or not deployed yet), every
  * call here rejects and callers fall back to the existing static frontend data —
@@ -21,13 +24,19 @@ export class ApiError extends Error {
   }
 }
 
+function authHeaders(): Record<string, string> {
+  const { token, role } = useAuthStore.getState()
+  if (token) return { Authorization: `Token ${token}` }
+  if (import.meta.env.DEV && role) return { 'X-Demo-Role': role }
+  return {}
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const role = useAuthStore.getState().role
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      ...(role ? { 'X-Demo-Role': role } : {}),
+      ...authHeaders(),
       ...options.headers,
     },
   })

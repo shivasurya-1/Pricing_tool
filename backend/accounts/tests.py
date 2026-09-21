@@ -85,3 +85,87 @@ class LoginAndMeViewTests(TestCase):
         response = client.get("/api/auth/me/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["username"], "realuser")
+
+    def test_logout_deletes_the_token(self):
+        client = APIClient()
+        token = Token.objects.create(user=self.user)
+        client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = client.post("/api/auth/logout/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Token.objects.filter(user=self.user).exists())
+        # The old token no longer works for anything.
+        response = client.get("/api/auth/me/")
+        self.assertIn(response.status_code, (401, 403))
+
+
+class AuthenticationClassesSettingsTests(TestCase):
+    """This is the actual fix for the X-Demo-Role security gap — production must
+    never include DemoRoleAuthentication. Tests the pure function directly (see its
+    docstring in config/settings.py) rather than the live settings object, since
+    DEBUG is fixed at process start and can't be flipped mid-test-run."""
+
+    def test_demo_role_authentication_present_only_in_debug(self):
+        from config.settings import build_authentication_classes
+
+        self.assertIn("accounts.authentication.DemoRoleAuthentication", build_authentication_classes(debug=True))
+        self.assertNotIn("accounts.authentication.DemoRoleAuthentication", build_authentication_classes(debug=False))
+
+    def test_token_authentication_present_either_way(self):
+        from config.settings import build_authentication_classes
+
+        for debug in (True, False):
+            self.assertIn("rest_framework.authentication.TokenAuthentication", build_authentication_classes(debug=debug))
+
+
+class UserViewSetTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser("realadmin", "admin@example.com", "adminpass123", role=Role.ADMIN)
+        self.sales = User.objects.create_user("realsales", password="salespass123", role=Role.SALES)
+        self.admin_client = APIClient()
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.sales_client = APIClient()
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+
+    def test_non_admin_cannot_list_users(self):
+        response = self.sales_client.get("/api/auth/users/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_list_users(self):
+        response = self.admin_client.get("/api/auth/users/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_admin_can_create_a_user_with_a_password(self):
+        payload = {"username": "newperson", "first_name": "New", "email": "new@example.com", "role": "Sourcing", "password": "a-real-password-1"}
+        response = self.admin_client.post("/api/auth/users/", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertNotIn("password", response.data)
+        created = User.objects.get(username="newperson")
+        self.assertTrue(created.check_password("a-real-password-1"))
+        self.assertEqual(created.role, "Sourcing")
+
+    def test_non_admin_cannot_create_a_user(self):
+        payload = {"username": "hacker", "role": "Admin", "password": "whatever12"}
+        response = self.sales_client.post("/api/auth/users/", payload, format="json")
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(User.objects.filter(username="hacker").exists())
+
+    def test_admin_can_change_a_users_role_and_deactivate_them(self):
+        response = self.admin_client.patch(f"/api/auth/users/{self.sales.id}/", {"role": "Operations"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.sales.refresh_from_db()
+        self.assertEqual(self.sales.role, "Operations")
+
+        response = self.admin_client.patch(f"/api/auth/users/{self.sales.id}/", {"is_active": False}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.sales.refresh_from_db()
+        self.assertFalse(self.sales.is_active)
+
+    def test_username_is_immutable_after_creation(self):
+        response = self.admin_client.patch(f"/api/auth/users/{self.sales.id}/", {"username": "renamed"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.sales.refresh_from_db()
+        self.assertEqual(self.sales.username, "realsales")
+
+    def test_create_response_never_includes_password(self):
+        response = self.admin_client.get(f"/api/auth/users/{self.sales.id}/")
+        self.assertNotIn("password", response.data)

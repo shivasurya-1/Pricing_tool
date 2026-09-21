@@ -81,32 +81,36 @@ export function Header() {
                 <p className="text-sm font-medium text-[var(--color-ink)]">{name}</p>
                 <p className="text-xs text-[var(--color-ink-faint)]">{role}</p>
               </div>
-              <button
-                onClick={() => setRoleMenuOpen((v) => !v)}
-                className="flex w-full items-center justify-between px-3 py-2 text-sm text-[var(--color-ink-soft)] hover:bg-[var(--color-surface)]"
-              >
-                <span className="flex items-center gap-2">
-                  <Repeat size={14} /> Switch role
-                </span>
-                <ChevronDown size={13} className={roleMenuOpen ? 'rotate-180' : ''} />
-              </button>
-              {roleMenuOpen && (
-                <div className="border-t border-[var(--color-border)] bg-[var(--color-surface)] py-1">
-                  {ROLES.map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => {
-                        switchRole(r)
-                        setRoleMenuOpen(false)
-                        setProfileOpen(false)
-                        navigate('/dashboard')
-                      }}
-                      className="flex w-full items-center justify-between px-4 py-1.5 text-sm text-[var(--color-ink-soft)] hover:bg-white"
-                    >
-                      {r} {r === role && <span className="text-[var(--color-blue)]">●</span>}
-                    </button>
-                  ))}
-                </div>
+              {import.meta.env.DEV && (
+                <>
+                  <button
+                    onClick={() => setRoleMenuOpen((v) => !v)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-sm text-[var(--color-ink-soft)] hover:bg-[var(--color-surface)]"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Repeat size={14} /> Switch role (dev only)
+                    </span>
+                    <ChevronDown size={13} className={roleMenuOpen ? 'rotate-180' : ''} />
+                  </button>
+                  {roleMenuOpen && (
+                    <div className="border-t border-[var(--color-border)] bg-[var(--color-surface)] py-1">
+                      {ROLES.map((r) => (
+                        <button
+                          key={r}
+                          onClick={() => {
+                            switchRole(r)
+                            setRoleMenuOpen(false)
+                            setProfileOpen(false)
+                            navigate('/dashboard')
+                          }}
+                          className="flex w-full items-center justify-between px-4 py-1.5 text-sm text-[var(--color-ink-soft)] hover:bg-white"
+                        >
+                          {r} {r === role && <span className="text-[var(--color-blue)]">●</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
               <button
                 onClick={() => {
