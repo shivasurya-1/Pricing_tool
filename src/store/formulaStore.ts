@@ -73,6 +73,23 @@ export interface FormulaPreviewResult {
   candidate: { result: number | null; error: string | null }
 }
 
+export interface SectionDto {
+  id: number
+  key: string
+  label: string
+  order: number
+}
+
+export interface NewFormulaInput {
+  key: string
+  label: string
+  section: string
+  expression: string
+  input_variables: string[]
+  output_unit?: string
+  order?: number
+}
+
 interface FormulaState {
   /** Whether the backend was reachable and formulas loaded — callers fall back to
    * static hardcoded calculation when this is false, so the app works identically
@@ -83,10 +100,18 @@ interface FormulaState {
   costRates: Record<string, number>
   costRatesFull: CostRateValueDto[]
   techDataFields: Record<string, TechDataFieldDto>
+  sections: SectionDto[]
 
   loadAll: () => Promise<void>
   updateFormula: (key: string, expression: string) => Promise<void>
+  createFormula: (input: NewFormulaInput) => Promise<void>
+  deleteFormula: (key: string) => Promise<void>
+  deleteAllFormulas: () => Promise<void>
   previewFormula: (key: string, expression: string, variables: Record<string, number>) => Promise<FormulaPreviewResult>
+
+  createSection: (input: { key: string; label: string; order?: number }) => Promise<void>
+  renameSection: (id: number, label: string) => Promise<void>
+  deleteSection: (id: number) => Promise<void>
 
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
   updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'options' | 'order'>>) => Promise<void>
@@ -111,21 +136,24 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
   costRates: {},
   costRatesFull: [],
   techDataFields: {},
+  sections: [],
 
   loadAll: async () => {
     if (get().loading) return
     set({ loading: true })
     try {
-      const [formulaList, rateList, fieldList] = await Promise.all([
+      const [formulaList, rateList, fieldList, sections] = await Promise.all([
         api.get<FormulaDefinitionDto[]>('/formulas/'),
         api.get<CostRateValueDto[]>('/reference/cost-rates/'),
         api.get<TechDataFieldDto[]>('/formulas/tech-data-fields/'),
+        api.get<SectionDto[]>('/formulas/sections/'),
       ])
       set({
         formulas: Object.fromEntries(formulaList.map((f) => [f.key, f])),
         costRates: Object.fromEntries(rateList.map((r) => [r.key, r.value])),
         costRatesFull: rateList,
         techDataFields: Object.fromEntries(fieldList.map((f) => [f.key, f])),
+        sections,
         loaded: true,
         loading: false,
       })
@@ -148,6 +176,42 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const message = err instanceof ApiError ? err.message : 'Preview failed'
       return { current: { result: null, error: message }, candidate: { result: null, error: message } }
     }
+  },
+
+  createFormula: async (input) => {
+    const created = await api.post<FormulaDefinitionDto>('/formulas/', input)
+    set((s) => ({ formulas: { ...s.formulas, [created.key]: created } }))
+  },
+
+  deleteFormula: async (key) => {
+    await api.delete(`/formulas/${key}/`)
+    set((s) => {
+      const next = { ...s.formulas }
+      delete next[key]
+      return { formulas: next }
+    })
+  },
+
+  deleteAllFormulas: async () => {
+    await api.post('/formulas/delete-all/', {})
+    await get().loadAll()
+  },
+
+  createSection: async (input) => {
+    const created = await api.post<SectionDto>('/formulas/sections/', input)
+    set((s) => ({ sections: [...s.sections, created] }))
+  },
+
+  renameSection: async (id, label) => {
+    await api.patch<SectionDto>(`/formulas/sections/${id}/`, { label })
+    // The rename cascades server-side to every formula/field that used the old
+    // label — refetch rather than patch every local record individually.
+    await get().loadAll()
+  },
+
+  deleteSection: async (id) => {
+    await api.delete(`/formulas/sections/${id}/`)
+    set((s) => ({ sections: s.sections.filter((sec) => sec.id !== id) }))
   },
 
   createTechDataField: async (input) => {

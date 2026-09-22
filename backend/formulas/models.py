@@ -2,14 +2,32 @@ from django.conf import settings
 from django.db import models
 
 
-class FormulaSection(models.TextChoices):
-    TECH_DATA_AUTO = "TechDataAuto", "Technical Data Sheet — Auto Fields"
-    SECTION_A = "SectionA", "Pricing Section A — Raw Materials"
-    SECTION_B = "SectionB", "Pricing Section B — Ancillary Parts"
-    SECTION_C = "SectionC", "Pricing Section C — In-House Processing"
-    SECTION_D = "SectionD", "Pricing Section D — Outsourced Processing"
-    SECTION_E = "SectionE", "Pricing Section E — Packing & Shipment"
-    SECTION_F = "SectionF", "Pricing Section F — Summary"
+# The section a Technical Data Sheet's auto-calculated fields are filed under.
+# Both FormulaDefinition.section and TechDataFieldDefinition.section always store a
+# Section's `label` (never its `key`) — that's the one convention SectionViewSet's
+# rename-cascade (views.py) relies on to find every row that needs updating, so
+# TECH_DATA_AUTO_SECTION_KEY only exists to give that Section row itself a stable,
+# human-independent identifier in the registry.
+TECH_DATA_AUTO_SECTION_KEY = "TechDataAuto"
+TECH_DATA_AUTO_SECTION_LABEL = "Technical Data Sheet — Auto Fields"
+
+
+class Section(models.Model):
+    """A user-managed grouping shared by FormulaDefinition and TechDataFieldDefinition
+    — both models just store this section's `label` as a plain string (no FK): a
+    rename here cascades by bulk-updating every row that matches the old label (see
+    SectionViewSet.perform_update in views.py), which is simpler and far lower-risk
+    than migrating both tables' `section` columns to a real foreign key."""
+
+    key = models.SlugField(max_length=50, unique=True)
+    label = models.CharField(max_length=200, unique=True)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["order", "label"]
+
+    def __str__(self) -> str:
+        return self.label
 
 
 class FormulaDefinition(models.Model):
@@ -22,7 +40,7 @@ class FormulaDefinition(models.Model):
 
     key = models.SlugField(max_length=80, unique=True)
     label = models.CharField(max_length=200)
-    section = models.CharField(max_length=20, choices=FormulaSection.choices)
+    section = models.CharField(max_length=100)
     expression = models.TextField(help_text="Restricted arithmetic expression — see simpleeval/expr-eval grammar.")
     input_variables = models.JSONField(default=list, help_text="Variable names this expression may reference.")
     output_unit = models.CharField(max_length=20, blank=True)

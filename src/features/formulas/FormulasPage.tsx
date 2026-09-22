@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Info, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { Info, Layers, ListTree, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardHeader } from '@/components/ui/Card'
@@ -8,8 +8,9 @@ import { Badge } from '@/components/ui/Badge'
 import { EmptyState } from '@/components/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
-import { useFormulaStore, type FormulaDefinitionDto, type TechDataFieldDto } from '@/store/formulaStore'
+import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type TechDataFieldDto } from '@/store/formulaStore'
 import { useUiStore } from '@/store/uiStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { toNumericVars } from '@/lib/pulleyTechDataCalc'
@@ -39,25 +40,36 @@ function slugifyToCamelCase(label: string): string {
     .join('')
 }
 
-const SECTION_LABELS: Record<string, string> = {
-  TechDataAuto: 'Technical Data Sheet — Auto Fields',
-  SectionA: 'Pricing Section A — Raw Materials',
-  SectionB: 'Pricing Section B — Ancillary Parts',
-  SectionC: 'Pricing Section C — In-House Processing',
-  SectionD: 'Pricing Section D — Outsourced Processing',
-  SectionE: 'Pricing Section E — Packing & Shipment',
-  SectionF: 'Pricing Section F — Summary',
-}
-const SECTION_ORDER = Object.keys(SECTION_LABELS)
-
 export function FormulasPage() {
   const rfqs = useDataStore((s) => s.rfqs)
-  const { loaded, loading, formulas, costRates, techDataFields, updateFormula, createTechDataField, updateTechDataField, deleteTechDataField } =
-    useFormulaStore()
+  const role = useAuthStore((s) => s.role)
+  const {
+    loaded,
+    loading,
+    formulas,
+    costRates,
+    techDataFields,
+    sections,
+    updateFormula,
+    createFormula,
+    deleteFormula,
+    deleteAllFormulas,
+    createTechDataField,
+    updateTechDataField,
+    deleteTechDataField,
+    createSection,
+    renameSection,
+    deleteSection,
+  } = useFormulaStore()
   const pushToast = useUiStore((s) => s.pushToast)
   const [addFieldOpen, setAddFieldOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<TechDataFieldDto | null>(null)
   const [editTarget, setEditTarget] = useState<TechDataFieldDto | null>(null)
+  const [addFormulaOpen, setAddFormulaOpen] = useState(false)
+  const [deleteFormulaTarget, setDeleteFormulaTarget] = useState<FormulaDefinitionDto | null>(null)
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false)
+  const [sectionsManagerOpen, setSectionsManagerOpen] = useState(false)
+  const [showTechDataSheet, setShowTechDataSheet] = useState(false)
 
   const rfqsWithTechData = useMemo(() => rfqs.filter((r) => r.items.some((it) => isTechDataFilled(it.technicalData))), [rfqs])
   const [rfqId, setRfqId] = useState(rfqsWithTechData[0]?.id ?? '')
@@ -84,6 +96,9 @@ export function FormulasPage() {
     }
   }, [item, costRates, formulas])
 
+  const sectionOrder = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s.order])), [sections])
+  const sectionLabels = useMemo(() => [...sections].sort((a, b) => a.order - b.order).map((s) => s.label), [sections])
+
   const grouped = useMemo(() => {
     const bySection: Record<string, FormulaDefinitionDto[]> = {}
     for (const f of Object.values(formulas)) {
@@ -93,6 +108,10 @@ export function FormulasPage() {
     for (const list of Object.values(bySection)) list.sort((a, b) => a.order - b.order)
     return bySection
   }, [formulas])
+  const formulaSectionsPresent = useMemo(
+    () => Object.keys(grouped).sort((a, b) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999)),
+    [grouped, sectionOrder],
+  )
 
   const techDataSections = useMemo(() => [...new Set(Object.values(techDataFields).map((f) => f.section))].sort(), [techDataFields])
   const techDataBySection = useMemo(() => {
@@ -124,11 +143,29 @@ export function FormulasPage() {
         title="Formulas"
         description="Edit the real expression behind every auto-calculated field — not just a rate, the actual formula. Changes apply everywhere immediately once saved."
         actions={
-          <Button variant="primary" icon={<Plus size={15} />} onClick={() => setAddFieldOpen(true)}>
-            Add Field
-          </Button>
+          <>
+            <Button variant="secondary" icon={<ListTree size={15} />} onClick={() => setShowTechDataSheet((v) => !v)}>
+              {showTechDataSheet ? 'Hide' : 'View'} Technical Data Sheet
+            </Button>
+            <Button variant="secondary" icon={<Layers size={15} />} onClick={() => setSectionsManagerOpen(true)}>
+              Manage Sections
+            </Button>
+            <Button variant="secondary" icon={<Plus size={15} />} onClick={() => setAddFormulaOpen(true)}>
+              Add Formula
+            </Button>
+            <Button variant="primary" icon={<Plus size={15} />} onClick={() => setAddFieldOpen(true)}>
+              Add Field
+            </Button>
+            {role === 'Admin' && (
+              <Button variant="danger" icon={<Trash2 size={15} />} onClick={() => setDeleteAllOpen(true)}>
+                Delete All Formulas
+              </Button>
+            )}
+          </>
         }
       />
+
+      {showTechDataSheet && <TechDataSheetStructureView sections={techDataSections} bySection={techDataBySection} />}
 
       <div className="mb-5 flex items-start gap-2 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-4 py-3 text-sm text-[var(--color-blue)]">
         <Info size={16} className="mt-0.5 shrink-0" />
@@ -163,12 +200,13 @@ export function FormulasPage() {
       </Card>
 
       <div className="space-y-5">
-        {SECTION_ORDER.filter((s) => grouped[s]?.length).map((section) => (
+        {formulaSectionsPresent.map((section) => (
           <FormulaSectionCard
             key={section}
-            title={SECTION_LABELS[section]}
+            title={section}
             formulas={grouped[section]}
             sampleVars={sampleVars}
+            onDelete={setDeleteFormulaTarget}
             onSave={async (key, expression) => {
               try {
                 await updateFormula(key, expression)
@@ -199,7 +237,7 @@ export function FormulasPage() {
       <AddTechDataFieldModal
         open={addFieldOpen}
         onClose={() => setAddFieldOpen(false)}
-        existingSections={techDataSections}
+        existingSections={sectionLabels}
         sampleVars={sampleVars}
         onCreate={async (input) => {
           try {
@@ -234,7 +272,7 @@ export function FormulasPage() {
 
       <EditTechDataFieldModal
         field={editTarget}
-        existingSections={techDataSections}
+        existingSections={sectionLabels}
         onClose={() => setEditTarget(null)}
         onSave={async (patch) => {
           if (!editTarget) return
@@ -247,7 +285,439 @@ export function FormulasPage() {
           }
         }}
       />
+
+      <AddFormulaModal
+        open={addFormulaOpen}
+        onClose={() => setAddFormulaOpen(false)}
+        sectionLabels={sectionLabels}
+        sampleVars={sampleVars}
+        onCreate={async (input) => {
+          try {
+            await createFormula(input)
+            pushToast(`'${input.label}' added.`, 'success')
+            setAddFormulaOpen(false)
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to create formula.', 'error')
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!deleteFormulaTarget}
+        onClose={() => setDeleteFormulaTarget(null)}
+        onConfirm={async () => {
+          if (!deleteFormulaTarget) return
+          try {
+            await deleteFormula(deleteFormulaTarget.key)
+            pushToast(`'${deleteFormulaTarget.label}' deleted.`, 'success')
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to delete formula.', 'error')
+          } finally {
+            setDeleteFormulaTarget(null)
+          }
+        }}
+        title="Delete Formula"
+        description={`Delete '${deleteFormulaTarget?.label}'? This can't be undone. Blocked if another formula or Technical Data Sheet field still depends on it.`}
+        confirmLabel="Delete"
+        danger
+      />
+
+      <ConfirmDialog
+        open={deleteAllOpen}
+        onClose={() => setDeleteAllOpen(false)}
+        onConfirm={async () => {
+          try {
+            await deleteAllFormulas()
+            pushToast('All formulas deleted.', 'success')
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to delete all formulas.', 'error')
+          } finally {
+            setDeleteAllOpen(false)
+          }
+        }}
+        title="Delete ALL Formulas"
+        description={`This permanently deletes all ${Object.keys(formulas).length} formulas, immediately affecting every live pricing calculation across the app. Any Technical Data Sheet field that was Auto-calculated from a deleted formula becomes a plain Manual field instead — nothing else breaks, but nothing recalculates on its own anymore either. This can't be undone.`}
+        confirmLabel="Delete All Formulas"
+        danger
+      />
+
+      <SectionsManagerModal
+        open={sectionsManagerOpen}
+        onClose={() => setSectionsManagerOpen(false)}
+        sections={sections}
+        onCreate={async (input) => {
+          try {
+            await createSection(input)
+            pushToast(`Section '${input.label}' added.`, 'success')
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to add section.', 'error')
+          }
+        }}
+        onRename={async (id, label) => {
+          try {
+            await renameSection(id, label)
+            pushToast('Section renamed.', 'success')
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to rename section.', 'error')
+          }
+        }}
+        onDelete={async (section) => {
+          try {
+            await deleteSection(section.id)
+            pushToast(`Section '${section.label}' deleted.`, 'success')
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to delete section.', 'error')
+          }
+        }}
+      />
     </div>
+  )
+}
+
+function TechDataSheetStructureView({ sections, bySection }: { sections: string[]; bySection: Record<string, TechDataFieldDto[]> }) {
+  return (
+    <Card className="mb-5">
+      <CardHeader title="Technical Data Sheet — Structure" description="Every section and field on the sheet, read-only — not tied to any one RFQ." />
+      <div className="max-h-[60vh] space-y-4 overflow-y-auto p-4">
+        {sections.length === 0 ? (
+          <p className="text-sm text-[var(--color-ink-faint)]">No fields defined yet.</p>
+        ) : (
+          sections.map((section) => (
+            <div key={section}>
+              <p className="mb-1.5 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-blue)]">
+                {section}
+              </p>
+              <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+                {bySection[section].map((f) => (
+                  <div key={f.key} className="flex items-center justify-between gap-2 border-b border-dashed border-[var(--color-border)] py-1 text-sm">
+                    <span className="text-[var(--color-ink-soft)]">
+                      {f.label} <span className="font-mono text-xs text-[var(--color-ink-faint)]">({f.key})</span>
+                    </span>
+                    <span className="shrink-0">
+                      {f.is_auto ? (
+                        <Badge tone="blue">Auto{f.expression ? `: ${f.expression}` : ''}</Badge>
+                      ) : f.is_catalog_derived ? (
+                        <Badge tone="purple">Catalog</Badge>
+                      ) : (
+                        <Badge tone="neutral">Manual{f.unit ? ` (${f.unit})` : ''}</Badge>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function SectionsManagerModal({
+  open,
+  onClose,
+  sections,
+  onCreate,
+  onRename,
+  onDelete,
+}: {
+  open: boolean
+  onClose: () => void
+  sections: SectionDto[]
+  onCreate: (input: { key: string; label: string; order?: number }) => Promise<void>
+  onRename: (id: number, label: string) => Promise<void>
+  onDelete: (section: SectionDto) => Promise<void>
+}) {
+  const [newLabel, setNewLabel] = useState('')
+  const [renameDrafts, setRenameDrafts] = useState<Record<number, string>>({})
+  const [deleteTarget, setDeleteTarget] = useState<SectionDto | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const sorted = [...sections].sort((a, b) => a.order - b.order)
+
+  const handleCreate = async () => {
+    const label = newLabel.trim()
+    if (!label) return
+    setSaving(true)
+    await onCreate({ key: slugifyToCamelCase(label) || `section-${Date.now()}`, label, order: sections.length })
+    setSaving(false)
+    setNewLabel('')
+  }
+
+  return (
+    <>
+      <Modal open={open} onClose={onClose} title="Manage Sections" width="max-w-lg">
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-ink-faint)]">
+            Shared by both Formulas and the Technical Data Sheet. Renaming updates every formula/field already assigned to it.
+          </p>
+          <div className="max-h-[50vh] space-y-1.5 overflow-y-auto">
+            {sorted.map((s) => (
+              <div key={s.id} className="flex items-center gap-2 rounded-md border border-[var(--color-border)] px-2.5 py-1.5">
+                <input
+                  value={renameDrafts[s.id] ?? s.label}
+                  onChange={(e) => setRenameDrafts((d) => ({ ...d, [s.id]: e.target.value }))}
+                  className={clsx(inputClass, 'flex-1')}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={(renameDrafts[s.id] ?? s.label) === s.label || !(renameDrafts[s.id] ?? '').trim()}
+                  onClick={async () => {
+                    await onRename(s.id, renameDrafts[s.id].trim())
+                    setRenameDrafts((d) => {
+                      const next = { ...d }
+                      delete next[s.id]
+                      return next
+                    })
+                  }}
+                >
+                  Save
+                </Button>
+                <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => setDeleteTarget(s)} />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2 border-t border-[var(--color-border)] pt-3">
+            <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} className={inputClass} placeholder="New section name" />
+            <Button variant="primary" disabled={!newLabel.trim() || saving} onClick={handleCreate}>
+              Add Section
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={async () => {
+          if (!deleteTarget) return
+          await onDelete(deleteTarget)
+          setDeleteTarget(null)
+        }}
+        title="Delete Section"
+        description={`Delete '${deleteTarget?.label}'? Blocked while any formula or field still uses it.`}
+        confirmLabel="Delete"
+        danger
+      />
+    </>
+  )
+}
+
+function AddFormulaModal({
+  open,
+  onClose,
+  sectionLabels,
+  sampleVars,
+  onCreate,
+}: {
+  open: boolean
+  onClose: () => void
+  sectionLabels: string[]
+  sampleVars: Record<string, number>
+  onCreate: (input: { key: string; label: string; section: string; expression: string; input_variables: string[]; output_unit: string }) => Promise<void>
+}) {
+  const formulas = useFormulaStore((s) => s.formulas)
+  const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const [label, setLabel] = useState('')
+  const [key, setKey] = useState('')
+  const [keyEdited, setKeyEdited] = useState(false)
+  const [section, setSection] = useState(sectionLabels[0] ?? '')
+  const [outputUnit, setOutputUnit] = useState('')
+  const [expression, setExpression] = useState('')
+  const [insertKey, setInsertKey] = useState('')
+  const [saving, setSaving] = useState(false)
+  const expressionRef = useRef<HTMLTextAreaElement>(null)
+
+  const reset = () => {
+    setLabel('')
+    setKey('')
+    setKeyEdited(false)
+    setSection(sectionLabels[0] ?? '')
+    setOutputUnit('')
+    setExpression('')
+    setInsertKey('')
+  }
+
+  const handleLabelChange = (v: string) => {
+    setLabel(v)
+    if (!keyEdited) setKey(slugifyToCamelCase(v))
+  }
+
+  const insertableKeys = useMemo(
+    () => [...new Set([...Object.keys(formulas), ...Object.keys(techDataFields)])].filter((k) => k !== key).sort(),
+    [formulas, techDataFields, key],
+  )
+
+  const insertToken = (token: string) => {
+    const el = expressionRef.current
+    const start = el?.selectionStart ?? expression.length
+    const end = el?.selectionEnd ?? expression.length
+    const needsLeadingSpace = start > 0 && !/\s$/.test(expression.slice(0, start)) && /[a-zA-Z0-9_]/.test(token[0])
+    const insert = (needsLeadingSpace ? ' ' : '') + token
+    const next = expression.slice(0, start) + insert + expression.slice(end)
+    setExpression(next)
+    requestAnimationFrame(() => {
+      const pos = start + insert.length
+      el?.focus()
+      el?.setSelectionRange(pos, pos)
+    })
+  }
+
+  const knownKeys = useMemo(() => [...insertableKeys, ...INJECTED_RATE_VARIABLES], [insertableKeys])
+  const detectedVariables = useMemo(
+    () => knownKeys.filter((k) => k !== key && new RegExp(`\\b${k}\\b`).test(expression)),
+    [expression, knownKeys, key],
+  )
+
+  const preview = (() => {
+    if (!expression.trim()) return null
+    try {
+      const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
+      return { value: evaluateFormula(expression, vars), error: null as string | null }
+    } catch (err) {
+      return { value: null as number | null, error: err instanceof FormulaError ? err.message : 'Invalid expression' }
+    }
+  })()
+
+  const canSave = label.trim() && key.trim() && section && expression.trim() && !preview?.error
+
+  const handleSave = async () => {
+    setSaving(true)
+    await onCreate({ key: key.trim(), label: label.trim(), section, expression, input_variables: detectedVariables, output_unit: outputUnit })
+    setSaving(false)
+    reset()
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={() => {
+        onClose()
+        reset()
+      }}
+      title="Add Formula"
+      width="max-w-xl"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSave} disabled={!canSave || saving}>
+            Add Formula
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Label</label>
+          <input value={label} onChange={(e) => handleLabelChange(e.target.value)} className={inputClass} placeholder="e.g. Net Margin" />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Key (variable name other formulas can reference)</label>
+          <input
+            value={key}
+            onChange={(e) => {
+              setKey(e.target.value)
+              setKeyEdited(true)
+            }}
+            className={clsx(inputClass, 'font-mono')}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Section</label>
+            <select value={section} onChange={(e) => setSection(e.target.value)} className={inputClass}>
+              {sectionLabels.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+            {sectionLabels.length === 0 && <p className="mt-1 text-xs text-[var(--color-red)]">No sections yet — add one under "Manage Sections" first.</p>}
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Output Unit</label>
+            <input value={outputUnit} onChange={(e) => setOutputUnit(e.target.value)} className={inputClass} placeholder="e.g. kg, INR, %" />
+          </div>
+        </div>
+
+        <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Insert a variable</label>
+              <select
+                value={insertKey}
+                onChange={(e) => {
+                  if (e.target.value) insertToken(e.target.value)
+                  setInsertKey('')
+                }}
+                className={inputClass}
+              >
+                <option value="">Pick a formula or field to insert...</option>
+                {insertableKeys.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+                <optgroup label="Labour rate lookups">
+                  {INJECTED_RATE_VARIABLES.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Operators</label>
+              <div className="flex gap-1">
+                {OPERATOR_TOKENS.map((op) => (
+                  <button
+                    key={op}
+                    type="button"
+                    onClick={() => insertToken(op)}
+                    className="flex-1 rounded-md border border-[var(--color-border)] py-1.5 font-mono text-sm hover:border-[var(--color-blue)] hover:bg-[var(--color-blue-50)]"
+                  >
+                    {op}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Expression</label>
+            <textarea
+              ref={expressionRef}
+              value={expression}
+              onChange={(e) => setExpression(e.target.value)}
+              rows={2}
+              className="w-full rounded-md border border-[var(--color-border)] px-2 py-1.5 font-mono text-xs outline-none focus:border-[var(--color-blue)]"
+              placeholder="Pick a variable above, or type e.g. netOemPrice - totalDirectCost"
+            />
+            <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
+              Detected variables:{' '}
+              {detectedVariables.length > 0 ? (
+                detectedVariables.map((v) => (
+                  <Badge key={v} tone="neutral" className="ml-1">
+                    {v}
+                  </Badge>
+                ))
+              ) : (
+                <span className="italic">none yet</span>
+              )}
+            </p>
+          </div>
+          {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
+          {preview && preview.value !== null && (
+            <p className="text-xs text-[var(--color-ink-faint)]">
+              Preview: <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span> (against the RFQ selected above, unfilled variables read as 0)
+            </p>
+          )}
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -349,7 +819,6 @@ function AddTechDataFieldModal({
   const [key, setKey] = useState('')
   const [keyEdited, setKeyEdited] = useState(false)
   const [section, setSection] = useState(existingSections[0] ?? '')
-  const [newSection, setNewSection] = useState('')
   const [unit, setUnit] = useState('')
   const [fieldType, setFieldType] = useState<'text' | 'number' | 'select'>('text')
   const [optionsText, setOptionsText] = useState('')
@@ -364,7 +833,6 @@ function AddTechDataFieldModal({
     setKey('')
     setKeyEdited(false)
     setSection(existingSections[0] ?? '')
-    setNewSection('')
     setUnit('')
     setFieldType('text')
     setOptionsText('')
@@ -423,16 +891,15 @@ function AddTechDataFieldModal({
     }
   })()
 
-  const effectiveSection = section === '__new__' ? newSection.trim() : section
   const canSave =
-    label.trim() && key.trim() && effectiveSection && (fieldType !== 'select' || isAuto || optionsText.trim()) && (!isAuto || (expression.trim() && !preview?.error))
+    label.trim() && key.trim() && section && (fieldType !== 'select' || isAuto || optionsText.trim()) && (!isAuto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
     setSaving(true)
     await onCreate({
       key: key.trim(),
       label: label.trim(),
-      section: effectiveSection,
+      section,
       unit,
       field_type: fieldType,
       options: fieldType === 'select' ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : [],
@@ -490,11 +957,8 @@ function AddTechDataFieldModal({
                   {s}
                 </option>
               ))}
-              <option value="__new__">+ New section...</option>
             </select>
-            {section === '__new__' && (
-              <input value={newSection} onChange={(e) => setNewSection(e.target.value)} className={clsx(inputClass, 'mt-1.5')} placeholder="Section title" />
-            )}
+            {existingSections.length === 0 && <p className="mt-1 text-xs text-[var(--color-red)]">No sections yet — add one under "Manage Sections" first.</p>}
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Unit</label>
@@ -626,7 +1090,6 @@ function EditTechDataFieldModal({
 }) {
   const [label, setLabel] = useState('')
   const [section, setSection] = useState('')
-  const [newSection, setNewSection] = useState('')
   const [unit, setUnit] = useState('')
   const [optionsText, setOptionsText] = useState('')
   const [saving, setSaving] = useState(false)
@@ -637,7 +1100,6 @@ function EditTechDataFieldModal({
     setOpenedKey(field.key)
     setLabel(field.label)
     setSection(field.section)
-    setNewSection('')
     setUnit(field.unit)
     setOptionsText(field.options.join(', '))
   }
@@ -645,14 +1107,13 @@ function EditTechDataFieldModal({
   if (!field) return null
 
   const isManualSelect = field.field_type === 'select' && !field.is_auto && !field.is_catalog_derived
-  const effectiveSection = section === '__new__' ? newSection.trim() : section
-  const canSave = label.trim() && effectiveSection
+  const canSave = label.trim() && section
 
   const handleSave = async () => {
     setSaving(true)
     await onSave({
       label: label.trim(),
-      section: effectiveSection,
+      section,
       unit,
       options: isManualSelect ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : field.options,
     })
@@ -696,16 +1157,13 @@ function EditTechDataFieldModal({
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Section</label>
             <select value={section} onChange={(e) => setSection(e.target.value)} className={inputClass}>
+              {!existingSections.includes(section) && <option value={section}>{section}</option>}
               {existingSections.map((s) => (
                 <option key={s} value={s}>
                   {s}
                 </option>
               ))}
-              <option value="__new__">+ New section...</option>
             </select>
-            {section === '__new__' && (
-              <input value={newSection} onChange={(e) => setNewSection(e.target.value)} className={clsx(inputClass, 'mt-1.5')} placeholder="Section title" />
-            )}
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Unit</label>
@@ -728,11 +1186,13 @@ function FormulaSectionCard({
   formulas,
   sampleVars,
   onSave,
+  onDelete,
 }: {
   title: string
   formulas: FormulaDefinitionDto[]
   sampleVars: Record<string, number>
   onSave: (key: string, expression: string) => Promise<void>
+  onDelete: (formula: FormulaDefinitionDto) => void
 }) {
   return (
     <Card>
@@ -750,7 +1210,7 @@ function FormulaSectionCard({
           </thead>
           <tbody>
             {formulas.map((f) => (
-              <FormulaRow key={f.key} formula={f} sampleVars={sampleVars} onSave={onSave} />
+              <FormulaRow key={f.key} formula={f} sampleVars={sampleVars} onSave={onSave} onDelete={onDelete} />
             ))}
           </tbody>
         </table>
@@ -763,10 +1223,12 @@ function FormulaRow({
   formula,
   sampleVars,
   onSave,
+  onDelete,
 }: {
   formula: FormulaDefinitionDto
   sampleVars: Record<string, number>
   onSave: (key: string, expression: string) => Promise<void>
+  onDelete: (formula: FormulaDefinitionDto) => void
 }) {
   const [draft, setDraft] = useState(formula.expression)
   const [saving, setSaving] = useState(false)
@@ -824,16 +1286,19 @@ function FormulaRow({
         )}
       </td>
       <td className="px-4 py-2.5">
-        {dirty && (
-          <div className="flex gap-1.5">
-            <Button size="sm" variant="secondary" icon={<RotateCcw size={12} />} onClick={() => setDraft(formula.expression)}>
-              Reset
-            </Button>
-            <Button size="sm" variant="primary" icon={<Save size={12} />} onClick={handleSave} disabled={saving || !!candidate.error}>
-              Save
-            </Button>
-          </div>
-        )}
+        <div className="flex gap-1.5">
+          {dirty && (
+            <>
+              <Button size="sm" variant="secondary" icon={<RotateCcw size={12} />} onClick={() => setDraft(formula.expression)}>
+                Reset
+              </Button>
+              <Button size="sm" variant="primary" icon={<Save size={12} />} onClick={handleSave} disabled={saving || !!candidate.error}>
+                Save
+              </Button>
+            </>
+          )}
+          <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => onDelete(formula)} />
+        </div>
       </td>
     </tr>
   )

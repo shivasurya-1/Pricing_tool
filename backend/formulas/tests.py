@@ -6,7 +6,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from .evaluator import FormulaError, evaluate_formula
-from .models import FormulaDefinition, FormulaSection, TechDataFieldDefinition
+from .models import FormulaDefinition, Section, TECH_DATA_AUTO_SECTION_LABEL, TechDataFieldDefinition
 
 User = get_user_model()
 
@@ -61,15 +61,18 @@ class FormulaApiTests(TestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser("admin2", "admin2@example.com", "adminpass123", role="Admin")
         self.sales = User.objects.create_user("sales2", password="salespass123", role="Sales")
+        self.controlling = User.objects.create_user("controlling2", password="controllingpass123", role="Controlling")
         self.admin_client = APIClient()
         self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
         self.sales_client = APIClient()
         self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        self.controlling_client = APIClient()
+        self.controlling_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.controlling).key}")
 
         self.formula = FormulaDefinition.objects.create(
             key="testFormula",
             label="Test Formula",
-            section=FormulaSection.SECTION_A,
+            section="SectionA",
             expression="a + b",
             input_variables=["a", "b"],
             output_unit="INR",
@@ -114,11 +117,76 @@ class FormulaApiTests(TestCase):
         self.formula.refresh_from_db()
         self.assertEqual(self.formula.expression, "a + b")  # preview never saves
 
-    def test_create_and_delete_are_not_exposed(self):
-        response = self.admin_client.post("/api/formulas/", {"key": "new", "expression": "1"}, format="json")
-        self.assertEqual(response.status_code, 405)
+    def test_controlling_can_create_a_formula(self):
+        response = self.controlling_client.post(
+            "/api/formulas/",
+            {"key": "newFormula", "label": "New Formula", "section": "SectionB", "expression": "testFormula * 2", "input_variables": ["testFormula"], "output_unit": "INR"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(FormulaDefinition.objects.filter(key="newFormula").exists())
+
+    def test_sales_cannot_create_a_formula(self):
+        response = self.sales_client.post(
+            "/api/formulas/", {"key": "newFormula", "label": "New", "section": "SectionB", "expression": "1", "input_variables": []}, format="json"
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_create_rejects_unknown_variable(self):
+        response = self.admin_client.post(
+            "/api/formulas/",
+            {"key": "newFormula", "label": "New", "section": "SectionB", "expression": "totallyUnknownVar * 2", "input_variables": ["totallyUnknownVar"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(FormulaDefinition.objects.filter(key="newFormula").exists())
+
+    def test_create_rejects_duplicate_key(self):
+        response = self.admin_client.post(
+            "/api/formulas/", {"key": self.formula.key, "label": "Dup", "section": "SectionB", "expression": "1", "input_variables": []}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_delete_succeeds_when_unreferenced(self):
         response = self.admin_client.delete(f"/api/formulas/{self.formula.key}/")
-        self.assertEqual(response.status_code, 405)
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(FormulaDefinition.objects.filter(key=self.formula.key).exists())
+
+    def test_delete_is_blocked_while_referenced_by_another_formula(self):
+        FormulaDefinition.objects.create(
+            key="dependent", label="Dependent", section="SectionB", expression="testFormula * 2", input_variables=["testFormula"],
+        )
+        response = self.admin_client.delete(f"/api/formulas/{self.formula.key}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(FormulaDefinition.objects.filter(key=self.formula.key).exists())
+
+    def test_delete_is_blocked_while_backing_a_tech_data_field(self):
+        auto_formula = FormulaDefinition.objects.create(
+            key="autoField", label="Auto Field", section=TECH_DATA_AUTO_SECTION_LABEL, expression="1", input_variables=[],
+        )
+        TechDataFieldDefinition.objects.create(key="autoField", label="Auto Field", section="1. PROJECT INFORMATION", formula=auto_formula)
+        response = self.admin_client.delete("/api/formulas/autoField/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(FormulaDefinition.objects.filter(key="autoField").exists())
+
+    def test_delete_all_is_admin_only(self):
+        response = self.controlling_client.post("/api/formulas/delete-all/", {}, format="json")
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(FormulaDefinition.objects.filter(key=self.formula.key).exists())
+
+    def test_delete_all_wipes_every_formula_and_degrades_linked_fields_to_manual(self):
+        auto_formula = FormulaDefinition.objects.create(
+            key="autoField2", label="Auto Field 2", section=TECH_DATA_AUTO_SECTION_LABEL, expression="1", input_variables=[],
+        )
+        field = TechDataFieldDefinition.objects.create(key="autoField2", label="Auto Field 2", section="1. PROJECT INFORMATION", formula=auto_formula)
+
+        response = self.admin_client.post("/api/formulas/delete-all/", {}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(FormulaDefinition.objects.count(), 0)
+
+        field.refresh_from_db()
+        self.assertIsNone(field.formula)
+        self.assertFalse(field.is_auto)
 
 
 class TechDataFieldDefinitionApiTests(TestCase):
@@ -138,7 +206,7 @@ class TechDataFieldDefinitionApiTests(TestCase):
             key="shellPlateWeight", label="Shell Plate Weight", section="2. PULLEY BODY DIMENSIONS", unit="kg",
             field_type="number", is_core=True,
             formula=FormulaDefinition.objects.create(
-                key="shellPlateWeight", label="Shell Plate Weight", section=FormulaSection.TECH_DATA_AUTO,
+                key="shellPlateWeight", label="Shell Plate Weight", section=TECH_DATA_AUTO_SECTION_LABEL,
                 expression="shellOD * 2", input_variables=["shellOD"], output_unit="kg",
             ),
         )
@@ -219,7 +287,7 @@ class TechDataFieldDefinitionApiTests(TestCase):
             key="couplingWeight", label="Coupling Weight", section="2. PULLEY BODY DIMENSIONS", field_type="number",
         )
         FormulaDefinition.objects.create(
-            key="couplingCost", label="Coupling Cost", section=FormulaSection.TECH_DATA_AUTO,
+            key="couplingCost", label="Coupling Cost", section=TECH_DATA_AUTO_SECTION_LABEL,
             expression="couplingWeight * 100", input_variables=["couplingWeight"],
         )
         response = self.admin_client.delete(f"/api/formulas/tech-data-fields/{custom.key}/")
@@ -238,7 +306,7 @@ class TechDataFieldDefinitionApiTests(TestCase):
         custom = TechDataFieldDefinition.objects.create(
             key="scratchAuto", label="Scratch Auto", section="1. PROJECT INFORMATION", field_type="number",
             formula=FormulaDefinition.objects.create(
-                key="scratchAuto", label="Scratch Auto", section=FormulaSection.TECH_DATA_AUTO, expression="1", input_variables=[],
+                key="scratchAuto", label="Scratch Auto", section=TECH_DATA_AUTO_SECTION_LABEL, expression="1", input_variables=[],
             ),
         )
         response = self.admin_client.delete(f"/api/formulas/tech-data-fields/{custom.key}/")
@@ -263,3 +331,46 @@ class BackfillTechDataFieldsTests(TestCase):
 
         call_command("backfill_tech_data_fields")
         self.assertEqual(TechDataFieldDefinition.objects.count(), first_count)
+
+
+class SectionApiTests(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser("admin4", "admin4@example.com", "adminpass123", role="Admin")
+        self.sales = User.objects.create_user("sales4", password="salespass123", role="Sales")
+        self.admin_client = APIClient()
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.sales_client = APIClient()
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+
+        self.section = Section.objects.create(key="raw-materials", label="Raw Materials", order=1)
+
+    def test_anyone_authenticated_can_list_sections(self):
+        response = self.sales_client.get("/api/formulas/sections/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_only_admin_or_controlling_can_create(self):
+        response = self.sales_client.post("/api/formulas/sections/", {"key": "new-section", "label": "New Section"}, format="json")
+        self.assertEqual(response.status_code, 403)
+        response = self.admin_client.post("/api/formulas/sections/", {"key": "new-section", "label": "New Section"}, format="json")
+        self.assertEqual(response.status_code, 201)
+
+    def test_renaming_a_section_cascades_to_formulas_and_fields(self):
+        FormulaDefinition.objects.create(key="f1", label="F1", section="Raw Materials", expression="1", input_variables=[])
+        TechDataFieldDefinition.objects.create(key="tf1", label="TF1", section="Raw Materials")
+
+        response = self.admin_client.patch(f"/api/formulas/sections/{self.section.id}/", {"label": "Raw Material Inputs"}, format="json")
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(FormulaDefinition.objects.get(key="f1").section, "Raw Material Inputs")
+        self.assertEqual(TechDataFieldDefinition.objects.get(key="tf1").section, "Raw Material Inputs")
+
+    def test_delete_is_blocked_while_a_formula_uses_it(self):
+        FormulaDefinition.objects.create(key="f2", label="F2", section="Raw Materials", expression="1", input_variables=[])
+        response = self.admin_client.delete(f"/api/formulas/sections/{self.section.id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(Section.objects.filter(id=self.section.id).exists())
+
+    def test_delete_succeeds_when_unused(self):
+        response = self.admin_client.delete(f"/api/formulas/sections/{self.section.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Section.objects.filter(id=self.section.id).exists())

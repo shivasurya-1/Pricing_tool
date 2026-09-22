@@ -23,7 +23,22 @@ Conventions used so every formula stays a plain restricted arithmetic expression
 
 from django.core.management.base import BaseCommand
 
-from formulas.models import FormulaDefinition, FormulaSection
+from formulas.models import FormulaDefinition, Section, TECH_DATA_AUTO_SECTION_KEY, TECH_DATA_AUTO_SECTION_LABEL
+
+# (registry key, display label — the label is the actual value stored in every
+# FormulaDefinition.section field below; the key only identifies the Section row
+# itself). Was FormulaSection's fixed choices; Section is now a plain
+# user-manageable registry (see formulas/models.py), but these are still the 7
+# sections this command's own seed data is organized into.
+FORMULA_SECTIONS = [
+    (TECH_DATA_AUTO_SECTION_KEY, TECH_DATA_AUTO_SECTION_LABEL),
+    ("SectionA", "Pricing Section A — Raw Materials"),
+    ("SectionB", "Pricing Section B — Ancillary Parts"),
+    ("SectionC", "Pricing Section C — In-House Processing"),
+    ("SectionD", "Pricing Section D — Outsourced Processing"),
+    ("SectionE", "Pricing Section E — Packing & Shipment"),
+    ("SectionF", "Pricing Section F — Summary"),
+]
 
 IN_HOUSE_OPS = [
     ("c1", "Rolling / Bending Shell", "rollingBending"),
@@ -122,14 +137,17 @@ class Command(BaseCommand):
     help = "Seed every auto-calculated formula from the frontend's hardcoded TS as an editable FormulaDefinition."
 
     def handle(self, *args, **options):
+        for order, (key, label) in enumerate(FORMULA_SECTIONS):
+            Section.objects.get_or_create(key=key, defaults={"label": label, "order": order})
+
         groups = [
-            (FormulaSection.TECH_DATA_AUTO, tech_data_auto_rows()),
-            (FormulaSection.SECTION_A, section_a_rows()),
-            (FormulaSection.SECTION_B, section_b_rows()),
-            (FormulaSection.SECTION_C, section_c_rows()),
-            (FormulaSection.SECTION_D, section_d_rows()),
-            (FormulaSection.SECTION_E, section_e_rows()),
-            (FormulaSection.SECTION_F, section_f_rows()),
+            (TECH_DATA_AUTO_SECTION_LABEL, tech_data_auto_rows()),
+            ("Pricing Section A — Raw Materials", section_a_rows()),
+            ("Pricing Section B — Ancillary Parts", section_b_rows()),
+            ("Pricing Section C — In-House Processing", section_c_rows()),
+            ("Pricing Section D — Outsourced Processing", section_d_rows()),
+            ("Pricing Section E — Packing & Shipment", section_e_rows()),
+            ("Pricing Section F — Summary", section_f_rows()),
         ]
         total = 0
         for section, rows in groups:
