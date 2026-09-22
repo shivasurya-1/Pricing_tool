@@ -32,12 +32,16 @@ class CustomerSerializer(CamelCaseSerializer):
     class Meta:
         model = Customer
         fields = ["id", "code", "name", "contact", "email", "phone", "city", "tax_id", "payment_terms", "status", "updated_at"]
+        # `id` is server-generated (generate_customer_id) — read-only so the frontend's
+        # "new record" placeholder id ("") never reaches validation as a real value.
+        read_only_fields = ["id"]
 
 
 class VendorSerializer(CamelCaseSerializer):
     class Meta:
         model = Vendor
         fields = ["id", "code", "name", "category", "contact", "email", "rating", "payment_terms", "status"]
+        read_only_fields = ["id"]
 
 
 class ProductSerializer(CamelCaseSerializer):
@@ -47,6 +51,7 @@ class ProductSerializer(CamelCaseSerializer):
             "id", "code", "name", "category", "unit", "description", "default_lead_time_days",
             "base_price", "status", "technical_data", "preferred_vendor_ids", "sourcing_type",
         ]
+        read_only_fields = ["id"]
 
 
 class RFQItemSerializer(CamelCaseSerializer):

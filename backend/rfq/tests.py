@@ -195,6 +195,15 @@ class RFQWorkflowTests(TestCase):
         response = self.sales.get("/api/rfq/products/")
         self.assertEqual(response.status_code, 200)
 
+    def test_create_ignores_a_client_supplied_blank_id(self):
+        # Regression: ProductsPage.tsx's "new product" draft starts with id: "" (it
+        # doesn't have a real one yet) and sends the whole object on create — id must
+        # be read-only, or DRF rejects "" as an invalid (blank) value for the field.
+        payload = {"id": "", "code": "PROD-997", "name": "New pulley", "category": "", "unit": "Nos", "description": "", "basePrice": 0}
+        response = self.controlling.post("/api/rfq/products/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertNotEqual(response.data["id"], "")
+
     def test_product_can_be_updated_and_deleted(self):
         created = self.controlling.post("/api/rfq/products/", {"code": "PROD-998", "name": "Temp pulley", "unit": "Nos"}, format="json")
         product_id = created.data["id"]
