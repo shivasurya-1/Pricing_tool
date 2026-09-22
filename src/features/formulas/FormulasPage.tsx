@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { Tabs } from '@/components/ui/Tabs'
 import { EmptyState } from '@/components/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -28,6 +29,12 @@ const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 p
 const INJECTED_RATE_VARIABLES = ['c1RateInrPerHour', 'c2RateInrPerHour', 'c3RateInrPerHour', 'c4RateInrPerHour', 'c5RateInrPerHour', 'c6RateInrPerHour', 'c7RateInrPerHour']
 
 const OPERATOR_TOKENS = ['+', '-', '*', '/', '(', ')']
+
+// Matches backend/formulas/models.py's TECH_DATA_AUTO_SECTION_LABEL — the one
+// formula section that isn't a pricing stage, used to split the page into
+// "Technical Sheet Formulas" vs "Pricing Tool Formulas" tabs below.
+const TECH_DATA_AUTO_SECTION_LABEL = 'Technical Data Sheet — Auto Fields'
+const FORMULA_TABS = ['Technical Sheet Formulas', 'Pricing Tool Formulas'] as const
 
 function slugifyToCamelCase(label: string): string {
   const words = label
@@ -70,6 +77,7 @@ export function FormulasPage() {
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const [sectionsManagerOpen, setSectionsManagerOpen] = useState(false)
   const [showTechDataSheet, setShowTechDataSheet] = useState(false)
+  const [formulaTab, setFormulaTab] = useState<(typeof FORMULA_TABS)[number]>('Pricing Tool Formulas')
 
   const rfqsWithTechData = useMemo(() => rfqs.filter((r) => r.items.some((it) => isTechDataFilled(it.technicalData))), [rfqs])
   const [rfqId, setRfqId] = useState(rfqsWithTechData[0]?.id ?? '')
@@ -111,6 +119,14 @@ export function FormulasPage() {
   const formulaSectionsPresent = useMemo(
     () => Object.keys(grouped).sort((a, b) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999)),
     [grouped, sectionOrder],
+  )
+  const technicalFormulaSections = useMemo(
+    () => formulaSectionsPresent.filter((s) => s === TECH_DATA_AUTO_SECTION_LABEL),
+    [formulaSectionsPresent],
+  )
+  const pricingFormulaSections = useMemo(
+    () => formulaSectionsPresent.filter((s) => s !== TECH_DATA_AUTO_SECTION_LABEL),
+    [formulaSectionsPresent],
   )
 
   const techDataSections = useMemo(() => [...new Set(Object.values(techDataFields).map((f) => f.section))].sort(), [techDataFields])
@@ -199,40 +215,78 @@ export function FormulasPage() {
         </div>
       </Card>
 
-      <div className="space-y-5">
-        {formulaSectionsPresent.map((section) => (
-          <FormulaSectionCard
-            key={section}
-            title={section}
-            formulas={grouped[section]}
-            sampleVars={sampleVars}
-            onDelete={setDeleteFormulaTarget}
-            onSave={async (key, expression) => {
-              try {
-                await updateFormula(key, expression)
-                pushToast('Formula saved.', 'success')
-              } catch (err) {
-                pushToast(err instanceof Error ? err.message : 'Failed to save formula.', 'error')
-              }
-            }}
-          />
-        ))}
-      </div>
+      <Card className="mb-5">
+        <Tabs tabs={[...FORMULA_TABS]} active={formulaTab} onChange={(t) => setFormulaTab(t as (typeof FORMULA_TABS)[number])} />
+      </Card>
 
-      <div className="mt-8">
-        <CardHeader title="Technical Data Sheet — Field Schema" description="Every field on the sheet Sales/Operations fill in. Add a new one below, Manual or Auto." />
+      {formulaTab === 'Pricing Tool Formulas' && (
         <div className="space-y-5">
-          {techDataSections.map((section) => (
-            <TechDataFieldSectionCard
-              key={section}
-              title={section}
-              fields={techDataBySection[section]}
-              onEdit={setEditTarget}
-              onDelete={setDeleteTarget}
-            />
-          ))}
+          {pricingFormulaSections.length === 0 ? (
+            <EmptyState title="No pricing formulas" description="Add one with the 'Add Formula' button above." />
+          ) : (
+            pricingFormulaSections.map((section) => (
+              <FormulaSectionCard
+                key={section}
+                title={section}
+                formulas={grouped[section]}
+                sampleVars={sampleVars}
+                onDelete={setDeleteFormulaTarget}
+                onSave={async (key, expression) => {
+                  try {
+                    await updateFormula(key, expression)
+                    pushToast('Formula saved.', 'success')
+                  } catch (err) {
+                    pushToast(err instanceof Error ? err.message : 'Failed to save formula.', 'error')
+                  }
+                }}
+              />
+            ))
+          )}
         </div>
-      </div>
+      )}
+
+      {formulaTab === 'Technical Sheet Formulas' && (
+        <>
+          <div className="space-y-5">
+            {technicalFormulaSections.length === 0 ? (
+              <EmptyState title="No Technical Data Sheet auto-formulas" description="Add one with the 'Add Formula' button above." />
+            ) : (
+              technicalFormulaSections.map((section) => (
+                <FormulaSectionCard
+                  key={section}
+                  title={section}
+                  formulas={grouped[section]}
+                  sampleVars={sampleVars}
+                  onDelete={setDeleteFormulaTarget}
+                  onSave={async (key, expression) => {
+                    try {
+                      await updateFormula(key, expression)
+                      pushToast('Formula saved.', 'success')
+                    } catch (err) {
+                      pushToast(err instanceof Error ? err.message : 'Failed to save formula.', 'error')
+                    }
+                  }}
+                />
+              ))
+            )}
+          </div>
+
+          <div className="mt-8">
+            <CardHeader title="Technical Data Sheet — Field Schema" description="Every field on the sheet Sales/Operations fill in. Add a new one below, Manual or Auto." />
+            <div className="space-y-5">
+              {techDataSections.map((section) => (
+                <TechDataFieldSectionCard
+                  key={section}
+                  title={section}
+                  fields={techDataBySection[section]}
+                  onEdit={setEditTarget}
+                  onDelete={setDeleteTarget}
+                />
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       <AddTechDataFieldModal
         open={addFieldOpen}
