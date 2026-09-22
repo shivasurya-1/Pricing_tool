@@ -129,6 +129,20 @@ export function FormulasPage() {
     [formulaSectionsPresent],
   )
 
+  const sectionUsage = useMemo(() => {
+    const usage: Record<string, { formulaCount: number; fieldCount: number }> = {}
+    for (const s of sections) usage[s.label] = { formulaCount: 0, fieldCount: 0 }
+    for (const f of Object.values(formulas)) {
+      usage[f.section] = usage[f.section] ?? { formulaCount: 0, fieldCount: 0 }
+      usage[f.section].formulaCount++
+    }
+    for (const f of Object.values(techDataFields)) {
+      usage[f.section] = usage[f.section] ?? { formulaCount: 0, fieldCount: 0 }
+      usage[f.section].fieldCount++
+    }
+    return usage
+  }, [sections, formulas, techDataFields])
+
   const techDataSections = useMemo(() => [...new Set(Object.values(techDataFields).map((f) => f.section))].sort(), [techDataFields])
   const techDataBySection = useMemo(() => {
     const bySection: Record<string, TechDataFieldDto[]> = {}
@@ -399,6 +413,7 @@ export function FormulasPage() {
         open={sectionsManagerOpen}
         onClose={() => setSectionsManagerOpen(false)}
         sections={sections}
+        usage={sectionUsage}
         onCreate={async (input) => {
           try {
             await createSection(input)
@@ -471,6 +486,7 @@ function SectionsManagerModal({
   open,
   onClose,
   sections,
+  usage,
   onCreate,
   onRename,
   onDelete,
@@ -478,6 +494,7 @@ function SectionsManagerModal({
   open: boolean
   onClose: () => void
   sections: SectionDto[]
+  usage: Record<string, { formulaCount: number; fieldCount: number }>
   onCreate: (input: { key: string; label: string; order?: number }) => Promise<void>
   onRename: (id: number, label: string) => Promise<void>
   onDelete: (section: SectionDto) => Promise<void>
@@ -506,31 +523,45 @@ function SectionsManagerModal({
             Shared by both Formulas and the Technical Data Sheet. Renaming updates every formula/field already assigned to it.
           </p>
           <div className="max-h-[50vh] space-y-1.5 overflow-y-auto">
-            {sorted.map((s) => (
-              <div key={s.id} className="flex items-center gap-2 rounded-md border border-[var(--color-border)] px-2.5 py-1.5">
-                <input
-                  value={renameDrafts[s.id] ?? s.label}
-                  onChange={(e) => setRenameDrafts((d) => ({ ...d, [s.id]: e.target.value }))}
-                  className={clsx(inputClass, 'flex-1')}
-                />
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={(renameDrafts[s.id] ?? s.label) === s.label || !(renameDrafts[s.id] ?? '').trim()}
-                  onClick={async () => {
-                    await onRename(s.id, renameDrafts[s.id].trim())
-                    setRenameDrafts((d) => {
-                      const next = { ...d }
-                      delete next[s.id]
-                      return next
-                    })
-                  }}
-                >
-                  Save
-                </Button>
-                <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => setDeleteTarget(s)} />
-              </div>
-            ))}
+            {sorted.map((s) => {
+              const u = usage[s.label] ?? { formulaCount: 0, fieldCount: 0 }
+              return (
+                <div key={s.id} className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={renameDrafts[s.id] ?? s.label}
+                      onChange={(e) => setRenameDrafts((d) => ({ ...d, [s.id]: e.target.value }))}
+                      className={clsx(inputClass, 'flex-1')}
+                    />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={(renameDrafts[s.id] ?? s.label) === s.label || !(renameDrafts[s.id] ?? '').trim()}
+                      onClick={async () => {
+                        await onRename(s.id, renameDrafts[s.id].trim())
+                        setRenameDrafts((d) => {
+                          const next = { ...d }
+                          delete next[s.id]
+                          return next
+                        })
+                      }}
+                    >
+                      Save
+                    </Button>
+                    <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => setDeleteTarget(s)} />
+                  </div>
+                  <div className="mt-1.5 flex gap-1.5">
+                    {u.formulaCount > 0 && (
+                      <Badge tone={s.label === TECH_DATA_AUTO_SECTION_LABEL ? 'purple' : 'blue'}>
+                        {u.formulaCount} formula{u.formulaCount === 1 ? '' : 's'}
+                      </Badge>
+                    )}
+                    {u.fieldCount > 0 && <Badge tone="teal">{u.fieldCount} field{u.fieldCount === 1 ? '' : 's'}</Badge>}
+                    {u.formulaCount === 0 && u.fieldCount === 0 && <Badge tone="neutral">Unused</Badge>}
+                  </div>
+                </div>
+              )
+            })}
           </div>
           <div className="flex gap-2 border-t border-[var(--color-border)] pt-3">
             <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} className={inputClass} placeholder="New section name" />
