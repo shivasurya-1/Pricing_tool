@@ -293,6 +293,7 @@ export function FormulasPage() {
                   key={section}
                   title={section}
                   fields={techDataBySection[section]}
+                  isAdmin={role === 'Admin'}
                   onEdit={setEditTarget}
                   onDelete={setDeleteTarget}
                 />
@@ -332,8 +333,12 @@ export function FormulasPage() {
             setDeleteTarget(null)
           }
         }}
-        title="Delete Field"
-        description={`Remove '${deleteTarget?.label}' from the Technical Data Sheet? This can't be undone.`}
+        title={deleteTarget?.is_core ? 'Delete CORE Field' : 'Delete Field'}
+        description={
+          deleteTarget?.is_core
+            ? `'${deleteTarget?.label}' is one of the original Technical Data Sheet fields — deleting it may affect historical RFQ data and any pricing calculation that reads it. This can't be undone.`
+            : `Remove '${deleteTarget?.label}' from the Technical Data Sheet? This can't be undone.`
+        }
         confirmLabel="Delete"
         danger
       />
@@ -809,11 +814,13 @@ function AddFormulaModal({
 function TechDataFieldSectionCard({
   title,
   fields,
+  isAdmin,
   onEdit,
   onDelete,
 }: {
   title: string
   fields: TechDataFieldDto[]
+  isAdmin: boolean
   onEdit: (field: TechDataFieldDto) => void
   onDelete: (field: TechDataFieldDto) => void
 }) {
@@ -859,8 +866,13 @@ function TechDataFieldSectionCard({
                     <Button size="sm" variant="secondary" icon={<Pencil size={12} />} onClick={() => onEdit(f)}>
                       Edit
                     </Button>
-                    {!f.is_core && (
-                      <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => onDelete(f)}>
+                    {(!f.is_core || isAdmin) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<Trash2 size={12} className={f.is_core ? 'text-[var(--color-red)]' : undefined} />}
+                        onClick={() => onDelete(f)}
+                      >
                         Delete
                       </Button>
                     )}

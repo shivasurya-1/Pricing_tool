@@ -277,10 +277,30 @@ class TechDataFieldDefinitionApiTests(TestCase):
         self.assertEqual(self.core_field.label, "New Label")
         self.assertEqual(self.core_field.order, 5)
 
-    def test_core_field_cannot_be_deleted(self):
-        response = self.admin_client.delete(f"/api/formulas/tech-data-fields/{self.core_field.key}/")
+    def test_core_field_cannot_be_deleted_by_non_admin(self):
+        self.controlling = User.objects.create_user("controlling3", password="controllingpass123", role="Controlling")
+        controlling_client = APIClient()
+        controlling_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.controlling).key}")
+        response = controlling_client.delete(f"/api/formulas/tech-data-fields/{self.core_field.key}/")
         self.assertEqual(response.status_code, 400)
         self.assertTrue(TechDataFieldDefinition.objects.filter(key=self.core_field.key).exists())
+
+    def test_core_field_can_be_deleted_by_admin(self):
+        # self.core_field ("shellOD") is still referenced by self.auto_field's formula
+        # — use an unreferenced standalone core field instead, to isolate this test to
+        # just the is_core/role check, not the separate reference-blocking behavior.
+        standalone_core = TechDataFieldDefinition.objects.create(
+            key="standaloneCore", label="Standalone Core Field", section="1. PROJECT INFORMATION", field_type="text", is_core=True,
+        )
+        response = self.admin_client.delete(f"/api/formulas/tech-data-fields/{standalone_core.key}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(TechDataFieldDefinition.objects.filter(key=standalone_core.key).exists())
+
+    def test_admin_deleting_a_core_auto_field_also_deletes_its_formula(self):
+        formula_key = self.auto_field.formula.key
+        response = self.admin_client.delete(f"/api/formulas/tech-data-fields/{self.auto_field.key}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(FormulaDefinition.objects.filter(key=formula_key).exists())
 
     def test_custom_field_referenced_by_a_formula_cannot_be_deleted(self):
         custom = TechDataFieldDefinition.objects.create(
