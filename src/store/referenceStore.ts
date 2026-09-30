@@ -36,6 +36,7 @@ export interface HousingCatalogDto {
 
 export interface LaggingCatalogDto {
   id: number
+  key: string
   lagging_type: string
   thickness_mm: number
   price_inr_per_m2: number
@@ -92,6 +93,7 @@ interface ReferenceState {
   createHousing: (input: Omit<HousingCatalogDto, 'id'>) => Promise<void>
   deleteHousing: (id: number) => Promise<void>
   createLagging: (input: Omit<LaggingCatalogDto, 'id'>) => Promise<void>
+  updateLagging: (id: number, patch: Partial<Omit<LaggingCatalogDto, 'id'>>) => Promise<void>
   deleteLagging: (id: number) => Promise<void>
   createLockingDevice: (input: Omit<LockingDeviceCatalogDto, 'id'>) => Promise<void>
   deleteLockingDevice: (id: number) => Promise<void>
@@ -124,7 +126,7 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
         api.get<BearingCatalogDto[]>('/reference/catalogs/bearings/'),
         api.get<SleeveCatalogDto[]>('/reference/catalogs/sleeves/'),
         api.get<HousingCatalogDto[]>('/reference/catalogs/housings/'),
-        api.get<LaggingCatalogDto[]>('/reference/catalogs/lagging/'),
+        api.get<LaggingCatalogDto[]>('/reference/cost-rates/lagging-rates/'),
         api.get<LockingDeviceCatalogDto[]>('/reference/catalogs/locking-devices/'),
         api.get<RawForgingRateDto[]>('/reference/raw-forging-rates/'),
         api.get<InHouseHourRateDto[]>('/reference/in-house-hours/'),
@@ -165,11 +167,15 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
   },
 
   createLagging: async (input) => {
-    const created = await api.post<LaggingCatalogDto>('/reference/catalogs/lagging/', input)
+    const created = await api.post<LaggingCatalogDto>('/reference/cost-rates/lagging-rates/', input)
     set((s) => ({ lagging: [...s.lagging, created] }))
   },
+  updateLagging: async (id, patch) => {
+    const updated = await api.patch<LaggingCatalogDto>(`/reference/cost-rates/lagging-rates/${id}/`, patch)
+    set((s) => ({ lagging: s.lagging.map((x) => (x.id === id ? updated : x)) }))
+  },
   deleteLagging: async (id) => {
-    await api.delete(`/reference/catalogs/lagging/${id}/`)
+    await api.delete(`/reference/cost-rates/lagging-rates/${id}/`)
     set((s) => ({ lagging: s.lagging.filter((x) => x.id !== id) }))
   },
 

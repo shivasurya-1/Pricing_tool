@@ -6,7 +6,6 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from accounts.models import Role
 from accounts.permissions import CanEditReferenceData, IsAdminRole
 
 from .evaluator import FormulaError, evaluate_formula
@@ -263,7 +262,7 @@ class TechDataFieldDefinitionViewSet(
 
     def destroy(self, request, *args, **kwargs):
         field: TechDataFieldDefinition = self.get_object()
-        if field.is_core and request.user.role != Role.ADMIN:
+        if field.is_core and not request.user.is_admin:
             raise ValidationError({"detail": f"'{field.key}' is a core sheet field — only an Admin can delete it."})
 
         blockers = []

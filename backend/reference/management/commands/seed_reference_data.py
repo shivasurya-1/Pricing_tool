@@ -1,5 +1,5 @@
 """
-One-time migration: seed CostRateValue, RawForgingRate, and the 5 catalogs from the
+One-time migration: seed the Cost Rate Tables, Raw Forging Prices (shaft/shell bands), and the 5 catalogs from the
 frontend's existing static TS files (src/data/pulleyCostRates.ts, pulleyCatalogs.ts),
 so the backend starts from numbers already verified against the client's workbook —
 see the backend build plan's "Build Order" step 2.
@@ -16,13 +16,18 @@ from django.core.management.base import BaseCommand
 
 from reference.models import (
     BearingCatalogEntry,
-    CostRateCategory,
-    CostRateValue,
+    GlobalParameter,
     HousingCatalogEntry,
     InHouseHourRate,
+    LagDataEntry,
     LaggingCatalogEntry,
+    LcdDataEntry,
     LockingDeviceCatalogEntry,
-    RawForgingRate,
+    LogisticsPackingRate,
+    MachiningLabourRate,
+    MaterialRate,
+    ShaftForgingBand,
+    ShellForgingBand,
     SleeveCatalogEntry,
 )
 
@@ -64,74 +69,137 @@ def parse_ts_array(file_text: str, const_name: str) -> list[dict]:
     return rows
 
 
+def lagging_key(lagging_type: str) -> str:
+    """'Rubber vulc. 12mm' -> 'rubber_vulc_12mm' — same rule as migration 0004."""
+    return re.sub(r"[^0-9A-Za-z]+", "_", lagging_type).strip("_").lower()
+
+
 class Command(BaseCommand):
     help = "Seed reference data (cost rates, raw forging rates, component catalogs) from the frontend's TS source files."
 
     def handle(self, *args, **options):
         self.seed_cost_rates()
         self.seed_raw_forging_rates()
+        self.seed_lag_data()
+        self.seed_lcd_data()
         self.seed_catalogs()
         self.seed_in_house_hours()
         self.stdout.write(self.style.SUCCESS("Reference data seeded."))
 
     def seed_cost_rates(self):
-        rows = [
-            ("exchangeRateEurToInr", "Exchange Rate EUR → INR", CostRateCategory.GLOBAL, 110, "INR/EUR"),
-            ("gstRate", "GST Rate", CostRateCategory.GLOBAL, 0.18, "%"),
-            ("oemDiscount", "OEM Discount", CostRateCategory.GLOBAL, 0.1, "%"),
-            ("priceFactorMarkup", "Price Factor HK0 (markup)", CostRateCategory.GLOBAL, 1.8, "×"),
-            ("deliverySafetyFactor", "Delivery Safety Factor", CostRateCategory.GLOBAL, 1.2, "×"),
-            ("weldConsumablesInrPerKgPulley", "Weld consumables (per kg pulley)", CostRateCategory.MATERIAL, 6, "INR/kg"),
-            ("greaseInrPerKgPulley", "Grease (per kg pulley)", CostRateCategory.MATERIAL, 18, "INR/kg"),
-            ("latheTurning", "Lathe turning", CostRateCategory.LABOUR, 711.27, "INR/h"),
-            ("rollingBending", "Rolling / bending", CostRateCategory.LABOUR, 893.35, "INR/h"),
-            ("weldingMigMag", "Welding (MIG/MAG)", CostRateCategory.LABOUR, 497.86, "INR/h"),
-            ("grindingFinishing", "Grinding / finishing", CostRateCategory.LABOUR, 491.32, "INR/h"),
-            ("assemblyLabour", "Assembly labour", CostRateCategory.LABOUR, 911.83, "INR/h"),
-            ("engineeringDesign", "Engineering / design", CostRateCategory.LABOUR, 338.12, "INR/h"),
-            ("paintingSurfacePrep", "Painting / surface prep", CostRateCategory.LABOUR, 924.99, "INR/m²"),
-            ("heatTreatmentInrPerKg", "Heat treatment / annealing (per kg)", CostRateCategory.LABOUR, 8.5, "INR/kg"),
-            ("stressReliefInrPerKg", "Stress relief (per kg)", CostRateCategory.LABOUR, 7.2, "INR/kg"),
-            ("balancingInrPerSet", "Balancing (per set)", CostRateCategory.LABOUR, 1440, "INR/set"),
-            ("machiningOutsourcedInrPerKg", "Machining body – outsourced (per kg)", CostRateCategory.LABOUR, 87.17, "INR/kg"),
-            ("packingWoodCratePer100kg", "Packing – wood crate (per 100 kg)", CostRateCategory.LOGISTICS, 650, "INR/100kg"),
-            ("inboundFreightShaftPerKg", "Inbound freight – shaft (per kg)", CostRateCategory.LOGISTICS, 2.2, "INR/kg"),
-            ("inboundFreightPlatesPerKg", "Inbound freight – plates (per kg)", CostRateCategory.LOGISTICS, 1.8, "INR/kg"),
-            ("inboundFreightPurchasedPartsPerOrder", "Inbound freight – purchased parts (per order)", CostRateCategory.LOGISTICS, 1500, "INR/order"),
-            ("outboundShippingFobPerKg", "Outbound shipping FOB (per kg)", CostRateCategory.LOGISTICS, 3.5, "INR/kg"),
+        tables = [
+            (GlobalParameter, "parameter", "value", [
+                ("exchangeRateEurToInr", "Exchange Rate EUR → INR", 110, "INR/EUR"),
+                ("gstRate", "GST Rate", 0.18, "%"),
+                ("oemDiscount", "OEM Discount", 0.1, "%"),
+                ("priceFactorMarkup", "Price Factor HK0 (markup)", 1.8, "×"),
+                ("deliverySafetyFactor", "Delivery Safety Factor", 1.2, "×"),
+                # Process rates that aren't hourly, so they don't fit Machining & Labour's INR/h column.
+                ("paintingSurfacePrep", "Painting / surface prep", 924.99, "INR/m²"),
+                ("heatTreatmentInrPerKg", "Heat treatment / annealing (per kg)", 8.5, "INR/kg"),
+                ("stressReliefInrPerKg", "Stress relief (per kg)", 7.2, "INR/kg"),
+                ("balancingInrPerSet", "Balancing (per set)", 1440, "INR/set"),
+                ("machiningOutsourcedInrPerKg", "Machining body – outsourced (per kg)", 87.17, "INR/kg"),
+            ]),
+            (MaterialRate, "material", "inr_per_kg", [
+                ("weldConsumablesInrPerKgPulley", "Weld consumables (per kg pulley)", 6, None),
+                ("greaseInrPerKgPulley", "Grease (per kg pulley)", 18, None),
+            ]),
+            (MachiningLabourRate, "operation", "inr_per_hour", [
+                ("latheTurning", "Lathe turning", 711.27, None),
+                ("rollingBending", "Rolling / bending", 893.35, None),
+                ("weldingMigMag", "Welding (MIG/MAG)", 497.86, None),
+                ("grindingFinishing", "Grinding / finishing", 491.32, None),
+                ("assemblyLabour", "Assembly labour", 911.83, None),
+                ("engineeringDesign", "Engineering / design", 338.12, None),
+            ]),
+            (LogisticsPackingRate, "item", "rate", [
+                ("packingWoodCratePer100kg", "Packing – wood crate (per 100 kg)", 650, "INR/100kg"),
+                ("inboundFreightShaftPerKg", "Inbound freight – shaft (per kg)", 2.2, "INR/kg"),
+                ("inboundFreightPlatesPerKg", "Inbound freight – plates (per kg)", 1.8, "INR/kg"),
+                ("inboundFreightPurchasedPartsPerOrder", "Inbound freight – purchased parts (per order)", 1500, "INR/order"),
+                ("outboundShippingFobPerKg", "Outbound shipping FOB (per kg)", 3.5, "INR/kg"),
+            ]),
         ]
-        for order, (key, label, category, value, unit) in enumerate(rows):
-            CostRateValue.objects.update_or_create(key=key, defaults={"label": label, "category": category, "value": value, "unit": unit, "order": order})
-        self.stdout.write(f"  cost rates: {len(rows)}")
+        total = 0
+        for model, name_field, value_field, rows in tables:
+            for order, (key, name, value, unit) in enumerate(rows):
+                defaults = {name_field: name, value_field: value, "order": order}
+                if unit is not None:
+                    defaults["unit"] = unit
+                model.objects.update_or_create(key=key, defaults=defaults)
+            total += len(rows)
+        self.stdout.write(f"  cost rates: {total}")
 
     def seed_raw_forging_rates(self):
-        # What Pricing Tool's Section A actually reads — Raw Forging Prices!$I$14/$J$14 (shell/hub,
-        # flat for every model) and the shaft IF() by material grade. See RawForgingPricesPage.tsx
-        # for the full displayed size-band reference table (not all bands feed live calc today).
-        rows = [
-            dict(part="shaft", material="C45", sourcing="", size_band_label="Ø 80 - 180", plate_rate=None, end_disc_rate=None, active=False, order=0),
-            dict(part="shaft", material="42CrMo4+QT", sourcing="", size_band_label="Ø 200 - 880", plate_rate=None, end_disc_rate=None, active=True, order=1),
-            dict(part="shaft", material="30CrNiMo8+QT/36CrNiMo4+QT/34CrNiMo6+QT", sourcing="", size_band_label="Ø 300 - 450", plate_rate=None, end_disc_rate=None, active=False, order=2),
-            dict(part="shell", material="", sourcing="Outsourced", size_band_label="300 – ≤500", plate_rate=None, end_disc_rate=None, active=False, order=0),
-            dict(part="shell", material="", sourcing="Inhouse", size_band_label=">550 – 1000", plate_rate=110, end_disc_rate=210, active=True, order=1),
-            dict(part="shell", material="", sourcing="Inhouse", size_band_label="1000 – 1500", plate_rate=110, end_disc_rate=210, active=False, order=2),
-            dict(part="shell", material="", sourcing="Inhouse", size_band_label="1500 – 2000", plate_rate=130, end_disc_rate=210, active=False, order=3),
-            dict(part="shell", material="", sourcing="Inhouse", size_band_label=">2000", plate_rate=None, end_disc_rate=210, active=False, order=4),
+        # Transcribed from the client workbook's "Raw Forging Prices" sheet (B2:F5 shaft,
+        # A12:J17 shell). Shaft rate = column F (the ₹/kg Pricing Tool reads); blank means
+        # "As per RFQ / Need Basis". Shell rates = columns I (Plate) and J (End Disc/Hub);
+        # the workbook's "???" cells are left blank.
+        shaft_rows = [
+            dict(material="C45", diameter="Ø 80 - 180", length="2000 - 3000", as_forge_rate_inr_per_kg=310),
+            dict(material="42CrMo4+QT", diameter="Ø 200 - 880", length="2300 - 7300", as_forge_rate_inr_per_kg=330),
+            dict(material="30CrNiMo8+QT/36CrNiMo4+QT/34CrNiMo6+QT", diameter="Ø 300 - 450", length="2300 - 7300", as_forge_rate_inr_per_kg=None),
         ]
-        # C45 / 42CrMo4+QT plate rates live on the shaft rows as "plate_rate" reused for shaft ₹/kg.
-        shaft_rate = {"C45": 310, "42CrMo4+QT": 330, "30CrNiMo8+QT/36CrNiMo4+QT/34CrNiMo6+QT": None}
-        for row in rows:
-            if row["part"] == "shaft":
-                row["plate_rate"] = shaft_rate[row["material"]]
-            RawForgingRate.objects.update_or_create(
-                part=row["part"], size_band_label=row["size_band_label"],
-                defaults={
-                    "material": row["material"], "sourcing": row["sourcing"],
-                    "plate_rate_inr_per_kg": row["plate_rate"], "end_disc_rate_inr_per_kg": row["end_disc_rate"],
-                    "is_active_default": row["active"], "order": row["order"],
-                },
+        shell_rows = [
+            dict(sourcing="Outsourced", diameter_body="300 - <=500", face_width_body="800-1200", wall_thickness="10-12",
+                 welded_in_plate_thickness="50-80", t_bottom_thickness="", plate_rate_inr_per_kg=None, end_disc_hub_rate_inr_per_kg=None),
+            dict(sourcing="Inhouse", diameter_body=">550-1000", face_width_body="1200-2500", wall_thickness="15-40",
+                 welded_in_plate_thickness="50-90", t_bottom_thickness="100-150", plate_rate_inr_per_kg=110, end_disc_hub_rate_inr_per_kg=210),
+            dict(sourcing="Inhouse", diameter_body="1000-1500", face_width_body="1500-2500", wall_thickness="20-40",
+                 welded_in_plate_thickness="", t_bottom_thickness="100-200", plate_rate_inr_per_kg=110, end_disc_hub_rate_inr_per_kg=210),
+            dict(sourcing="Inhouse", diameter_body="1500-2000", face_width_body="1500-2500", wall_thickness="20-40",
+                 welded_in_plate_thickness="", t_bottom_thickness="100-200", plate_rate_inr_per_kg=130, end_disc_hub_rate_inr_per_kg=210),
+            dict(sourcing="Inhouse", diameter_body=">2000", face_width_body="1500-2500", wall_thickness="20-40",
+                 welded_in_plate_thickness="", t_bottom_thickness="100-200", plate_rate_inr_per_kg=None, end_disc_hub_rate_inr_per_kg=210),
+        ]
+        for order, row in enumerate(shaft_rows):
+            ShaftForgingBand.objects.get_or_create(
+                material=row.pop("material"), diameter=row.pop("diameter"), defaults={**row, "order": order},
             )
-        self.stdout.write(f"  raw forging rate bands: {len(rows)}")
+        for order, row in enumerate(shell_rows):
+            ShellForgingBand.objects.get_or_create(
+                sourcing=row.pop("sourcing"), diameter_body=row.pop("diameter_body"), defaults={**row, "order": order},
+            )
+        self.stdout.write(f"  raw forging bands: {len(shaft_rows)} shaft, {len(shell_rows)} shell")
+
+    def seed_lag_data(self):
+        # Transcribed from the client workbook's LAG_DATA sheet (A1:E12).
+        rows = [
+            ("Rubber vulc. 12mm", 12, 19387, 14, "Rubber hot vulcanized 12mm"),
+            ("Rubber vulc. 15mm", 15, 20702, 14, "Rubber hot vulcanized 15mm"),
+            ("Rubber vulc. 20mm", 20, 22439, 14, "Rubber hot vulcanized 20mm"),
+            ("Rubber vulc. 25mm", 25, 24222, 14, "Rubber hot vulcanized 25mm"),
+            ("Rubber vulc. 30mm", 30, 26241, 14, "Rubber hot vulcanized 30mm"),
+            ("Rubber ceramic 15mm", 15, 27344, 14, "Rubber + ceramic inserts 15mm"),
+            ("Rubber ceramic 20mm", 20, 29574, 14, "Rubber + ceramic inserts 20mm"),
+            ("Rubber ceramic 25mm", 25, 31828, 14, "Rubber + ceramic inserts 25mm"),
+            ("Ceramic tile 6mm", 6, 148661, 7, "Full ceramic tiles 6mm"),
+            ("Ceramic tile 10mm", 10, 193950, 7, "Full ceramic tiles 10mm"),
+            ("No lagging", 0, 0, 0, "No lagging – bare shell"),
+        ]
+        for lagging_type, thickness, price, days, description in rows:
+            LagDataEntry.objects.get_or_create(
+                lagging_type=lagging_type,
+                defaults={"thickness_mm": thickness, "price_inr_per_m2": price, "delivery_days": days, "description": description},
+            )
+        self.stdout.write(f"  lag data: {len(rows)}")
+
+    def seed_lcd_data(self):
+        # Transcribed from the client workbook's LCD_DATA sheet (A2:D7).
+        rows = [
+            ("NMTG N7036-100 × 150", "₹25,000 – ₹35,000", 30000, "Estimate"),
+            ("NMTG N7036-120 × 170", "₹32,000 – ₹45,000", 40000, "Estimate"),
+            ("NMTG N7036-140 × 200", "₹42,000 – ₹58,000", 50000, "Estimate"),
+            ("NMTG N7036-170 × 240", "₹60,000 – ₹80,000", 70000, "Estimate"),
+            ("NMTG N7036-180 × 250", "₹65,000 – ₹90,000", 80000, "Estimate"),
+        ]
+        for model_size, indicative_price, negotiated_rate, remarks in rows:
+            LcdDataEntry.objects.get_or_create(
+                model_size=model_size,
+                defaults={"indicative_price": indicative_price, "negotiated_rate_inr": negotiated_rate, "remarks": remarks},
+            )
+        self.stdout.write(f"  lcd data: {len(rows)}")
 
     def seed_catalogs(self):
         catalogs_ts = (FRONTEND_SRC / "pulleyCatalogs.ts").read_text(encoding="utf-8")
@@ -161,7 +229,7 @@ class Command(BaseCommand):
         for row in lagging:
             LaggingCatalogEntry.objects.update_or_create(
                 lagging_type=row["laggingType"], thickness_mm=row["thicknessMm"],
-                defaults={"price_inr_per_m2": row["priceInrPerM2"], "delivery_days": row["deliveryDays"], "description": row.get("description", "")},
+                defaults={"key": lagging_key(row["laggingType"]), "price_inr_per_m2": row["priceInrPerM2"], "delivery_days": row["deliveryDays"], "description": row.get("description", "")},
             )
 
         locking = parse_ts_array(catalogs_ts, "LOCKING_DEVICE_CATALOG")

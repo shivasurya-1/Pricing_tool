@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.validators import RegexValidator
 from django.db import models
 
 
@@ -12,50 +13,114 @@ class ReferenceOwnedModel(models.Model):
         abstract = True
 
 
-class CostRateCategory(models.TextChoices):
-    GLOBAL = "Global", "Global Parameters"
-    MATERIAL = "Material", "Material Rates"
-    LABOUR = "Labour", "Machining & Labour Rates"
-    LOGISTICS = "Logistics", "Logistics & Packing Rates"
+rate_key_validator = RegexValidator(
+    r"^[A-Za-z_][A-Za-z0-9_]*$",
+    "Key must start with a letter or underscore and contain only letters, digits and underscores "
+    "(it is used as a variable name in formulas).",
+)
 
 
-class CostRateValue(ReferenceOwnedModel):
-    """Replaces pulleyCostRates.ts — one row per named rate/parameter."""
+class CostRateTableModel(ReferenceOwnedModel):
+    """Shared shape of the four Cost Rate Tables sections. `key` is the variable name
+    the pricing formulas read the rate under, so it is unique across all four tables
+    (enforced in CostRateTableSerializer) and fixed once created."""
 
-    key = models.SlugField(max_length=80, unique=True)
-    label = models.CharField(max_length=200)
-    category = models.CharField(max_length=20, choices=CostRateCategory.choices)
+    key = models.CharField(max_length=80, unique=True, validators=[rate_key_validator])
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        abstract = True
+        ordering = ["order", "key"]
+
+
+class GlobalParameter(CostRateTableModel):
+    """A. Global Parameters — exchange rate, GST, markup factors, etc."""
+
+    parameter = models.CharField(max_length=200)
     value = models.FloatField()
     unit = models.CharField(max_length=30, blank=True)
+    notes = models.CharField(max_length=255, blank=True)
+
+    def __str__(self) -> str:
+        return f"{self.parameter}: {self.value} {self.unit}".strip()
+
+
+class MaterialRate(CostRateTableModel):
+    """B. Material Rates — INR/kg (EUR/kg optional, informational)."""
+
+    material = models.CharField(max_length=200)
+    inr_per_kg = models.FloatField()
+    eur_per_kg = models.FloatField(null=True, blank=True)
+    notes = models.CharField(max_length=255, blank=True)
+
+    def __str__(self) -> str:
+        return f"{self.material}: {self.inr_per_kg} INR/kg"
+
+
+class MachiningLabourRate(CostRateTableModel):
+    """C. Machining & Labour Rates — INR/h (EUR/h optional, informational)."""
+
+    operation = models.CharField(max_length=200)
+    inr_per_hour = models.FloatField()
+    eur_per_hour = models.FloatField(null=True, blank=True)
+    sourcing_default = models.CharField(max_length=60, blank=True)
+
+    def __str__(self) -> str:
+        return f"{self.operation}: {self.inr_per_hour} INR/h"
+
+
+class LogisticsPackingRate(CostRateTableModel):
+    """E. Logistics & Packing Rates — freight, packing, shipping."""
+
+    item = models.CharField(max_length=200)
+    rate = models.FloatField()
+    unit = models.CharField(max_length=30, blank=True)
+    notes = models.CharField(max_length=255, blank=True)
+
+    def __str__(self) -> str:
+        return f"{self.item}: {self.rate} {self.unit}".strip()
+
+
+FORGING_SOURCING_CHOICES = [("Outsourced", "Outsourced"), ("Inhouse", "In-house")]
+
+
+class ShaftForgingBand(ReferenceOwnedModel):
+    """Raw Forging Prices — Shaft table (the "Add Shaft Band" form)."""
+
+    material = models.CharField(max_length=100, help_text="e.g. '42CrMo4+QT'")
+    diameter = models.CharField(max_length=100, help_text="e.g. 'Ø 200 - 880'")
+    length = models.CharField(max_length=100, help_text="e.g. '2300 - 7300'")
+    sourcing = models.CharField(max_length=12, choices=FORGING_SOURCING_CHOICES, blank=True)
+    as_forge_rate_inr_per_kg = models.FloatField(
+        null=True, blank=True, help_text="Blank means 'As per RFQ'."
+    )
     order = models.PositiveIntegerField(default=0)
 
     class Meta:
-        ordering = ["category", "order", "key"]
+        ordering = ["order", "id"]
 
     def __str__(self) -> str:
-        return f"{self.label}: {self.value} {self.unit}".strip()
+        return f"{self.material} — {self.diameter} x {self.length}"
 
 
-class RawForgingRate(ReferenceOwnedModel):
-    """Mirrors the Raw Forging Prices tab's shaft/shell size-band rows."""
+class ShellForgingBand(ReferenceOwnedModel):
+    """Raw Forging Prices — Shell table (the "Add Shell Band" form)."""
 
-    PART_CHOICES = [("shaft", "Shaft"), ("shell", "Shell")]
-    SOURCING_CHOICES = [("Outsourced", "Outsourced"), ("Inhouse", "In-house")]
-
-    part = models.CharField(max_length=10, choices=PART_CHOICES)
-    material = models.CharField(max_length=100, blank=True)
-    sourcing = models.CharField(max_length=12, choices=SOURCING_CHOICES, blank=True)
-    size_band_label = models.CharField(max_length=100, help_text="e.g. 'Ø 80 - 180' or '>550 - 1000'")
+    sourcing = models.CharField(max_length=12, choices=FORGING_SOURCING_CHOICES, blank=True)
+    diameter_body = models.CharField(max_length=100, help_text="e.g. '300 - <=500'")
+    face_width_body = models.CharField(max_length=100, help_text="e.g. '800-1200'")
+    wall_thickness = models.CharField(max_length=100, blank=True, help_text="Body → sheet +x mm, e.g. '10-12'")
+    welded_in_plate_thickness = models.CharField(max_length=100, blank=True, help_text="e.g. '50-80'")
+    t_bottom_thickness = models.CharField(max_length=100, blank=True, help_text="e.g. '100-150'")
     plate_rate_inr_per_kg = models.FloatField(null=True, blank=True)
-    end_disc_rate_inr_per_kg = models.FloatField(null=True, blank=True)
-    is_active_default = models.BooleanField(default=False, help_text="The row Pricing Tool actually reads today.")
+    end_disc_hub_rate_inr_per_kg = models.FloatField(null=True, blank=True)
     order = models.PositiveIntegerField(default=0)
 
     class Meta:
-        ordering = ["part", "order"]
+        ordering = ["order", "id"]
 
     def __str__(self) -> str:
-        return f"{self.part} — {self.size_band_label}"
+        return f"{self.diameter_body} x {self.face_width_body}"
 
 
 class BearingCatalogEntry(ReferenceOwnedModel):
@@ -85,6 +150,41 @@ class SleeveCatalogEntry(ReferenceOwnedModel):
         return self.sleeve_code
 
 
+class LagDataEntry(ReferenceOwnedModel):
+    """Mirrors the workbook's LAG_DATA sheet — lagging lookup keyed by Lagging Type.
+    Separate from LaggingCatalogEntry (Cost Rate Tables → Lagging Rates)."""
+
+    lagging_type = models.CharField(max_length=100, unique=True, help_text="Lookup key, e.g. 'Rubber vulc. 12mm'")
+    thickness_mm = models.FloatField()
+    price_inr_per_m2 = models.FloatField()
+    delivery_days = models.PositiveIntegerField()
+    description = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name_plural = "lag data entries"
+
+    def __str__(self) -> str:
+        return self.lagging_type
+
+
+class LcdDataEntry(ReferenceOwnedModel):
+    """Mirrors the workbook's LCD_DATA sheet — locking devices keyed by Model / Size.
+    Separate from LockingDeviceCatalogEntry (catalogs/locking-devices)."""
+
+    model_size = models.CharField(max_length=100, unique=True, help_text="e.g. 'NMTG N7036-100 × 150'")
+    indicative_price = models.CharField(max_length=100, blank=True, help_text="Free text range, e.g. '₹25,000 – ₹35,000'")
+    negotiated_rate_inr = models.FloatField()
+    remarks = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name_plural = "LCD data entries"
+
+    def __str__(self) -> str:
+        return self.model_size
+
+
 class HousingCatalogEntry(ReferenceOwnedModel):
     for_bearing = models.CharField(max_length=60, blank=True)
     housing_designation = models.CharField(max_length=60)
@@ -99,6 +199,7 @@ class HousingCatalogEntry(ReferenceOwnedModel):
 
 
 class LaggingCatalogEntry(ReferenceOwnedModel):
+    key = models.CharField(max_length=80, unique=True, validators=[rate_key_validator])
     lagging_type = models.CharField(max_length=60)
     thickness_mm = models.FloatField()
     price_inr_per_m2 = models.FloatField()
@@ -149,7 +250,7 @@ class OrganizationSettings(ReferenceOwnedModel):
     default_currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default="INR")
 
     # Tax Settings — identity/labeling only; the rate itself lives on Cost Rate
-    # Tables (CostRateValue, category=Global) so there's one source of truth.
+    # Tables (GlobalParameter, key=gstRate) so there's one source of truth.
     tax_registration_label = models.CharField(max_length=50, blank=True, default="GSTIN")
     default_tax_applicability = models.CharField(max_length=200, blank=True)
 
@@ -187,7 +288,7 @@ class OrganizationSettings(ReferenceOwnedModel):
 class InHouseHourRate(ReferenceOwnedModel):
     """Mirrors src/data/inHouseHoursRates.ts's InHouseHourRate — the "In-House Hours"
     page's simple MHR-rate legend table (informational; not consumed by any
-    calculation, unlike CostRateValue's per-operation labour rates)."""
+    calculation, unlike MachiningLabourRate's per-operation labour rates)."""
 
     cost_head = models.CharField(max_length=100)
     operation = models.CharField(max_length=150)

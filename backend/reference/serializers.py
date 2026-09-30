@@ -2,56 +2,88 @@ from rest_framework import serializers
 
 from .models import (
     BearingCatalogEntry,
-    CostRateValue,
+    GlobalParameter,
     HousingCatalogEntry,
     InHouseHourRate,
+    LagDataEntry,
     LaggingCatalogEntry,
+    LcdDataEntry,
     LockingDeviceCatalogEntry,
+    LogisticsPackingRate,
+    MachiningLabourRate,
+    MaterialRate,
     OrganizationSettings,
-    RawForgingRate,
+    ShaftForgingBand,
+    ShellForgingBand,
     SleeveCatalogEntry,
 )
 
 
-class CostRateValueSerializer(serializers.ModelSerializer):
-    """List/retrieve/update — `value` is the only field an editor changes on an
-    existing row; everything else is fixed metadata describing what the rate is."""
+class CostRateTableSerializer(serializers.ModelSerializer):
+    """Shared by the four Cost Rate Tables serializers. Every field is editable except
+    `key`: it's the variable name formulas read the rate under, so renaming it would
+    silently break every formula that references it — delete and re-add instead."""
 
+    COST_RATE_MODELS = (GlobalParameter, MaterialRate, MachiningLabourRate, LogisticsPackingRate)
+
+    def validate_key(self, key):
+        if self.instance is not None and key != self.instance.key:
+            raise serializers.ValidationError("Key cannot be changed after creation.")
+        # Rates from all four tables are merged into one key -> value map for the
+        # pricing formulas, so a key must be unique across all of them, not just its own.
+        for model in self.COST_RATE_MODELS:
+            clash = model.objects.filter(key=key)
+            if self.instance is not None and isinstance(self.instance, model):
+                clash = clash.exclude(pk=self.instance.pk)
+            if clash.exists():
+                raise serializers.ValidationError(f"Key '{key}' is already used in {model._meta.verbose_name_plural}.")
+        return key
+
+
+class GlobalParameterSerializer(CostRateTableSerializer):
     class Meta:
-        model = CostRateValue
-        fields = ["id", "key", "label", "category", "value", "unit", "order"]
-        read_only_fields = ["id", "key", "label", "category", "unit", "order"]
-
-
-class CostRateValueCreateSerializer(serializers.ModelSerializer):
-    """Create only — unlike the serializer above, a brand-new row needs every
-    identifying field writable. See TechDataFieldDefinitionViewSet for the same
-    read-serializer/create-serializer split and why."""
-
-    class Meta:
-        model = CostRateValue
-        fields = ["id", "key", "label", "category", "value", "unit", "order"]
+        model = GlobalParameter
+        fields = ["id", "key", "parameter", "value", "unit", "notes", "order"]
         read_only_fields = ["id"]
 
 
-class RawForgingRateSerializer(serializers.ModelSerializer):
+class MaterialRateSerializer(CostRateTableSerializer):
     class Meta:
-        model = RawForgingRate
-        fields = [
-            "id", "part", "material", "sourcing", "size_band_label",
-            "plate_rate_inr_per_kg", "end_disc_rate_inr_per_kg", "is_active_default", "order",
-        ]
-        read_only_fields = ["id", "part", "material", "sourcing", "size_band_label", "is_active_default", "order"]
-
-
-class RawForgingRateCreateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RawForgingRate
-        fields = [
-            "id", "part", "material", "sourcing", "size_band_label",
-            "plate_rate_inr_per_kg", "end_disc_rate_inr_per_kg", "is_active_default", "order",
-        ]
+        model = MaterialRate
+        fields = ["id", "key", "material", "inr_per_kg", "eur_per_kg", "notes", "order"]
         read_only_fields = ["id"]
+
+
+class MachiningLabourRateSerializer(CostRateTableSerializer):
+    class Meta:
+        model = MachiningLabourRate
+        fields = ["id", "key", "operation", "inr_per_hour", "eur_per_hour", "sourcing_default", "order"]
+        read_only_fields = ["id"]
+
+
+class LogisticsPackingRateSerializer(CostRateTableSerializer):
+    class Meta:
+        model = LogisticsPackingRate
+        fields = ["id", "key", "item", "rate", "unit", "notes", "order"]
+        read_only_fields = ["id"]
+
+
+class ShaftForgingBandSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ShaftForgingBand
+        fields = ["id", "material", "diameter", "length", "sourcing", "as_forge_rate_inr_per_kg", "order", "updated_at"]
+        read_only_fields = ["id", "updated_at"]
+
+
+class ShellForgingBandSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ShellForgingBand
+        fields = [
+            "id", "sourcing", "diameter_body", "face_width_body", "wall_thickness",
+            "welded_in_plate_thickness", "t_bottom_thickness",
+            "plate_rate_inr_per_kg", "end_disc_hub_rate_inr_per_kg", "order", "updated_at",
+        ]
+        read_only_fields = ["id", "updated_at"]
 
 
 class BearingCatalogEntrySerializer(serializers.ModelSerializer):
@@ -66,6 +98,20 @@ class SleeveCatalogEntrySerializer(serializers.ModelSerializer):
         fields = ["id", "for_bearing", "sleeve_code", "price_eur", "price_inr"]
 
 
+class LagDataEntrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LagDataEntry
+        fields = ["id", "lagging_type", "thickness_mm", "price_inr_per_m2", "delivery_days", "description", "updated_at"]
+        read_only_fields = ["id", "updated_at"]
+
+
+class LcdDataEntrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LcdDataEntry
+        fields = ["id", "model_size", "indicative_price", "negotiated_rate_inr", "remarks", "updated_at"]
+        read_only_fields = ["id", "updated_at"]
+
+
 class HousingCatalogEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = HousingCatalogEntry
@@ -75,7 +121,7 @@ class HousingCatalogEntrySerializer(serializers.ModelSerializer):
 class LaggingCatalogEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = LaggingCatalogEntry
-        fields = ["id", "lagging_type", "thickness_mm", "price_inr_per_m2", "delivery_days", "description"]
+        fields = ["id", "key", "lagging_type", "thickness_mm", "price_inr_per_m2", "delivery_days", "description"]
 
 
 class LockingDeviceCatalogEntrySerializer(serializers.ModelSerializer):

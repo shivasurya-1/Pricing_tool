@@ -16,7 +16,7 @@ class CanEditReferenceData(BasePermission):
             return False
         if request.method in SAFE_METHODS:
             return True
-        return Role.can_edit_reference_data(request.user.role)
+        return request.user.is_admin or Role.can_edit_reference_data(request.user.role)
 
 
 class IsAdminRole(BasePermission):
@@ -24,7 +24,7 @@ class IsAdminRole(BasePermission):
     (names, emails, roles) aren't something every role should be able to browse."""
 
     def has_permission(self, request, view) -> bool:
-        return bool(request.user and request.user.is_authenticated and request.user.role == Role.ADMIN)
+        return bool(request.user and request.user.is_authenticated and request.user.is_admin)
 
 
 def role_write_permission(allowed_roles: tuple[str, ...]):
@@ -38,6 +38,6 @@ def role_write_permission(allowed_roles: tuple[str, ...]):
                 return False
             if request.method in SAFE_METHODS:
                 return True
-            return request.user.role == Role.ADMIN or request.user.role in allowed_roles
+            return request.user.is_admin or request.user.role in allowed_roles
 
     return _RoleWritePermission

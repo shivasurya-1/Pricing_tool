@@ -13,7 +13,7 @@ Conventions used so every formula stays a plain restricted arithmetic expression
     resolved by the calling code from the categorical In-house/Outsource/Logistics
     field before evaluation — formulas themselves never do string comparison.
   - Per-operation labour rate variables (e.g. c1RateInrPerHour) and section totals
-    (totalA..totalE) are likewise resolved by the caller from CostRateValue /
+    (totalA..totalE) are likewise resolved by the caller from the Cost Rate Tables /
     already-evaluated formulas, keeping every expression here a simple, editable
     one-line calculation.
   - Fields with NO formula in the client's own workbook (A3, B5, D1, D3, D8, E6) are

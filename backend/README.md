@@ -41,8 +41,9 @@ real PostgreSQL instance — required for production.
 - `POST /api/auth/login/` — `{username, password}` → `{token, user}`
 - `GET /api/auth/me/`
 - `GET /api/formulas/` · `GET/PATCH /api/formulas/{key}/` · `POST /api/formulas/{key}/preview/` · `GET /api/formulas/{key}/history/`
-- `GET/PATCH /api/reference/cost-rates/`, `/raw-forging-rates/`
-- `GET/PATCH/POST/DELETE /api/reference/catalogs/{bearings|sleeves|housings|lagging|locking-devices}/`
+- `GET/PATCH /api/reference/cost-rates/`
+- `GET/POST/PATCH/DELETE /api/reference/raw-forging/{shaft-bands|shell-bands}/` — Raw Forging Prices page
+- `GET/PATCH/POST/DELETE /api/reference/catalogs/{bearings|sleeves|lag-data|lcd-data|housings|locking-devices}/`
 
 All endpoints require a `Token <key>` auth header. Reads: any authenticated user.
 Writes: `Controlling` or `Admin` role only (`accounts/permissions.py`).

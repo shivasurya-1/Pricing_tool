@@ -18,9 +18,9 @@ export interface ReferenceColumn<T> {
   required?: boolean
   /** Formats the value for display in the table; defaults to String(value). */
   format?: (row: T) => string
-  /** Renders as an inline-editable number input on an existing row (see `onUpdate`),
-   * instead of plain read-only text. Never applies to the Add-row modal's own
-   * required-ness — that's controlled separately by `required`. */
+  /** Renders as an inline-editable input on an existing row (see `onUpdate`), instead
+   * of plain read-only text. A cleared optional number is saved as null. Never applies
+   * to the Add-row modal's own required-ness — that's controlled separately by `required`. */
   editable?: boolean
 }
 
@@ -50,7 +50,7 @@ export function ReferenceCrudTable<T extends { id: number }>({
   onDelete: (id: number) => Promise<void>
   /** Required when any column has `editable: true` — saves the changed editable
    * fields for one row. */
-  onUpdate?: (id: number, patch: Record<string, number>) => Promise<void>
+  onUpdate?: (id: number, patch: Partial<T>) => Promise<void>
   addLabel?: string
   /** Adds a search box that filters rows by every column's displayed text — worth it
    * once a catalog has more than a handful of rows (e.g. ~90 bearings). */
@@ -169,23 +169,32 @@ function EditableRow<T extends { id: number }>({
 }: {
   row: T
   columns: ReferenceColumn<T>[]
-  onUpdate?: (id: number, patch: Record<string, number>) => Promise<void>
+  onUpdate?: (id: number, patch: Partial<T>) => Promise<void>
   onDeleteClick: () => void
 }) {
   const pushToast = useUiStore((s) => s.pushToast)
-  const editableKeys = columns.filter((c) => c.editable).map((c) => c.key)
-  const [draft, setDraft] = useState<Record<string, number>>(() =>
-    Object.fromEntries(editableKeys.map((k) => [k, Number((row as Record<string, unknown>)[k] ?? 0)])),
+  const editableColumns = columns.filter((c) => c.editable)
+  // '' stands for an empty input — a null number or blank text on the row.
+  const original: Record<string, string | number> = Object.fromEntries(
+    editableColumns.map((c) => {
+      const raw = (row as Record<string, unknown>)[c.key]
+      return [c.key, raw == null ? '' : c.type === 'number' ? Number(raw) : String(raw)]
+    }),
   )
+  const [draft, setDraft] = useState<Record<string, string | number>>(original)
   const [saving, setSaving] = useState(false)
-  const original = Object.fromEntries(editableKeys.map((k) => [k, Number((row as Record<string, unknown>)[k] ?? 0)]))
-  const dirty = editableKeys.some((k) => draft[k] !== original[k])
+  const dirty = editableColumns.some((c) => draft[c.key] !== original[c.key])
 
   const handleSave = async () => {
     if (!onUpdate) return
+    const patch = Object.fromEntries(
+      editableColumns
+        .filter((c) => draft[c.key] !== original[c.key])
+        .map((c) => [c.key, c.type === 'number' && draft[c.key] === '' ? null : draft[c.key]]),
+    )
     setSaving(true)
     try {
-      await onUpdate(row.id, draft)
+      await onUpdate(row.id, patch as Partial<T>)
       pushToast('Saved.', 'success')
     } catch (err) {
       pushToast(err instanceof ApiError ? err.message : 'Failed to save.', 'error')
@@ -200,10 +209,16 @@ function EditableRow<T extends { id: number }>({
         <td key={c.key} className={`px-4 py-2.5 ${j === 0 ? 'font-medium' : ''}`}>
           {c.editable ? (
             <input
-              type="number"
-              value={draft[c.key] ?? 0}
-              onChange={(e) => setDraft((prev) => ({ ...prev, [c.key]: Number(e.target.value) }))}
-              className="w-28 rounded-md border border-[var(--color-border)] px-2 py-1 text-sm outline-none focus:border-[var(--color-blue)]"
+              type={c.type === 'number' ? 'number' : 'text'}
+              value={draft[c.key] ?? ''}
+              onChange={(e) => {
+                const v = e.target.value
+                setDraft((prev) => ({ ...prev, [c.key]: c.type === 'number' && v !== '' ? Number(v) : v }))
+              }}
+              className={clsx(
+                'rounded-md border border-[var(--color-border)] px-2 py-1 text-sm outline-none focus:border-[var(--color-blue)]',
+                c.type === 'number' ? 'w-28' : 'w-full min-w-[8rem]',
+              )}
             />
           ) : c.format ? (
             c.format(row)

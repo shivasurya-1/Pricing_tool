@@ -1,28 +1,42 @@
 from accounts.permissions import CanEditReferenceData, role_write_permission
+from django.db.models import Min, Q
 from rest_framework import generics, viewsets
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import (
     BearingCatalogEntry,
-    CostRateValue,
+    GlobalParameter,
     HousingCatalogEntry,
     InHouseHourRate,
+    LagDataEntry,
     LaggingCatalogEntry,
+    LcdDataEntry,
     LockingDeviceCatalogEntry,
+    LogisticsPackingRate,
+    MachiningLabourRate,
+    MaterialRate,
     OrganizationSettings,
-    RawForgingRate,
+    ShaftForgingBand,
+    ShellForgingBand,
     SleeveCatalogEntry,
 )
 from .serializers import (
     BearingCatalogEntrySerializer,
-    CostRateValueCreateSerializer,
-    CostRateValueSerializer,
+    GlobalParameterSerializer,
     HousingCatalogEntrySerializer,
     InHouseHourRateSerializer,
+    LagDataEntrySerializer,
     LaggingCatalogEntrySerializer,
+    LcdDataEntrySerializer,
     LockingDeviceCatalogEntrySerializer,
+    LogisticsPackingRateSerializer,
+    MachiningLabourRateSerializer,
+    MaterialRateSerializer,
     OrganizationSettingsSerializer,
-    RawForgingRateCreateSerializer,
-    RawForgingRateSerializer,
+    ShaftForgingBandSerializer,
+    ShellForgingBandSerializer,
     SleeveCatalogEntrySerializer,
 )
 
@@ -38,24 +52,34 @@ class BaseReferenceViewSet(viewsets.ModelViewSet):
         serializer.save(updated_by=self.request.user)
 
 
-class CostRateValueViewSet(BaseReferenceViewSet):
-    queryset = CostRateValue.objects.all()
-    serializer_class = CostRateValueSerializer
-
-    def get_serializer_class(self):
-        if self.action == "create":
-            return CostRateValueCreateSerializer
-        return CostRateValueSerializer
+class GlobalParameterViewSet(BaseReferenceViewSet):
+    queryset = GlobalParameter.objects.all()
+    serializer_class = GlobalParameterSerializer
 
 
-class RawForgingRateViewSet(BaseReferenceViewSet):
-    queryset = RawForgingRate.objects.all()
-    serializer_class = RawForgingRateSerializer
+class MaterialRateViewSet(BaseReferenceViewSet):
+    queryset = MaterialRate.objects.all()
+    serializer_class = MaterialRateSerializer
 
-    def get_serializer_class(self):
-        if self.action == "create":
-            return RawForgingRateCreateSerializer
-        return RawForgingRateSerializer
+
+class MachiningLabourRateViewSet(BaseReferenceViewSet):
+    queryset = MachiningLabourRate.objects.all()
+    serializer_class = MachiningLabourRateSerializer
+
+
+class LogisticsPackingRateViewSet(BaseReferenceViewSet):
+    queryset = LogisticsPackingRate.objects.all()
+    serializer_class = LogisticsPackingRateSerializer
+
+
+class ShaftForgingBandViewSet(BaseReferenceViewSet):
+    queryset = ShaftForgingBand.objects.all()
+    serializer_class = ShaftForgingBandSerializer
+
+
+class ShellForgingBandViewSet(BaseReferenceViewSet):
+    queryset = ShellForgingBand.objects.all()
+    serializer_class = ShellForgingBandSerializer
 
 
 class BearingCatalogViewSet(BaseReferenceViewSet):
@@ -66,6 +90,16 @@ class BearingCatalogViewSet(BaseReferenceViewSet):
 class SleeveCatalogViewSet(BaseReferenceViewSet):
     queryset = SleeveCatalogEntry.objects.all()
     serializer_class = SleeveCatalogEntrySerializer
+
+
+class LagDataViewSet(BaseReferenceViewSet):
+    queryset = LagDataEntry.objects.all()
+    serializer_class = LagDataEntrySerializer
+
+
+class LcdDataViewSet(BaseReferenceViewSet):
+    queryset = LcdDataEntry.objects.all()
+    serializer_class = LcdDataEntrySerializer
 
 
 class HousingCatalogViewSet(BaseReferenceViewSet):
@@ -99,3 +133,52 @@ class OrganizationSettingsView(generics.RetrieveUpdateAPIView):
 
     def perform_update(self, serializer):
         serializer.save(updated_by=self.request.user)
+
+
+# Two-level dependent dropdown (catalogs/dropdown-fields → catalogs/dropdown-values).
+# Explicit allowlist: request params are only ever used as keys into this mapping,
+# never as model or field names, so nothing outside it can be queried.
+REFERENCE_DROPDOWN_FIELDS = {
+    "bearings": {"model": BearingCatalogEntry, "field": "designation", "label": "Bearing Data"},
+    "sleeves": {"model": SleeveCatalogEntry, "field": "sleeve_code", "label": "Sleeve Data"},
+    "lag-data": {"model": LagDataEntry, "field": "lagging_type", "label": "Lag Data"},
+    "lcd-data": {"model": LcdDataEntry, "field": "model_size", "label": "LCD Data"},
+    "housings": {"model": HousingCatalogEntry, "field": "housing_designation", "label": "Housing Data"},
+}
+
+
+class ReferenceDropdownFieldsView(APIView):
+    """First dropdown — the selectable reference tables and the field each one exposes."""
+
+    permission_classes = [CanEditReferenceData]
+
+    def get(self, request):
+        return Response(
+            [{"table": table, "label": cfg["label"], "field": cfg["field"]} for table, cfg in REFERENCE_DROPDOWN_FIELDS.items()]
+        )
+
+
+class ReferenceDropdownValuesView(APIView):
+    """Second dropdown — unique, non-empty values of the configured field for one table.
+    Duplicate values (sleeve codes / housing designations aren't unique) collapse to one
+    entry carrying the lowest record id."""
+
+    permission_classes = [CanEditReferenceData]
+
+    def get(self, request):
+        table = request.query_params.get("table", "")
+        field = request.query_params.get("field", "")
+        cfg = REFERENCE_DROPDOWN_FIELDS.get(table)
+        if cfg is None:
+            raise ValidationError({"detail": f"Unsupported table '{table}'. Allowed: {', '.join(REFERENCE_DROPDOWN_FIELDS)}."})
+        if field != cfg["field"]:
+            raise ValidationError({"detail": f"Unsupported field '{field}' for table '{table}'. Allowed: {cfg['field']}."})
+
+        column = cfg["field"]
+        rows = (
+            cfg["model"].objects.exclude(Q(**{f"{column}__isnull": True}) | Q(**{column: ""}))
+            .values(column)
+            .annotate(first_id=Min("id"))
+            .order_by(column)
+        )
+        return Response([{"id": row["first_id"], "value": row[column]} for row in rows])
