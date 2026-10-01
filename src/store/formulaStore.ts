@@ -14,64 +14,15 @@ export interface FormulaDefinitionDto {
   updated_at: string
 }
 
-/** The four Cost Rate Tables sections — each its own backend table and endpoint. */
-export const COST_RATE_TABLES = {
-  global: { path: '/reference/cost-rates/global-parameters/', valueField: 'value' },
-  material: { path: '/reference/cost-rates/material-rates/', valueField: 'inr_per_kg' },
-  labour: { path: '/reference/cost-rates/machining-labour-rates/', valueField: 'inr_per_hour' },
-  logistics: { path: '/reference/cost-rates/logistics-packing-rates/', valueField: 'rate' },
-} as const
-
-export type CostRateTableId = keyof typeof COST_RATE_TABLES
-
-export interface GlobalParameterDto {
+export interface CostRateValueDto {
   id: number
   key: string
-  parameter: string
+  label: string
+  category: string
   value: number
   unit: string
-  notes: string
   order: number
 }
-
-export interface MaterialRateDto {
-  id: number
-  key: string
-  material: string
-  inr_per_kg: number
-  eur_per_kg: number | null
-  notes: string
-  order: number
-}
-
-export interface MachiningLabourRateDto {
-  id: number
-  key: string
-  operation: string
-  inr_per_hour: number
-  eur_per_hour: number | null
-  sourcing_default: string
-  order: number
-}
-
-export interface LogisticsPackingRateDto {
-  id: number
-  key: string
-  item: string
-  rate: number
-  unit: string
-  notes: string
-  order: number
-}
-
-export interface CostRateRows {
-  global: GlobalParameterDto[]
-  material: MaterialRateDto[]
-  labour: MachiningLabourRateDto[]
-  logistics: LogisticsPackingRateDto[]
-}
-
-type CostRateRow = CostRateRows[CostRateTableId][number]
 
 export interface TechDataFieldDto {
   id: number
@@ -92,6 +43,15 @@ export interface TechDataFieldDto {
   is_core: boolean
   created_at: string
   updated_at: string
+}
+
+export interface NewCostRateInput {
+  key: string
+  label: string
+  category: string
+  value: number
+  unit?: string
+  order?: number
 }
 
 export interface NewTechDataFieldInput {
@@ -137,10 +97,8 @@ interface FormulaState {
   loaded: boolean
   loading: boolean
   formulas: Record<string, FormulaDefinitionDto>
-  /** Every rate across the four Cost Rate Tables, flattened to key -> value (INR) —
-   * what the pricing formulas read. */
   costRates: Record<string, number>
-  costRateRows: CostRateRows
+  costRatesFull: CostRateValueDto[]
   techDataFields: Record<string, TechDataFieldDto>
   sections: SectionDto[]
 
@@ -159,24 +117,16 @@ interface FormulaState {
   updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'options' | 'order'>>) => Promise<void>
   deleteTechDataField: (key: string) => Promise<void>
 
-  createCostRate: <K extends CostRateTableId>(table: K, input: Omit<CostRateRows[K][number], 'id'>) => Promise<void>
-  updateCostRate: <K extends CostRateTableId>(table: K, id: number, patch: Partial<Omit<CostRateRows[K][number], 'id' | 'key'>>) => Promise<void>
-  deleteCostRate: (table: CostRateTableId, id: number) => Promise<void>
+  createCostRate: (input: NewCostRateInput) => Promise<void>
+  updateCostRate: (id: number, patch: Partial<Pick<CostRateValueDto, 'value'>>) => Promise<void>
+  deleteCostRate: (id: number) => Promise<void>
 }
 
-const EMPTY_COST_RATE_ROWS: CostRateRows = { global: [], material: [], labour: [], logistics: [] }
-
-function reindexCostRates(costRateRows: CostRateRows) {
-  const costRates: Record<string, number> = {}
-  for (const table of Object.keys(COST_RATE_TABLES) as CostRateTableId[]) {
-    const valueField = COST_RATE_TABLES[table].valueField
-    for (const row of costRateRows[table]) costRates[row.key] = Number((row as unknown as Record<string, unknown>)[valueField])
+function reindexCostRates(costRatesFull: CostRateValueDto[]) {
+  return {
+    costRatesFull,
+    costRates: Object.fromEntries(costRatesFull.map((r) => [r.key, r.value])),
   }
-  return { costRateRows, costRates }
-}
-
-function withTable<K extends CostRateTableId>(rows: CostRateRows, table: K, next: CostRateRows[K]): CostRateRows {
-  return { ...rows, [table]: next }
 }
 
 export const useFormulaStore = create<FormulaState>((set, get) => ({
@@ -184,7 +134,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
   loading: false,
   formulas: {},
   costRates: {},
-  costRateRows: EMPTY_COST_RATE_ROWS,
+  costRatesFull: [],
   techDataFields: {},
   sections: [],
 
@@ -192,18 +142,16 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
     if (get().loading) return
     set({ loading: true })
     try {
-      const [formulaList, global, material, labour, logistics, fieldList, sections] = await Promise.all([
+      const [formulaList, rateList, fieldList, sections] = await Promise.all([
         api.get<FormulaDefinitionDto[]>('/formulas/'),
-        api.get<GlobalParameterDto[]>(COST_RATE_TABLES.global.path),
-        api.get<MaterialRateDto[]>(COST_RATE_TABLES.material.path),
-        api.get<MachiningLabourRateDto[]>(COST_RATE_TABLES.labour.path),
-        api.get<LogisticsPackingRateDto[]>(COST_RATE_TABLES.logistics.path),
+        api.get<CostRateValueDto[]>('/reference/cost-rates/'),
         api.get<TechDataFieldDto[]>('/formulas/tech-data-fields/'),
         api.get<SectionDto[]>('/formulas/sections/'),
       ])
       set({
         formulas: Object.fromEntries(formulaList.map((f) => [f.key, f])),
-        ...reindexCostRates({ global, material, labour, logistics }),
+        costRates: Object.fromEntries(rateList.map((r) => [r.key, r.value])),
+        costRatesFull: rateList,
         techDataFields: Object.fromEntries(fieldList.map((f) => [f.key, f])),
         sections,
         loaded: true,
@@ -286,20 +234,18 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
     })
   },
 
-  createCostRate: async (table, input) => {
-    const created = await api.post<CostRateRow>(COST_RATE_TABLES[table].path, input)
-    set((s) => reindexCostRates(withTable(s.costRateRows, table, [...s.costRateRows[table], created] as CostRateRows[typeof table])))
+  createCostRate: async (input) => {
+    const created = await api.post<CostRateValueDto>('/reference/cost-rates/', input)
+    set((s) => reindexCostRates([...s.costRatesFull, created]))
   },
 
-  updateCostRate: async (table, id, patch) => {
-    const updated = await api.patch<CostRateRow>(`${COST_RATE_TABLES[table].path}${id}/`, patch)
-    set((s) =>
-      reindexCostRates(withTable(s.costRateRows, table, s.costRateRows[table].map((r) => (r.id === id ? updated : r)) as CostRateRows[typeof table])),
-    )
+  updateCostRate: async (id, patch) => {
+    const updated = await api.patch<CostRateValueDto>(`/reference/cost-rates/${id}/`, patch)
+    set((s) => reindexCostRates(s.costRatesFull.map((r) => (r.id === id ? updated : r))))
   },
 
-  deleteCostRate: async (table, id) => {
-    await api.delete(`${COST_RATE_TABLES[table].path}${id}/`)
-    set((s) => reindexCostRates(withTable(s.costRateRows, table, s.costRateRows[table].filter((r) => r.id !== id) as CostRateRows[typeof table])))
+  deleteCostRate: async (id) => {
+    await api.delete(`/reference/cost-rates/${id}/`)
+    set((s) => reindexCostRates(s.costRatesFull.filter((r) => r.id !== id)))
   },
 }))
