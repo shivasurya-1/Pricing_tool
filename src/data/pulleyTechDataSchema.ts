@@ -9,6 +9,7 @@ import { BRG_CATALOG, SLEEVE_CATALOG, HOUSING_CATALOG, LAGGING_CATALOG, LOCKING_
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
 import { useReferenceStore } from '@/store/referenceStore'
+import type { TechDataFieldOverrides } from '@/types'
 
 export type FieldType = 'text' | 'number' | 'select'
 
@@ -230,11 +231,26 @@ function buildTechDataSectionsFromDto(fields: TechDataFieldDto[]): TechDataSecti
  * custom fields added via the Formulas page) once loaded, falling back to the static
  * TECH_DATA_SECTIONS above whenever the backend isn't reachable — same static-fallback
  * contract as computeAutoFields()/computePulleyPricing(). */
-export function useTechDataSections(): TechDataSection[] {
+export function useTechDataSections(overrides?: TechDataFieldOverrides): TechDataSection[] {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
   const loaded = useFormulaStore((s) => s.loaded)
-  if (!loaded || Object.keys(techDataFields).length === 0) return TECH_DATA_SECTIONS
-  return buildTechDataSectionsFromDto(Object.values(techDataFields))
+  const sections =
+    !loaded || Object.keys(techDataFields).length === 0 ? TECH_DATA_SECTIONS : buildTechDataSectionsFromDto(Object.values(techDataFields))
+  return applyFieldOverrides(sections, overrides)
+}
+
+/** Applies one RFQ item's per-item field type overrides on top of the global sheet.
+ * Auto fields are never overridden (the backend rejects that too). */
+function applyFieldOverrides(sections: TechDataSection[], overrides?: TechDataFieldOverrides): TechDataSection[] {
+  if (!overrides || Object.keys(overrides).length === 0) return sections
+  return sections.map((section) => ({
+    ...section,
+    fields: section.fields.map((field) => {
+      const o = overrides[field.key]
+      if (!o || field.auto) return field
+      return { ...field, type: o.fieldType, options: o.fieldType === 'select' ? o.options : undefined }
+    }),
+  }))
 }
 
 /**

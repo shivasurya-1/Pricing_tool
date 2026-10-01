@@ -7,6 +7,7 @@ from django.db import transaction
 from django.db.models import ProtectedError
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import get_object_or_404
+from formulas.models import TechDataFieldDefinition
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -98,6 +99,43 @@ def require_positive(value, field_name: str) -> float:
     if number <= 0:
         raise ValidationError({field_name: "Must be greater than zero."})
     return number
+
+
+FIELD_OVERRIDE_TYPES = ("text", "number", "select")
+
+
+def validate_field_overrides(raw, user, field_name: str, current: dict | None = None) -> dict:
+    """Validates an RFQ item's per-item field type overrides and returns the cleaned
+    dict. Only Controlling/Admin may change them — re-sending the item's existing
+    overrides unchanged (e.g. Sales saving other tech data) is always allowed."""
+    if raw in (None, ""):
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValidationError({field_name: "Must be an object keyed by field key."})
+
+    fields = {f.key: f for f in TechDataFieldDefinition.objects.filter(key__in=list(raw.keys()))}
+    cleaned = {}
+    for key, override in raw.items():
+        field = fields.get(key)
+        if field is None:
+            raise ValidationError({field_name: f"Unknown Technical Data Sheet field '{key}'."})
+        if field.is_read_only:
+            raise ValidationError({field_name: f"'{key}' is an Auto or catalog-derived field — its type can't be overridden."})
+        if not isinstance(override, dict) or override.get("fieldType") not in FIELD_OVERRIDE_TYPES:
+            raise ValidationError({field_name: f"'{key}': fieldType must be one of {', '.join(FIELD_OVERRIDE_TYPES)}."})
+        options = []
+        if override["fieldType"] == "select":
+            raw_options = override.get("options")
+            if not isinstance(raw_options, list):
+                raw_options = []
+            options = [str(o).strip() for o in raw_options if str(o).strip()]
+            if not options:
+                raise ValidationError({field_name: f"'{key}': a select override needs at least one option."})
+        cleaned[key] = {"fieldType": override["fieldType"], "options": options}
+
+    if cleaned != (current or {}) and not (user.is_admin or Role.can_edit_reference_data(user.role)):
+        raise PermissionDenied("Only Controlling or Admin can change a field's type for an RFQ.")
+    return cleaned
 
 
 def validate_attachment_upload(uploaded_file, existing_count: int) -> None:
@@ -246,9 +284,11 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         stage = "Operations Review" if submit else "Draft"
 
         items_data = data.get("items", [])
+        field_overrides = []
         for i, it in enumerate(items_data):
             require_positive(it.get("quantity", 1), f"items[{i}].quantity")
             require_non_negative(it.get("targetPrice", 0), f"items[{i}].targetPrice")
+            field_overrides.append(validate_field_overrides(it.get("fieldOverrides"), request.user, f"items[{i}].fieldOverrides"))
 
         existing_numbers = list(RFQ.objects.values_list("rfq_number", flat=True))
         rfq_number = next_rfq_number(existing_numbers)
@@ -282,6 +322,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
                     quantity=it.get("quantity", 1), unit=it.get("unit", ""), specification=it.get("specification", ""),
                     required_delivery=it.get("requiredDelivery", ""), target_price=it.get("targetPrice", 0),
                     remarks=it.get("remarks", ""), technical_data=it.get("technicalData") or {},
+                    field_overrides=field_overrides[i],
                 )
 
         append_audit(rfq, user=actor_name, role="Sales", module="RFQ", record=rfq.rfq_number, action_text="Created RFQ", new_status="Draft")
@@ -345,10 +386,10 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     # ---- item-level actions --------------------------------------------------------
     @action(detail=True, methods=["patch"], url_path="item-tech-data")
     def update_item_tech_data(self, request, pk=None):
-        """Body: {itemId, technicalData} — the frontend computes the merged/derived
-        values (applyFieldChange) client-side and sends the full resulting object;
-        the backend just persists it, so the pulley geometry/formula logic isn't
-        duplicated here."""
+        """Body: {itemId, technicalData, fieldOverrides?} — the frontend computes the
+        merged/derived values (applyFieldChange) client-side and sends the full resulting
+        object; the backend just persists it, so the pulley geometry/formula logic isn't
+        duplicated here. `fieldOverrides` is optional; omitted means unchanged."""
         rfq = self.get_object()
         _actor_name, role = self._actor(request)
         try:
@@ -357,7 +398,13 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
             self._handle_workflow_error(exc)
         item = get_object_or_404(RFQItem, pk=request.data.get("itemId"), rfq=rfq)
         item.technical_data = request.data.get("technicalData") or {}
-        item.save(update_fields=["technical_data"])
+        update_fields = ["technical_data"]
+        if "fieldOverrides" in request.data:
+            item.field_overrides = validate_field_overrides(
+                request.data.get("fieldOverrides"), request.user, "fieldOverrides", current=item.field_overrides
+            )
+            update_fields.append("field_overrides")
+        item.save(update_fields=update_fields)
         touch(rfq)
         return Response(self.get_serializer(rfq).data)
 

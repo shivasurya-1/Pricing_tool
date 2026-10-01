@@ -1357,6 +1357,9 @@ function EditTechDataFieldModal({
             <div>
               <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
               <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} />
+              {parsedOptions.length === 0 && (
+                <p className="mt-1 text-xs text-[var(--color-red)]">Add at least one option (or import from a catalog above) to save.</p>
+              )}
             </div>
           </>
         )}

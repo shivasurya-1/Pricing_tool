@@ -196,6 +196,16 @@ class RFQItem(models.Model):
     target_price = models.FloatField(default=0, validators=[MinValueValidator(0)])
     remarks = models.TextField(blank=True)
     technical_data = models.JSONField(default=dict, blank=True)
+    field_overrides = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Per-item Technical Data Sheet field type overrides, keyed by field key: "
+            '{"bearing1Designation": {"fieldType": "select", "options": [...]}}. '
+            "Fields not listed here use the global TechDataFieldDefinition. "
+            "Only Controlling/Admin may change these (see validate_field_overrides)."
+        ),
+    )
     sourcing_confirmed = models.BooleanField(default=False)
     process_vendors = models.JSONField(default=list, blank=True)
 

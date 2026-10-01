@@ -12,7 +12,7 @@ import { Drawer } from '@/components/ui/Drawer'
 import { Modal } from '@/components/ui/Modal'
 import { PulleyTechDataForm, isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { applyFieldChange } from '@/lib/pulleyTechDataCalc'
-import type { Priority, RFQItem } from '@/types'
+import type { Priority, RFQItem, TechDataFieldOverride } from '@/types'
 import { formatDate, formatFileSize } from '@/lib/format'
 
 function summarizeTechData(values: RFQItem['technicalData']): string {
@@ -44,6 +44,9 @@ export function RFQCreatePage() {
   const createRFQ = useDataStore((s) => s.createRFQ)
   const uploadRfqAttachment = useDataStore((s) => s.uploadRfqAttachment)
   const name = useAuthStore((s) => s.name)
+  // Same rule as the backend's validate_field_overrides.
+  const role = useAuthStore((s) => s.role)
+  const canChangeFieldTypes = role === 'Controlling' || role === 'Admin'
   const pushToast = useUiStore((s) => s.pushToast)
 
   const [customerId, setCustomerId] = useState('')
@@ -132,6 +135,18 @@ export function RFQCreatePage() {
         const patch: Partial<RFQItem> = { technicalData, specification: summarizeTechData(technicalData) }
         if (fieldKey === 'qty') patch.quantity = Number(value) || it.quantity
         return { ...it, ...patch }
+      }),
+    )
+  }
+
+  const updateFieldOverride = (index: number, fieldKey: string, override: TechDataFieldOverride | null) => {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== index) return it
+        const fieldOverrides = { ...(it.fieldOverrides ?? {}) }
+        if (override) fieldOverrides[fieldKey] = override
+        else delete fieldOverrides[fieldKey]
+        return { ...it, fieldOverrides }
       }),
     )
   }
@@ -510,6 +525,10 @@ export function RFQCreatePage() {
             <PulleyTechDataForm
               values={items[techDataDrawerIndex].technicalData ?? {}}
               onChange={(key, value) => updateTechDataField(techDataDrawerIndex, key, value)}
+              fieldOverrides={items[techDataDrawerIndex].fieldOverrides}
+              onFieldOverrideChange={
+                canChangeFieldTypes ? (key, override) => updateFieldOverride(techDataDrawerIndex, key, override) : undefined
+              }
             />
             <div className="sticky bottom-0 mt-5 flex justify-end border-t border-[var(--color-border)] bg-[var(--color-surface-alt)] pt-3">
               <Button variant="primary" onClick={() => setTechDataDrawerIndex(null)}>

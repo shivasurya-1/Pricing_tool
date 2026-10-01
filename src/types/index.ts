@@ -113,6 +113,14 @@ export interface RateCard {
 /** A pulley Technical Data Sheet capture — one entry per parameter, keyed by field id (see pulleyTechDataSchema). */
 export type PulleyTechDataValues = Record<string, string | number | undefined>
 
+/** A per-RFQ-item change to one Technical Data Sheet field's type, overriding the
+ * global field definition for that item only. Keyed by field key. */
+export interface TechDataFieldOverride {
+  fieldType: 'text' | 'number' | 'select'
+  options: string[]
+}
+export type TechDataFieldOverrides = Record<string, TechDataFieldOverride>
+
 export interface RFQItem {
   id: string
   itemNo: number
@@ -128,6 +136,8 @@ export interface RFQItem {
   remarks: string
   /** Full customer technical spec captured from the Technical Data Sheet, if filled. */
   technicalData?: PulleyTechDataValues
+  /** Field type changes that apply to this item only (Controlling/Admin). */
+  fieldOverrides?: TechDataFieldOverrides
   /** Set once Sourcing has reviewed every component/process for this item. */
   sourcingConfirmed?: boolean
   /** Optional vendor tag Sourcing can attach to an outsourced component or process — cost still comes from computePulleyPricing(), this is informational only. */

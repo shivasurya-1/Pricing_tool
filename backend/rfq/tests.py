@@ -536,3 +536,67 @@ class StageChangeNotificationEmailTests(TestCase):
 
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].to, ["ops@example.com"])
+
+
+class RFQItemFieldOverrideTests(TestCase):
+    """Per-RFQ-item Technical Data Sheet field type overrides (RFQItem.field_overrides)."""
+
+    def setUp(self):
+        from formulas.models import FormulaDefinition, TECH_DATA_AUTO_SECTION_LABEL, TechDataFieldDefinition
+
+        self.customer = Customer.objects.create(id="cust-fo", code="CUST-FO", name="Override Customer")
+        self.product = Product.objects.create(id="prod-fo", code="PROD-FO", name="Pulley", unit="Nos")
+        TechDataFieldDefinition.objects.create(
+            key="bearing1Designation", label="Bearing 1 Designation", section="BEARINGS", field_type="text", is_core=True,
+        )
+        TechDataFieldDefinition.objects.create(
+            key="shellPlateWeight", label="Shell Plate Weight", section="BODY", field_type="number", is_core=True,
+            formula=FormulaDefinition.objects.create(
+                key="shellPlateWeight", label="Shell Plate Weight", section=TECH_DATA_AUTO_SECTION_LABEL, expression="1",
+            ),
+        )
+        self.select_override = {"bearing1Designation": {"fieldType": "select", "options": ["22232 CCK/W33", " 22220 EK "]}}
+
+    def _create(self, role, overrides):
+        return client_as(role).post(
+            "/api/rfq/rfqs/",
+            {
+                "customerId": self.customer.id,
+                "actorName": role,
+                "items": [{"productId": self.product.id, "quantity": 1, "targetPrice": 1, "fieldOverrides": overrides}],
+            },
+            format="json",
+        )
+
+    def test_controlling_can_create_with_an_override(self):
+        response = self._create("Controlling", self.select_override)
+        self.assertEqual(response.status_code, 201, response.data)
+        item = RFQItem.objects.get(rfq_id=response.data["id"])
+        self.assertEqual(item.field_overrides, {"bearing1Designation": {"fieldType": "select", "options": ["22232 CCK/W33", "22220 EK"]}})
+        self.assertEqual(response.data["items"][0]["fieldOverrides"], item.field_overrides)
+
+    def test_sales_cannot_set_an_override_but_can_create_without_one(self):
+        self.assertEqual(self._create("Sales", self.select_override).status_code, 403)
+        self.assertEqual(self._create("Sales", {}).status_code, 201)
+
+    def test_auto_field_cannot_be_overridden(self):
+        response = self._create("Admin", {"shellPlateWeight": {"fieldType": "text"}})
+        self.assertEqual(response.status_code, 400)
+
+    def test_unknown_field_and_empty_select_are_rejected(self):
+        self.assertEqual(self._create("Admin", {"noSuchField": {"fieldType": "text"}}).status_code, 400)
+        self.assertEqual(self._create("Admin", {"bearing1Designation": {"fieldType": "select", "options": []}}).status_code, 400)
+
+    def test_sales_can_resave_tech_data_with_unchanged_overrides_but_not_change_them(self):
+        rfq_id = self._create("Admin", self.select_override).data["id"]
+        item = RFQItem.objects.get(rfq_id=rfq_id)
+        sales = client_as("Sales")
+        url = f"/api/rfq/rfqs/{rfq_id}/item-tech-data/"
+
+        unchanged = {"itemId": item.id, "technicalData": {"bearing1Designation": "22232 CCK/W33"}, "fieldOverrides": item.field_overrides}
+        self.assertEqual(sales.patch(url, unchanged, format="json").status_code, 200)
+
+        changed = {"itemId": item.id, "technicalData": {}, "fieldOverrides": {}}
+        self.assertEqual(sales.patch(url, changed, format="json").status_code, 403)
+        item.refresh_from_db()
+        self.assertEqual(item.field_overrides["bearing1Designation"]["fieldType"], "select")
