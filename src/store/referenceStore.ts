@@ -36,6 +36,8 @@ export interface HousingCatalogDto {
 
 export interface LaggingCatalogDto {
   id: number
+  /** Unique within Lagging only (unlike the 4 Cost Rate Tables keys, this one's editable). */
+  key: string
   lagging_type: string
   thickness_mm: number
   price_inr_per_m2: number
@@ -45,21 +47,38 @@ export interface LaggingCatalogDto {
 
 export interface LockingDeviceCatalogDto {
   id: number
-  model: string
+  /** Unique — the backend rejects a duplicate with a 400 on this field. */
+  model_size: string
+  /** Free text, e.g. "₹25,000 – ₹35,000" — a range, not a number. */
+  indicative_price: string
   negotiated_rate_inr: number
   remarks: string
+  updated_at: string
 }
 
-export interface RawForgingRateDto {
+export interface ShaftBandDto {
   id: number
-  part: 'shaft' | 'shell'
   material: string
+  diameter: string
+  length: string
   sourcing: string
-  size_band_label: string
-  plate_rate_inr_per_kg: number | null
-  end_disc_rate_inr_per_kg: number | null
-  is_active_default: boolean
+  as_forge_rate_inr_per_kg: number | null
   order: number
+  updated_at: string
+}
+
+export interface ShellBandDto {
+  id: number
+  sourcing: string
+  diameter_body: string
+  face_width_body: string
+  wall_thickness: string
+  welded_in_plate_thickness: string
+  t_bottom_thickness: string
+  plate_rate_inr_per_kg: number | null
+  end_disc_hub_rate_inr_per_kg: number | null
+  order: number
+  updated_at: string
 }
 
 export interface InHouseHourRateDto {
@@ -80,7 +99,8 @@ interface ReferenceState {
   housings: HousingCatalogDto[]
   lagging: LaggingCatalogDto[]
   lockingDevices: LockingDeviceCatalogDto[]
-  rawForgingRates: RawForgingRateDto[]
+  shaftBands: ShaftBandDto[]
+  shellBands: ShellBandDto[]
   inHouseHourRates: InHouseHourRateDto[]
 
   loadAll: () => Promise<void>
@@ -92,13 +112,22 @@ interface ReferenceState {
   createHousing: (input: Omit<HousingCatalogDto, 'id'>) => Promise<void>
   deleteHousing: (id: number) => Promise<void>
   createLagging: (input: Omit<LaggingCatalogDto, 'id'>) => Promise<void>
+  updateLagging: (id: number, patch: Partial<Pick<LaggingCatalogDto, 'lagging_type' | 'thickness_mm' | 'price_inr_per_m2' | 'delivery_days'>>) => Promise<void>
   deleteLagging: (id: number) => Promise<void>
-  createLockingDevice: (input: Omit<LockingDeviceCatalogDto, 'id'>) => Promise<void>
+  createLockingDevice: (input: Omit<LockingDeviceCatalogDto, 'id' | 'updated_at'>) => Promise<void>
+  updateLockingDevice: (
+    id: number,
+    patch: Partial<Pick<LockingDeviceCatalogDto, 'model_size' | 'indicative_price' | 'negotiated_rate_inr' | 'remarks'>>,
+  ) => Promise<void>
   deleteLockingDevice: (id: number) => Promise<void>
 
-  createRawForgingRate: (input: Omit<RawForgingRateDto, 'id'>) => Promise<void>
-  updateRawForgingRate: (id: number, patch: Partial<RawForgingRateDto>) => Promise<void>
-  deleteRawForgingRate: (id: number) => Promise<void>
+  createShaftBand: (input: Omit<ShaftBandDto, 'id' | 'updated_at'>) => Promise<void>
+  updateShaftBand: (id: number, patch: Partial<Omit<ShaftBandDto, 'id' | 'updated_at'>>) => Promise<void>
+  deleteShaftBand: (id: number) => Promise<void>
+
+  createShellBand: (input: Omit<ShellBandDto, 'id' | 'updated_at'>) => Promise<void>
+  updateShellBand: (id: number, patch: Partial<Omit<ShellBandDto, 'id' | 'updated_at'>>) => Promise<void>
+  deleteShellBand: (id: number) => Promise<void>
 
   createInHouseHourRate: (input: Omit<InHouseHourRateDto, 'id'>) => Promise<void>
   updateInHouseHourRate: (id: number, patch: Partial<InHouseHourRateDto>) => Promise<void>
@@ -113,23 +142,25 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
   housings: [],
   lagging: [],
   lockingDevices: [],
-  rawForgingRates: [],
+  shaftBands: [],
+  shellBands: [],
   inHouseHourRates: [],
 
   loadAll: async () => {
     if (get().loading) return
     set({ loading: true })
     try {
-      const [bearings, sleeves, housings, lagging, lockingDevices, rawForgingRates, inHouseHourRates] = await Promise.all([
+      const [bearings, sleeves, housings, lagging, lockingDevices, shaftBands, shellBands, inHouseHourRates] = await Promise.all([
         api.get<BearingCatalogDto[]>('/reference/catalogs/bearings/'),
         api.get<SleeveCatalogDto[]>('/reference/catalogs/sleeves/'),
         api.get<HousingCatalogDto[]>('/reference/catalogs/housings/'),
-        api.get<LaggingCatalogDto[]>('/reference/catalogs/lagging/'),
-        api.get<LockingDeviceCatalogDto[]>('/reference/catalogs/locking-devices/'),
-        api.get<RawForgingRateDto[]>('/reference/raw-forging-rates/'),
+        api.get<LaggingCatalogDto[]>('/reference/cost-rates/lagging-rates/'),
+        api.get<LockingDeviceCatalogDto[]>('/reference/catalogs/lcd-data/'),
+        api.get<ShaftBandDto[]>('/reference/raw-forging/shaft-bands/'),
+        api.get<ShellBandDto[]>('/reference/raw-forging/shell-bands/'),
         api.get<InHouseHourRateDto[]>('/reference/in-house-hours/'),
       ])
-      set({ bearings, sleeves, housings, lagging, lockingDevices, rawForgingRates, inHouseHourRates, loaded: true, loading: false })
+      set({ bearings, sleeves, housings, lagging, lockingDevices, shaftBands, shellBands, inHouseHourRates, loaded: true, loading: false })
     } catch {
       // Backend not running/deployed — leave `loaded: false` so getOptionsForField()/
       // lookupCatalogPrice() use their static fallback. See pulleyTechDataSchema.ts.
@@ -165,34 +196,55 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
   },
 
   createLagging: async (input) => {
-    const created = await api.post<LaggingCatalogDto>('/reference/catalogs/lagging/', input)
+    const created = await api.post<LaggingCatalogDto>('/reference/cost-rates/lagging-rates/', input)
     set((s) => ({ lagging: [...s.lagging, created] }))
   },
+  updateLagging: async (id, patch) => {
+    const updated = await api.patch<LaggingCatalogDto>(`/reference/cost-rates/lagging-rates/${id}/`, patch)
+    set((s) => ({ lagging: s.lagging.map((x) => (x.id === id ? updated : x)) }))
+  },
   deleteLagging: async (id) => {
-    await api.delete(`/reference/catalogs/lagging/${id}/`)
+    await api.delete(`/reference/cost-rates/lagging-rates/${id}/`)
     set((s) => ({ lagging: s.lagging.filter((x) => x.id !== id) }))
   },
 
   createLockingDevice: async (input) => {
-    const created = await api.post<LockingDeviceCatalogDto>('/reference/catalogs/locking-devices/', input)
+    const created = await api.post<LockingDeviceCatalogDto>('/reference/catalogs/lcd-data/', input)
     set((s) => ({ lockingDevices: [...s.lockingDevices, created] }))
   },
+  updateLockingDevice: async (id, patch) => {
+    const updated = await api.patch<LockingDeviceCatalogDto>(`/reference/catalogs/lcd-data/${id}/`, patch)
+    set((s) => ({ lockingDevices: s.lockingDevices.map((x) => (x.id === id ? updated : x)) }))
+  },
   deleteLockingDevice: async (id) => {
-    await api.delete(`/reference/catalogs/locking-devices/${id}/`)
+    await api.delete(`/reference/catalogs/lcd-data/${id}/`)
     set((s) => ({ lockingDevices: s.lockingDevices.filter((x) => x.id !== id) }))
   },
 
-  createRawForgingRate: async (input) => {
-    const created = await api.post<RawForgingRateDto>('/reference/raw-forging-rates/', input)
-    set((s) => ({ rawForgingRates: [...s.rawForgingRates, created] }))
+  createShaftBand: async (input) => {
+    const created = await api.post<ShaftBandDto>('/reference/raw-forging/shaft-bands/', input)
+    set((s) => ({ shaftBands: [...s.shaftBands, created] }))
   },
-  updateRawForgingRate: async (id, patch) => {
-    const updated = await api.patch<RawForgingRateDto>(`/reference/raw-forging-rates/${id}/`, patch)
-    set((s) => ({ rawForgingRates: s.rawForgingRates.map((r) => (r.id === id ? updated : r)) }))
+  updateShaftBand: async (id, patch) => {
+    const updated = await api.patch<ShaftBandDto>(`/reference/raw-forging/shaft-bands/${id}/`, patch)
+    set((s) => ({ shaftBands: s.shaftBands.map((r) => (r.id === id ? updated : r)) }))
   },
-  deleteRawForgingRate: async (id) => {
-    await api.delete(`/reference/raw-forging-rates/${id}/`)
-    set((s) => ({ rawForgingRates: s.rawForgingRates.filter((x) => x.id !== id) }))
+  deleteShaftBand: async (id) => {
+    await api.delete(`/reference/raw-forging/shaft-bands/${id}/`)
+    set((s) => ({ shaftBands: s.shaftBands.filter((x) => x.id !== id) }))
+  },
+
+  createShellBand: async (input) => {
+    const created = await api.post<ShellBandDto>('/reference/raw-forging/shell-bands/', input)
+    set((s) => ({ shellBands: [...s.shellBands, created] }))
+  },
+  updateShellBand: async (id, patch) => {
+    const updated = await api.patch<ShellBandDto>(`/reference/raw-forging/shell-bands/${id}/`, patch)
+    set((s) => ({ shellBands: s.shellBands.map((r) => (r.id === id ? updated : r)) }))
+  },
+  deleteShellBand: async (id) => {
+    await api.delete(`/reference/raw-forging/shell-bands/${id}/`)
+    set((s) => ({ shellBands: s.shellBands.filter((x) => x.id !== id) }))
   },
 
   createInHouseHourRate: async (input) => {

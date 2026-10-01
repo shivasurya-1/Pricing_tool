@@ -14,13 +14,48 @@ export interface FormulaDefinitionDto {
   updated_at: string
 }
 
-export interface CostRateValueDto {
+// One resource per Cost Rate Tables section — the backend split what used to be a
+// single /reference/cost-rates/ (with a `category` field) into 4 separate endpoints,
+// each with field names specific to that section, plus Lagging moved here too (see
+// LaggingCatalogDto in referenceStore.ts, still its own catalog shape/state).
+
+export interface GlobalParameterDto {
   id: number
   key: string
-  label: string
-  category: string
+  parameter: string
   value: number
   unit: string
+  notes: string
+  order: number
+}
+
+export interface MaterialRateDto {
+  id: number
+  key: string
+  material: string
+  inr_per_kg: number
+  eur_per_kg: number | null
+  notes: string
+  order: number
+}
+
+export interface LabourRateDto {
+  id: number
+  key: string
+  operation: string
+  inr_per_hour: number
+  eur_per_hour: number | null
+  sourcing_default: string
+  order: number
+}
+
+export interface LogisticsRateDto {
+  id: number
+  key: string
+  item: string
+  rate: number
+  unit: string
+  notes: string
   order: number
 }
 
@@ -45,12 +80,39 @@ export interface TechDataFieldDto {
   updated_at: string
 }
 
-export interface NewCostRateInput {
+export interface NewGlobalParameterInput {
   key: string
-  label: string
-  category: string
+  parameter: string
   value: number
   unit?: string
+  notes?: string
+  order?: number
+}
+
+export interface NewMaterialRateInput {
+  key: string
+  material: string
+  inr_per_kg: number
+  eur_per_kg?: number | null
+  notes?: string
+  order?: number
+}
+
+export interface NewLabourRateInput {
+  key: string
+  operation: string
+  inr_per_hour: number
+  eur_per_hour?: number | null
+  sourcing_default?: string
+  order?: number
+}
+
+export interface NewLogisticsRateInput {
+  key: string
+  item: string
+  rate: number
+  unit?: string
+  notes?: string
   order?: number
 }
 
@@ -97,8 +159,14 @@ interface FormulaState {
   loaded: boolean
   loading: boolean
   formulas: Record<string, FormulaDefinitionDto>
+  /** Flat key → number map every pricing formula reads from — built from the 4 lists
+   * below (value / inr_per_kg / inr_per_hour / rate respectively), rebuilt after every
+   * mutation to any of them. */
   costRates: Record<string, number>
-  costRatesFull: CostRateValueDto[]
+  globalParameters: GlobalParameterDto[]
+  materialRates: MaterialRateDto[]
+  labourRates: LabourRateDto[]
+  logisticsRates: LogisticsRateDto[]
   techDataFields: Record<string, TechDataFieldDto>
   sections: SectionDto[]
 
@@ -117,16 +185,35 @@ interface FormulaState {
   updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'options' | 'order'>>) => Promise<void>
   deleteTechDataField: (key: string) => Promise<void>
 
-  createCostRate: (input: NewCostRateInput) => Promise<void>
-  updateCostRate: (id: number, patch: Partial<Pick<CostRateValueDto, 'value'>>) => Promise<void>
-  deleteCostRate: (id: number) => Promise<void>
+  createGlobalParameter: (input: NewGlobalParameterInput) => Promise<void>
+  updateGlobalParameter: (id: number, patch: Partial<Pick<GlobalParameterDto, 'parameter' | 'value' | 'unit' | 'notes'>>) => Promise<void>
+  deleteGlobalParameter: (id: number) => Promise<void>
+
+  createMaterialRate: (input: NewMaterialRateInput) => Promise<void>
+  updateMaterialRate: (id: number, patch: Partial<Pick<MaterialRateDto, 'material' | 'inr_per_kg' | 'eur_per_kg' | 'notes'>>) => Promise<void>
+  deleteMaterialRate: (id: number) => Promise<void>
+
+  createLabourRate: (input: NewLabourRateInput) => Promise<void>
+  updateLabourRate: (id: number, patch: Partial<Pick<LabourRateDto, 'operation' | 'inr_per_hour' | 'eur_per_hour' | 'sourcing_default'>>) => Promise<void>
+  deleteLabourRate: (id: number) => Promise<void>
+
+  createLogisticsRate: (input: NewLogisticsRateInput) => Promise<void>
+  updateLogisticsRate: (id: number, patch: Partial<Pick<LogisticsRateDto, 'item' | 'rate' | 'unit' | 'notes'>>) => Promise<void>
+  deleteLogisticsRate: (id: number) => Promise<void>
 }
 
-function reindexCostRates(costRatesFull: CostRateValueDto[]) {
-  return {
-    costRatesFull,
-    costRates: Object.fromEntries(costRatesFull.map((r) => [r.key, r.value])),
-  }
+function buildCostRates(
+  globalParameters: GlobalParameterDto[],
+  materialRates: MaterialRateDto[],
+  labourRates: LabourRateDto[],
+  logisticsRates: LogisticsRateDto[],
+): Record<string, number> {
+  const map: Record<string, number> = {}
+  for (const r of globalParameters) map[r.key] = r.value
+  for (const r of materialRates) map[r.key] = r.inr_per_kg
+  for (const r of labourRates) map[r.key] = r.inr_per_hour
+  for (const r of logisticsRates) map[r.key] = r.rate
+  return map
 }
 
 export const useFormulaStore = create<FormulaState>((set, get) => ({
@@ -134,7 +221,10 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
   loading: false,
   formulas: {},
   costRates: {},
-  costRatesFull: [],
+  globalParameters: [],
+  materialRates: [],
+  labourRates: [],
+  logisticsRates: [],
   techDataFields: {},
   sections: [],
 
@@ -142,16 +232,22 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
     if (get().loading) return
     set({ loading: true })
     try {
-      const [formulaList, rateList, fieldList, sections] = await Promise.all([
+      const [formulaList, globalParameters, materialRates, labourRates, logisticsRates, fieldList, sections] = await Promise.all([
         api.get<FormulaDefinitionDto[]>('/formulas/'),
-        api.get<CostRateValueDto[]>('/reference/cost-rates/'),
+        api.get<GlobalParameterDto[]>('/reference/cost-rates/global-parameters/'),
+        api.get<MaterialRateDto[]>('/reference/cost-rates/material-rates/'),
+        api.get<LabourRateDto[]>('/reference/cost-rates/machining-labour-rates/'),
+        api.get<LogisticsRateDto[]>('/reference/cost-rates/logistics-packing-rates/'),
         api.get<TechDataFieldDto[]>('/formulas/tech-data-fields/'),
         api.get<SectionDto[]>('/formulas/sections/'),
       ])
       set({
         formulas: Object.fromEntries(formulaList.map((f) => [f.key, f])),
-        costRates: Object.fromEntries(rateList.map((r) => [r.key, r.value])),
-        costRatesFull: rateList,
+        globalParameters,
+        materialRates,
+        labourRates,
+        logisticsRates,
+        costRates: buildCostRates(globalParameters, materialRates, labourRates, logisticsRates),
         techDataFields: Object.fromEntries(fieldList.map((f) => [f.key, f])),
         sections,
         loaded: true,
@@ -234,18 +330,91 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
     })
   },
 
-  createCostRate: async (input) => {
-    const created = await api.post<CostRateValueDto>('/reference/cost-rates/', input)
-    set((s) => reindexCostRates([...s.costRatesFull, created]))
+  createGlobalParameter: async (input) => {
+    const created = await api.post<GlobalParameterDto>('/reference/cost-rates/global-parameters/', input)
+    set((s) => {
+      const globalParameters = [...s.globalParameters, created]
+      return { globalParameters, costRates: buildCostRates(globalParameters, s.materialRates, s.labourRates, s.logisticsRates) }
+    })
+  },
+  updateGlobalParameter: async (id, patch) => {
+    const updated = await api.patch<GlobalParameterDto>(`/reference/cost-rates/global-parameters/${id}/`, patch)
+    set((s) => {
+      const globalParameters = s.globalParameters.map((r) => (r.id === id ? updated : r))
+      return { globalParameters, costRates: buildCostRates(globalParameters, s.materialRates, s.labourRates, s.logisticsRates) }
+    })
+  },
+  deleteGlobalParameter: async (id) => {
+    await api.delete(`/reference/cost-rates/global-parameters/${id}/`)
+    set((s) => {
+      const globalParameters = s.globalParameters.filter((r) => r.id !== id)
+      return { globalParameters, costRates: buildCostRates(globalParameters, s.materialRates, s.labourRates, s.logisticsRates) }
+    })
   },
 
-  updateCostRate: async (id, patch) => {
-    const updated = await api.patch<CostRateValueDto>(`/reference/cost-rates/${id}/`, patch)
-    set((s) => reindexCostRates(s.costRatesFull.map((r) => (r.id === id ? updated : r))))
+  createMaterialRate: async (input) => {
+    const created = await api.post<MaterialRateDto>('/reference/cost-rates/material-rates/', input)
+    set((s) => {
+      const materialRates = [...s.materialRates, created]
+      return { materialRates, costRates: buildCostRates(s.globalParameters, materialRates, s.labourRates, s.logisticsRates) }
+    })
+  },
+  updateMaterialRate: async (id, patch) => {
+    const updated = await api.patch<MaterialRateDto>(`/reference/cost-rates/material-rates/${id}/`, patch)
+    set((s) => {
+      const materialRates = s.materialRates.map((r) => (r.id === id ? updated : r))
+      return { materialRates, costRates: buildCostRates(s.globalParameters, materialRates, s.labourRates, s.logisticsRates) }
+    })
+  },
+  deleteMaterialRate: async (id) => {
+    await api.delete(`/reference/cost-rates/material-rates/${id}/`)
+    set((s) => {
+      const materialRates = s.materialRates.filter((r) => r.id !== id)
+      return { materialRates, costRates: buildCostRates(s.globalParameters, materialRates, s.labourRates, s.logisticsRates) }
+    })
   },
 
-  deleteCostRate: async (id) => {
-    await api.delete(`/reference/cost-rates/${id}/`)
-    set((s) => reindexCostRates(s.costRatesFull.filter((r) => r.id !== id)))
+  createLabourRate: async (input) => {
+    const created = await api.post<LabourRateDto>('/reference/cost-rates/machining-labour-rates/', input)
+    set((s) => {
+      const labourRates = [...s.labourRates, created]
+      return { labourRates, costRates: buildCostRates(s.globalParameters, s.materialRates, labourRates, s.logisticsRates) }
+    })
+  },
+  updateLabourRate: async (id, patch) => {
+    const updated = await api.patch<LabourRateDto>(`/reference/cost-rates/machining-labour-rates/${id}/`, patch)
+    set((s) => {
+      const labourRates = s.labourRates.map((r) => (r.id === id ? updated : r))
+      return { labourRates, costRates: buildCostRates(s.globalParameters, s.materialRates, labourRates, s.logisticsRates) }
+    })
+  },
+  deleteLabourRate: async (id) => {
+    await api.delete(`/reference/cost-rates/machining-labour-rates/${id}/`)
+    set((s) => {
+      const labourRates = s.labourRates.filter((r) => r.id !== id)
+      return { labourRates, costRates: buildCostRates(s.globalParameters, s.materialRates, labourRates, s.logisticsRates) }
+    })
+  },
+
+  createLogisticsRate: async (input) => {
+    const created = await api.post<LogisticsRateDto>('/reference/cost-rates/logistics-packing-rates/', input)
+    set((s) => {
+      const logisticsRates = [...s.logisticsRates, created]
+      return { logisticsRates, costRates: buildCostRates(s.globalParameters, s.materialRates, s.labourRates, logisticsRates) }
+    })
+  },
+  updateLogisticsRate: async (id, patch) => {
+    const updated = await api.patch<LogisticsRateDto>(`/reference/cost-rates/logistics-packing-rates/${id}/`, patch)
+    set((s) => {
+      const logisticsRates = s.logisticsRates.map((r) => (r.id === id ? updated : r))
+      return { logisticsRates, costRates: buildCostRates(s.globalParameters, s.materialRates, s.labourRates, logisticsRates) }
+    })
+  },
+  deleteLogisticsRate: async (id) => {
+    await api.delete(`/reference/cost-rates/logistics-packing-rates/${id}/`)
+    set((s) => {
+      const logisticsRates = s.logisticsRates.filter((r) => r.id !== id)
+      return { logisticsRates, costRates: buildCostRates(s.globalParameters, s.materialRates, s.labourRates, logisticsRates) }
+    })
   },
 }))

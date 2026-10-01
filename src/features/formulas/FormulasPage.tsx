@@ -9,6 +9,7 @@ import { Tabs } from '@/components/ui/Tabs'
 import { EmptyState } from '@/components/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ReferenceCatalogPicker } from '@/components/reference/ReferenceCatalogPicker'
 import { useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
 import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type TechDataFieldDto } from '@/store/formulaStore'
@@ -119,10 +120,6 @@ export function FormulasPage() {
   const formulaSectionsPresent = useMemo(
     () => Object.keys(grouped).sort((a, b) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999)),
     [grouped, sectionOrder],
-  )
-  const technicalFormulaSections = useMemo(
-    () => formulaSectionsPresent.filter((s) => s === TECH_DATA_AUTO_SECTION_LABEL),
-    [formulaSectionsPresent],
   )
   const pricingFormulaSections = useMemo(
     () => formulaSectionsPresent.filter((s) => s !== TECH_DATA_AUTO_SECTION_LABEL),
@@ -260,47 +257,24 @@ export function FormulasPage() {
       )}
 
       {formulaTab === 'Technical Sheet Formulas' && (
-        <>
+        <div>
+          <CardHeader
+            title="Technical Data Sheet — Field Schema"
+            description="Every field on the sheet Sales/Operations fill in. Add a new one below, Manual or Auto — an Auto field's formula is edited from its own Edit button."
+          />
           <div className="space-y-5">
-            {technicalFormulaSections.length === 0 ? (
-              <EmptyState title="No Technical Data Sheet auto-formulas" description="Add one with the 'Add Formula' button above." />
-            ) : (
-              technicalFormulaSections.map((section) => (
-                <FormulaSectionCard
-                  key={section}
-                  title={section}
-                  formulas={grouped[section]}
-                  sampleVars={sampleVars}
-                  onDelete={setDeleteFormulaTarget}
-                  onSave={async (key, expression) => {
-                    try {
-                      await updateFormula(key, expression)
-                      pushToast('Formula saved.', 'success')
-                    } catch (err) {
-                      pushToast(err instanceof Error ? err.message : 'Failed to save formula.', 'error')
-                    }
-                  }}
-                />
-              ))
-            )}
+            {techDataSections.map((section) => (
+              <TechDataFieldSectionCard
+                key={section}
+                title={section}
+                fields={techDataBySection[section]}
+                isAdmin={role === 'Admin'}
+                onEdit={setEditTarget}
+                onDelete={setDeleteTarget}
+              />
+            ))}
           </div>
-
-          <div className="mt-8">
-            <CardHeader title="Technical Data Sheet — Field Schema" description="Every field on the sheet Sales/Operations fill in. Add a new one below, Manual or Auto." />
-            <div className="space-y-5">
-              {techDataSections.map((section) => (
-                <TechDataFieldSectionCard
-                  key={section}
-                  title={section}
-                  fields={techDataBySection[section]}
-                  isAdmin={role === 'Admin'}
-                  onEdit={setEditTarget}
-                  onDelete={setDeleteTarget}
-                />
-              ))}
-            </div>
-          </div>
-        </>
+        </div>
       )}
 
       <AddTechDataFieldModal
@@ -346,11 +320,16 @@ export function FormulasPage() {
       <EditTechDataFieldModal
         field={editTarget}
         existingSections={sectionLabels}
+        sampleVars={sampleVars}
         onClose={() => setEditTarget(null)}
         onSave={async (patch) => {
           if (!editTarget) return
+          const { expression, ...fieldPatch } = patch
           try {
-            await updateTechDataField(editTarget.key, patch)
+            await updateTechDataField(editTarget.key, fieldPatch)
+            if (editTarget.is_auto && expression !== undefined && expression !== editTarget.expression) {
+              await updateFormula(editTarget.formula_key ?? editTarget.key, expression)
+            }
             pushToast(`'${patch.label ?? editTarget.label}' updated.`, 'success')
             setEditTarget(null)
           } catch (err) {
@@ -1083,10 +1062,13 @@ function AddTechDataFieldModal({
         </div>
 
         {fieldType === 'select' && !isAuto && (
-          <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
-            <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} placeholder="Option A, Option B, Option C" />
-          </div>
+          <>
+            <ReferenceCatalogPicker onImport={(values) => setOptionsText(values.join(', '))} />
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
+              <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} placeholder="Option A, Option B, Option C" />
+            </div>
+          </>
         )}
 
         <label className="flex items-center gap-2 text-sm">
@@ -1177,19 +1159,25 @@ function AddTechDataFieldModal({
 function EditTechDataFieldModal({
   field,
   existingSections,
+  sampleVars,
   onClose,
   onSave,
 }: {
   field: TechDataFieldDto | null
   existingSections: string[]
+  sampleVars: Record<string, number>
   onClose: () => void
-  onSave: (patch: { label: string; section: string; unit: string; options: string[] }) => Promise<void>
+  onSave: (patch: { label: string; section: string; unit: string; options: string[]; expression?: string }) => Promise<void>
 }) {
+  const techDataFields = useFormulaStore((s) => s.techDataFields)
   const [label, setLabel] = useState('')
   const [section, setSection] = useState('')
   const [unit, setUnit] = useState('')
   const [optionsText, setOptionsText] = useState('')
+  const [expression, setExpression] = useState('')
+  const [insertKey, setInsertKey] = useState('')
   const [saving, setSaving] = useState(false)
+  const expressionRef = useRef<HTMLTextAreaElement>(null)
 
   // Re-seed local state whenever a different field is opened for editing.
   const [openedKey, setOpenedKey] = useState<string | null>(null)
@@ -1199,12 +1187,55 @@ function EditTechDataFieldModal({
     setSection(field.section)
     setUnit(field.unit)
     setOptionsText(field.options.join(', '))
+    setExpression(field.expression ?? '')
   }
+
+  // Sorted for the picker; the field currently being edited is excluded (referencing
+  // itself in its own formula would always be a circular-dependency mistake).
+  const insertableFields = useMemo(
+    () =>
+      Object.values(techDataFields)
+        .filter((f) => f.key !== field?.key)
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [techDataFields, field?.key],
+  )
+
+  const insertToken = (token: string) => {
+    const el = expressionRef.current
+    const start = el?.selectionStart ?? expression.length
+    const end = el?.selectionEnd ?? expression.length
+    const needsLeadingSpace = start > 0 && !/\s$/.test(expression.slice(0, start)) && /[a-zA-Z0-9_]/.test(token[0])
+    const insert = (needsLeadingSpace ? ' ' : '') + token
+    const next = expression.slice(0, start) + insert + expression.slice(end)
+    setExpression(next)
+    requestAnimationFrame(() => {
+      const pos = start + insert.length
+      el?.focus()
+      el?.setSelectionRange(pos, pos)
+    })
+  }
+
+  const knownKeys = useMemo(() => [...Object.keys(techDataFields), ...INJECTED_RATE_VARIABLES], [techDataFields])
+  const detectedVariables = useMemo(
+    () => knownKeys.filter((k) => k !== field?.key && new RegExp(`\\b${k}\\b`).test(expression)),
+    [expression, knownKeys, field?.key],
+  )
 
   if (!field) return null
 
   const isManualSelect = field.field_type === 'select' && !field.is_auto && !field.is_catalog_derived
-  const canSave = label.trim() && section
+
+  const preview = (() => {
+    if (!field.is_auto || !expression.trim()) return null
+    try {
+      const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
+      return { value: evaluateFormula(expression, vars), error: null as string | null }
+    } catch (err) {
+      return { value: null as number | null, error: err instanceof FormulaError ? err.message : 'Invalid expression' }
+    }
+  })()
+
+  const canSave = label.trim() && section && (!field.is_auto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
     setSaving(true)
@@ -1213,6 +1244,7 @@ function EditTechDataFieldModal({
       section,
       unit,
       options: isManualSelect ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : field.options,
+      expression: field.is_auto ? expression : undefined,
     })
     setSaving(false)
   }
@@ -1235,20 +1267,18 @@ function EditTechDataFieldModal({
       }
     >
       <div className="space-y-3">
-        <p className="text-xs text-[var(--color-ink-faint)]">
-          Key (<code className="font-mono">{field.key}</code>) and Type (<span className="capitalize">{field.field_type}</span>) can&rsquo;t
-          be changed after creation.
-          {field.is_auto && (
-            <>
-              {' '}
-              To change the formula, edit it in the table above under{' '}
-              <span className="font-medium text-[var(--color-ink)]">Technical Data Sheet — Auto Fields</span>.
-            </>
-          )}
-        </p>
         <div>
           <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Label</label>
           <input value={label} onChange={(e) => setLabel(e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Key (variable name used in formulas)</label>
+          <input
+            value={field.key}
+            disabled
+            title="Key can't be changed after creation"
+            className={clsx(inputClass, 'font-mono cursor-not-allowed bg-[var(--color-surface)] text-[var(--color-ink-faint)]')}
+          />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -1267,10 +1297,113 @@ function EditTechDataFieldModal({
             <input value={unit} onChange={(e) => setUnit(e.target.value)} className={inputClass} />
           </div>
         </div>
+
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Type</label>
+          <div className="flex gap-2" title="Type can't be changed after creation">
+            {(['text', 'number', 'select'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                disabled
+                className={clsx(
+                  'flex-1 cursor-not-allowed rounded-md border px-3 py-1.5 text-sm capitalize',
+                  field.field_type === t ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)] text-[var(--color-blue)]' : 'border-[var(--color-border)] opacity-50',
+                )}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {isManualSelect && (
-          <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
-            <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} />
+          <>
+            <ReferenceCatalogPicker onImport={(values) => setOptionsText(values.join(', '))} />
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
+              <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} />
+            </div>
+          </>
+        )}
+
+        <label className="flex items-center gap-2 text-sm" title="Auto can't be toggled after creation">
+          <input type="checkbox" checked={field.is_auto} disabled className="cursor-not-allowed rounded border-[var(--color-border)]" />
+          Auto — computed from a formula, read-only on the sheet
+        </label>
+
+        {field.is_auto && (
+          <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Insert a field</label>
+                <select
+                  value={insertKey}
+                  onChange={(e) => {
+                    if (e.target.value) insertToken(e.target.value)
+                    setInsertKey('')
+                  }}
+                  className={inputClass}
+                >
+                  <option value="">Pick a field to insert...</option>
+                  {insertableFields.map((f) => (
+                    <option key={f.key} value={f.key}>
+                      {f.label} ({f.key})
+                    </option>
+                  ))}
+                  <optgroup label="Labour rate lookups">
+                    {INJECTED_RATE_VARIABLES.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Operators</label>
+                <div className="flex gap-1">
+                  {OPERATOR_TOKENS.map((op) => (
+                    <button
+                      key={op}
+                      type="button"
+                      onClick={() => insertToken(op)}
+                      className="flex-1 rounded-md border border-[var(--color-border)] py-1.5 font-mono text-sm hover:border-[var(--color-blue)] hover:bg-[var(--color-blue-50)]"
+                    >
+                      {op}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Formula / Expression</label>
+              <textarea
+                ref={expressionRef}
+                value={expression}
+                onChange={(e) => setExpression(e.target.value)}
+                rows={2}
+                className="w-full rounded-md border border-[var(--color-border)] px-2 py-1.5 font-mono text-xs outline-none focus:border-[var(--color-blue)]"
+              />
+              <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
+                Detected variables:{' '}
+                {detectedVariables.length > 0 ? (
+                  detectedVariables.map((v) => (
+                    <Badge key={v} tone="neutral" className="ml-1">
+                      {v}
+                    </Badge>
+                  ))
+                ) : (
+                  <span className="italic">none yet</span>
+                )}
+              </p>
+            </div>
+            {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
+            {preview && preview.value !== null && (
+              <p className="text-xs text-[var(--color-ink-faint)]">
+                Preview: <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span> (against the RFQ selected above, unfilled variables read as 0)
+              </p>
+            )}
           </div>
         )}
       </div>

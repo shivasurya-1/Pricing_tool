@@ -260,7 +260,7 @@ export function getOptionsForField(fieldKey: string): string[] {
     case 'laggingType':
       return ref.lagging.map((l) => l.lagging_type)
     case 'lockingDeviceType':
-      return ref.lockingDevices.map((l) => l.model)
+      return ref.lockingDevices.map((l) => l.model_size)
     default:
       return []
   }
@@ -298,7 +298,7 @@ export function lookupCatalogPrice(fieldKey: string, designation: string): numbe
     case 'housingPrice':
       return ref.housings.find((h) => h.housing_designation === designation)?.price_inr ?? null
     case 'lockingDevicePrice':
-      return ref.lockingDevices.find((l) => l.model === designation)?.negotiated_rate_inr ?? null
+      return ref.lockingDevices.find((l) => l.model_size === designation)?.negotiated_rate_inr ?? null
     case 'laggingRate':
       return ref.lagging.find((l) => l.lagging_type === designation)?.price_inr_per_m2 ?? null
     default:

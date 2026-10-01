@@ -10,6 +10,19 @@ import { ApiError } from '@/lib/apiClient'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-blue)]'
 
+// Mirrors FormulasPage's own copy — camelCase-slugifies whatever's typed into a
+// label-like field so an `autoFillFrom` column (e.g. Key) can track it live.
+function slugifyToCamelCase(label: string): string {
+  const words = label
+    .trim()
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+  if (words.length === 0) return ''
+  return words
+    .map((w, i) => (i === 0 ? w.charAt(0).toLowerCase() + w.slice(1) : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join('')
+}
+
 export interface ReferenceColumn<T> {
   key: string
   header: string
@@ -22,6 +35,10 @@ export interface ReferenceColumn<T> {
    * instead of plain read-only text. Never applies to the Add-row modal's own
    * required-ness — that's controlled separately by `required`. */
   editable?: boolean
+  /** Add-row modal only: this column auto-fills (camelCase-slugified) from the named
+   * column as the user types it there, until they edit this field themselves —
+   * same "Key follows Label" pattern as the Formulas page's own Add modals. */
+  autoFillFrom?: string
 }
 
 /**
@@ -41,6 +58,7 @@ export function ReferenceCrudTable<T extends { id: number }>({
   onUpdate,
   addLabel = 'Add Row',
   searchable = false,
+  renderAddModal,
 }: {
   title: string
   description?: string
@@ -49,17 +67,34 @@ export function ReferenceCrudTable<T extends { id: number }>({
   onCreate: (values: Record<string, string | number>) => Promise<void>
   onDelete: (id: number) => Promise<void>
   /** Required when any column has `editable: true` — saves the changed editable
-   * fields for one row. */
-  onUpdate?: (id: number, patch: Record<string, number>) => Promise<void>
+   * fields for one row. A `type: 'number'` column patches a number, any other
+   * column type patches its raw string value. */
+  onUpdate?: (id: number, patch: Record<string, string | number>) => Promise<void>
   addLabel?: string
   /** Adds a search box that filters rows by every column's displayed text — worth it
    * once a catalog has more than a handful of rows (e.g. ~90 bearings). */
   searchable?: boolean
+  /** Replaces the built-in one-input-per-column Add modal entirely — for a resource
+   * whose Add form needs to compose several visible inputs into one stored column
+   * (e.g. Raw Forging Prices' several dimension fields into one Size Band string).
+   * Gets the same open/close state and the same wrapped onSave (toast + close-on-
+   * success + error toast) the built-in modal uses, so callers just build the form. */
+  renderAddModal?: (props: { open: boolean; onClose: () => void; onSave: (values: Record<string, string | number>) => Promise<void> }) => React.ReactNode
 }) {
   const pushToast = useUiStore((s) => s.pushToast)
   const [addOpen, setAddOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<T | null>(null)
   const [search, setSearch] = useState('')
+
+  const submitCreate = async (values: Record<string, string | number>) => {
+    try {
+      await onCreate(values)
+      pushToast('Row added.', 'success')
+      setAddOpen(false)
+    } catch (err) {
+      pushToast(err instanceof ApiError ? err.message : 'Failed to add row.', 'error')
+    }
+  }
 
   const filteredRows = useMemo(() => {
     if (!searchable || !search.trim()) return rows
@@ -122,21 +157,11 @@ export function ReferenceCrudTable<T extends { id: number }>({
         </table>
       </div>
 
-      <AddRowModal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        title={addLabel}
-        columns={columns}
-        onSave={async (values) => {
-          try {
-            await onCreate(values)
-            pushToast('Row added.', 'success')
-            setAddOpen(false)
-          } catch (err) {
-            pushToast(err instanceof ApiError ? err.message : 'Failed to add row.', 'error')
-          }
-        }}
-      />
+      {renderAddModal ? (
+        renderAddModal({ open: addOpen, onClose: () => setAddOpen(false), onSave: submitCreate })
+      ) : (
+        <AddRowModal open={addOpen} onClose={() => setAddOpen(false)} title={addLabel} columns={columns} onSave={submitCreate} />
+      )}
 
       <ConfirmDialog
         open={!!deleteTarget}
@@ -169,16 +194,21 @@ function EditableRow<T extends { id: number }>({
 }: {
   row: T
   columns: ReferenceColumn<T>[]
-  onUpdate?: (id: number, patch: Record<string, number>) => Promise<void>
+  onUpdate?: (id: number, patch: Record<string, string | number>) => Promise<void>
   onDeleteClick: () => void
 }) {
   const pushToast = useUiStore((s) => s.pushToast)
-  const editableKeys = columns.filter((c) => c.editable).map((c) => c.key)
-  const [draft, setDraft] = useState<Record<string, number>>(() =>
-    Object.fromEntries(editableKeys.map((k) => [k, Number((row as Record<string, unknown>)[k] ?? 0)])),
+  const editableColumns = columns.filter((c) => c.editable)
+  const rawValue = (c: ReferenceColumn<T>) => {
+    const v = (row as Record<string, unknown>)[c.key]
+    return c.type === 'number' ? Number(v ?? 0) : String(v ?? '')
+  }
+  const [draft, setDraft] = useState<Record<string, string | number>>(() =>
+    Object.fromEntries(editableColumns.map((c) => [c.key, rawValue(c)])),
   )
   const [saving, setSaving] = useState(false)
-  const original = Object.fromEntries(editableKeys.map((k) => [k, Number((row as Record<string, unknown>)[k] ?? 0)]))
+  const original = Object.fromEntries(editableColumns.map((c) => [c.key, rawValue(c)]))
+  const editableKeys = editableColumns.map((c) => c.key)
   const dirty = editableKeys.some((k) => draft[k] !== original[k])
 
   const handleSave = async () => {
@@ -200,10 +230,13 @@ function EditableRow<T extends { id: number }>({
         <td key={c.key} className={`px-4 py-2.5 ${j === 0 ? 'font-medium' : ''}`}>
           {c.editable ? (
             <input
-              type="number"
-              value={draft[c.key] ?? 0}
-              onChange={(e) => setDraft((prev) => ({ ...prev, [c.key]: Number(e.target.value) }))}
-              className="w-28 rounded-md border border-[var(--color-border)] px-2 py-1 text-sm outline-none focus:border-[var(--color-blue)]"
+              type={c.type === 'number' ? 'number' : 'text'}
+              value={draft[c.key] ?? (c.type === 'number' ? 0 : '')}
+              onChange={(e) => setDraft((prev) => ({ ...prev, [c.key]: c.type === 'number' ? Number(e.target.value) : e.target.value }))}
+              className={clsx(
+                'rounded-md border border-[var(--color-border)] px-2 py-1 text-sm outline-none focus:border-[var(--color-blue)]',
+                c.type === 'number' ? 'w-28' : 'w-full min-w-[140px]',
+              )}
             />
           ) : c.format ? (
             c.format(row)
@@ -247,10 +280,18 @@ function AddRowModal<T>({
   onSave: (values: Record<string, string | number>) => Promise<void>
 }) {
   const [values, setValues] = useState<Record<string, string | number>>({})
+  const [autoFilledKeysEdited, setAutoFilledKeysEdited] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
 
-  const setField = (key: string, v: string, type: 'text' | 'number' | 'select') => {
-    setValues((prev) => ({ ...prev, [key]: type === 'number' ? (v === '' ? '' : Number(v)) : v }))
+  const setField = (key: string, v: string, type: 'text' | 'number' | 'select', isAutoFillTarget: boolean) => {
+    if (isAutoFillTarget) setAutoFilledKeysEdited((prev) => new Set(prev).add(key))
+    setValues((prev) => {
+      const next = { ...prev, [key]: type === 'number' ? (v === '' ? '' : Number(v)) : v }
+      for (const c of columns) {
+        if (c.autoFillFrom === key && !autoFilledKeysEdited.has(c.key)) next[c.key] = slugifyToCamelCase(v)
+      }
+      return next
+    })
   }
 
   const canSave = columns.every((c) => !c.required || (values[c.key] !== undefined && values[c.key] !== ''))
@@ -260,6 +301,7 @@ function AddRowModal<T>({
     await onSave(values)
     setSaving(false)
     setValues({})
+    setAutoFilledKeysEdited(new Set())
   }
 
   return (
@@ -288,7 +330,11 @@ function AddRowModal<T>({
               {c.header} {c.required && <span className="text-[var(--color-red)]">*</span>}
             </label>
             {c.type === 'select' ? (
-              <select value={String(values[c.key] ?? '')} onChange={(e) => setField(c.key, e.target.value, c.type)} className={inputClass}>
+              <select
+                value={String(values[c.key] ?? '')}
+                onChange={(e) => setField(c.key, e.target.value, c.type, !!c.autoFillFrom)}
+                className={inputClass}
+              >
                 <option value="">Select...</option>
                 {c.options?.map((opt) => (
                   <option key={opt} value={opt}>
@@ -300,7 +346,7 @@ function AddRowModal<T>({
               <input
                 type={c.type === 'number' ? 'number' : 'text'}
                 value={values[c.key] ?? ''}
-                onChange={(e) => setField(c.key, e.target.value, c.type)}
+                onChange={(e) => setField(c.key, e.target.value, c.type, !!c.autoFillFrom)}
                 className={inputClass}
               />
             )}
