@@ -321,6 +321,7 @@ export function FormulasPage() {
         field={editTarget}
         existingSections={sectionLabels}
         sampleVars={sampleVars}
+        isAdmin={role === 'Admin'}
         onClose={() => setEditTarget(null)}
         onSave={async (patch) => {
           if (!editTarget) return
@@ -1160,19 +1161,29 @@ function EditTechDataFieldModal({
   field,
   existingSections,
   sampleVars,
+  isAdmin,
   onClose,
   onSave,
 }: {
   field: TechDataFieldDto | null
   existingSections: string[]
   sampleVars: Record<string, number>
+  isAdmin: boolean
   onClose: () => void
-  onSave: (patch: { label: string; section: string; unit: string; options: string[]; expression?: string }) => Promise<void>
+  onSave: (patch: {
+    label: string
+    section: string
+    unit: string
+    field_type: TechDataFieldDto['field_type']
+    options: string[]
+    expression?: string
+  }) => Promise<void>
 }) {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
   const [label, setLabel] = useState('')
   const [section, setSection] = useState('')
   const [unit, setUnit] = useState('')
+  const [fieldType, setFieldType] = useState<TechDataFieldDto['field_type']>('text')
   const [optionsText, setOptionsText] = useState('')
   const [expression, setExpression] = useState('')
   const [insertKey, setInsertKey] = useState('')
@@ -1186,6 +1197,7 @@ function EditTechDataFieldModal({
     setLabel(field.label)
     setSection(field.section)
     setUnit(field.unit)
+    setFieldType(field.field_type)
     setOptionsText(field.options.join(', '))
     setExpression(field.expression ?? '')
   }
@@ -1223,7 +1235,16 @@ function EditTechDataFieldModal({
 
   if (!field) return null
 
-  const isManualSelect = field.field_type === 'select' && !field.is_auto && !field.is_catalog_derived
+  // Mirrors TechDataFieldDefinitionViewSet.perform_update: Auto/catalog-derived fields
+  // keep their type; a core field's type is Admin-only.
+  const typeLockReason = field.is_auto
+    ? "Type can't be changed on an Auto field"
+    : field.is_catalog_derived
+      ? "Type can't be changed on a catalog-derived field"
+      : field.is_core && !isAdmin
+        ? 'Only an Admin can change the type of a core field'
+        : null
+  const isManualSelect = fieldType === 'select' && !field.is_auto && !field.is_catalog_derived
 
   const preview = (() => {
     if (!field.is_auto || !expression.trim()) return null
@@ -1235,7 +1256,9 @@ function EditTechDataFieldModal({
     }
   })()
 
-  const canSave = label.trim() && section && (!field.is_auto || (expression.trim() && !preview?.error))
+  const parsedOptions = optionsText.split(',').map((o) => o.trim()).filter(Boolean)
+  const canSave =
+    label.trim() && section && (!isManualSelect || parsedOptions.length > 0) && (!field.is_auto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
     setSaving(true)
@@ -1243,7 +1266,8 @@ function EditTechDataFieldModal({
       label: label.trim(),
       section,
       unit,
-      options: isManualSelect ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : field.options,
+      field_type: fieldType,
+      options: isManualSelect ? parsedOptions : fieldType === 'select' ? field.options : [],
       expression: field.is_auto ? expression : undefined,
     })
     setSaving(false)
@@ -1300,21 +1324,31 @@ function EditTechDataFieldModal({
 
         <div>
           <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Type</label>
-          <div className="flex gap-2" title="Type can't be changed after creation">
+          <div className="flex gap-2" title={typeLockReason ?? undefined}>
             {(['text', 'number', 'select'] as const).map((t) => (
               <button
                 key={t}
                 type="button"
-                disabled
+                disabled={!!typeLockReason}
+                onClick={() => setFieldType(t)}
                 className={clsx(
-                  'flex-1 cursor-not-allowed rounded-md border px-3 py-1.5 text-sm capitalize',
-                  field.field_type === t ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)] text-[var(--color-blue)]' : 'border-[var(--color-border)] opacity-50',
+                  'flex-1 rounded-md border px-3 py-1.5 text-sm capitalize',
+                  typeLockReason && 'cursor-not-allowed',
+                  fieldType === t
+                    ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)] text-[var(--color-blue)]'
+                    : clsx('border-[var(--color-border)]', typeLockReason && 'opacity-50'),
                 )}
               >
                 {t}
               </button>
             ))}
           </div>
+          {typeLockReason && <p className="mt-1 text-xs text-[var(--color-ink-faint)]">{typeLockReason}.</p>}
+          {!typeLockReason && fieldType !== field.field_type && (
+            <p className="mt-1 text-xs text-[var(--color-amber)]">
+              Existing RFQ values for this field are kept as-is and may not match the new type.
+            </p>
+          )}
         </div>
 
         {isManualSelect && (

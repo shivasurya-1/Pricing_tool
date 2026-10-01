@@ -255,10 +255,23 @@ class TechDataFieldDefinitionViewSet(
 
     def perform_update(self, serializer):
         field: TechDataFieldDefinition = serializer.instance
-        requested_type = self.request.data.get("field_type")
-        if requested_type is not None and requested_type != field.field_type:
-            raise ValidationError({"field_type": "Cannot be changed after creation."})
-        serializer.save()
+        requested_type = serializer.validated_data.get("field_type", field.field_type)
+        extra = {}
+        if requested_type != field.field_type:
+            # Auto/catalog-derived fields have no user-typed value, so their type is tied
+            # to the formula/catalog wiring and stays locked. A core field's type can be
+            # changed, but only by an Admin — same rule as deleting one.
+            if field.is_auto or field.is_catalog_derived:
+                raise ValidationError({"field_type": "Can't be changed on an Auto or catalog-derived field."})
+            if field.is_core and not self.request.user.is_admin:
+                raise ValidationError({"field_type": f"'{field.key}' is a core sheet field — only an Admin can change its type."})
+        if requested_type == "select" and not field.is_read_only:
+            options = serializer.validated_data.get("options", field.options)
+            if not options:
+                raise ValidationError({"options": "A Manual select field needs at least one option."})
+        elif requested_type != "select":
+            extra["options"] = []
+        serializer.save(**extra)
 
     def destroy(self, request, *args, **kwargs):
         field: TechDataFieldDefinition = self.get_object()

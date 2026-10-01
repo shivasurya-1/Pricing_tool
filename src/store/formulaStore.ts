@@ -182,7 +182,7 @@ interface FormulaState {
   deleteSection: (id: number) => Promise<void>
 
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
-  updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'options' | 'order'>>) => Promise<void>
+  updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'field_type' | 'options' | 'order'>>) => Promise<void>
   deleteTechDataField: (key: string) => Promise<void>
 
   createGlobalParameter: (input: NewGlobalParameterInput) => Promise<void>

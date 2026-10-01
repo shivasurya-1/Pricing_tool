@@ -266,9 +266,41 @@ class TechDataFieldDefinitionApiTests(TestCase):
         response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
         self.assertEqual(response.status_code, 400)
 
-    def test_field_type_is_immutable(self):
+    def test_manual_field_type_can_be_changed_to_select_with_options(self):
+        response = self.admin_client.patch(
+            f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"field_type": "select", "options": ["A", "B"]}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.core_field.refresh_from_db()
+        self.assertEqual(self.core_field.field_type, "select")
+        self.assertEqual(self.core_field.options, ["A", "B"])
+
+    def test_changing_to_select_requires_options(self):
         response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"field_type": "select"}, format="json")
         self.assertEqual(response.status_code, 400)
+        self.assertIn("options", response.data)
+
+    def test_changing_away_from_select_clears_options(self):
+        self.core_field.field_type, self.core_field.options = "select", ["A", "B"]
+        self.core_field.save()
+        response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"field_type": "text"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.core_field.refresh_from_db()
+        self.assertEqual(self.core_field.field_type, "text")
+        self.assertEqual(self.core_field.options, [])
+
+    def test_auto_field_type_is_immutable(self):
+        response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.auto_field.key}/", {"field_type": "text"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("field_type", response.data)
+
+    def test_only_admin_can_change_core_field_type(self):
+        controlling = User.objects.create_user("controlling3", password="ctrlpass123", role="Controlling")
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=controlling).key}")
+        response = client.patch(f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"field_type": "text"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("field_type", response.data)
 
     def test_label_and_order_are_editable(self):
         response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"label": "New Label", "order": 5}, format="json")
