@@ -11,7 +11,8 @@ import { Badge } from '@/components/ui/Badge'
 import { Drawer } from '@/components/ui/Drawer'
 import { Modal } from '@/components/ui/Modal'
 import { PulleyTechDataForm, isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
-import { applyFieldChange } from '@/lib/pulleyTechDataCalc'
+import { applyFieldChange, applyFixedValues } from '@/lib/pulleyTechDataCalc'
+import { applyFieldOverrides, useTechDataSections } from '@/data/pulleyTechDataSchema'
 import type { Priority, RFQItem, TechDataFieldOverride } from '@/types'
 import { formatDate, formatFileSize } from '@/lib/format'
 
@@ -47,6 +48,10 @@ export function RFQCreatePage() {
   // Same rule as the backend's validate_field_overrides.
   const role = useAuthStore((s) => s.role)
   const canChangeFieldTypes = role === 'Controlling' || role === 'Admin'
+  // Fixed values (Formulas page) are written into each item's sheet automatically.
+  const techDataSections = useTechDataSections()
+  const withFixedValues = (it: Omit<RFQItem, 'id' | 'itemNo'>) =>
+    applyFixedValues(it.technicalData ?? {}, applyFieldOverrides(techDataSections, it.fieldOverrides))
   const pushToast = useUiStore((s) => s.pushToast)
 
   const [customerId, setCustomerId] = useState('')
@@ -116,7 +121,7 @@ export function RFQCreatePage() {
       requiredDelivery: requiredDeliveryDate || new Date().toISOString().slice(0, 10),
       targetPrice: p.basePrice,
       remarks: '',
-      technicalData: { pulleyTag: `pulley_${items.length + 1}`, qty: 1 },
+      technicalData: applyFixedValues({ pulleyTag: `pulley_${items.length + 1}`, qty: 1 }, techDataSections),
     }
     setItems((prev) => [...prev, newItem])
     setTechDataDrawerIndex(items.length)
@@ -146,7 +151,8 @@ export function RFQCreatePage() {
         const fieldOverrides = { ...(it.fieldOverrides ?? {}) }
         if (override) fieldOverrides[fieldKey] = override
         else delete fieldOverrides[fieldKey]
-        return { ...it, fieldOverrides }
+        const next = { ...it, fieldOverrides }
+        return { ...next, technicalData: withFixedValues(next) }
       }),
     )
   }
@@ -181,7 +187,7 @@ export function RFQCreatePage() {
     taxApplicability,
     freightRequirement,
     customerRemarks,
-    items,
+    items: items.map((it) => ({ ...it, technicalData: withFixedValues(it) })),
     internalNotes,
     customerNotes,
   })

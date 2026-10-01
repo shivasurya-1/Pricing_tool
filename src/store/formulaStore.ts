@@ -67,6 +67,10 @@ export interface TechDataFieldDto {
   unit: string
   field_type: 'text' | 'number' | 'select'
   options: string[]
+  /** Reference catalog ("table::field") the options were imported from. */
+  options_source: string
+  /** Filled in automatically and shown read-only on every RFQ's sheet when set. */
+  fixed_value: string
   is_auto: boolean
   is_catalog_derived: boolean
   is_read_only: boolean
@@ -182,7 +186,7 @@ interface FormulaState {
   deleteSection: (id: number) => Promise<void>
 
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
-  updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'field_type' | 'options' | 'order'>>) => Promise<void>
+  updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'field_type' | 'options' | 'options_source' | 'fixed_value' | 'order'>>) => Promise<void>
   deleteTechDataField: (key: string) => Promise<void>
 
   createGlobalParameter: (input: NewGlobalParameterInput) => Promise<void>

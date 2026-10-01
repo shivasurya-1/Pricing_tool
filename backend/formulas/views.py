@@ -271,6 +271,20 @@ class TechDataFieldDefinitionViewSet(
                 raise ValidationError({"options": "A Manual select field needs at least one option."})
         elif requested_type != "select":
             extra["options"] = []
+
+        fixed_value = str(serializer.validated_data.get("fixed_value", field.fixed_value)).strip()
+        if fixed_value:
+            if field.is_read_only:
+                raise ValidationError({"fixed_value": "An Auto or catalog-derived field can't have a fixed value."})
+            final_options = extra.get("options", serializer.validated_data.get("options", field.options))
+            if requested_type == "select" and fixed_value not in final_options:
+                raise ValidationError({"fixed_value": f"'{fixed_value}' isn't one of this field's options."})
+            if requested_type == "number":
+                try:
+                    float(fixed_value)
+                except ValueError:
+                    raise ValidationError({"fixed_value": "Must be a number for a Number field."})
+        extra["fixed_value"] = fixed_value
         serializer.save(**extra)
 
     def destroy(self, request, *args, **kwargs):

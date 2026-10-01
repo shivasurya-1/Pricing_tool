@@ -14,7 +14,7 @@
  */
 
 import type { PulleyTechDataValues } from '@/types'
-import { PRICE_FIELD_SOURCE, lookupCatalogPrice, IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
+import { PRICE_FIELD_SOURCE, lookupCatalogPrice, IN_HOUSE_OPERATIONS, type TechDataSection } from '@/data/pulleyTechDataSchema'
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore } from '@/store/formulaStore'
 import { evaluateFormula } from '@/lib/formulaEval'
@@ -176,6 +176,22 @@ export function applyFieldChange(values: PulleyTechDataValues, fieldKey: string,
   }
 
   next = { ...next, ...computeAutoFields(next) }
+  return next
+}
+
+/** Writes every field's fixed value (set on the Formulas page) into the sheet, through
+ * applyFieldChange so catalog prices and auto-calcs follow — e.g. a fixed Housing
+ * Designation also fills Housing Price. Pass sections that already have this item's
+ * per-RFQ overrides applied, so an overridden field keeps whatever was typed. */
+export function applyFixedValues(values: PulleyTechDataValues, sections: TechDataSection[]): PulleyTechDataValues {
+  let next = values
+  for (const section of sections) {
+    for (const field of section.fields) {
+      if (field.auto || field.fixedValue === undefined) continue
+      const fixed = field.type === 'number' ? Number(field.fixedValue) : field.fixedValue
+      if (next[field.key] !== fixed) next = applyFieldChange(next, field.key, fixed)
+    }
+  }
   return next
 }
 

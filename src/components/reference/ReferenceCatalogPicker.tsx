@@ -40,11 +40,29 @@ function normalizeDropdownValues(raw: unknown): string[] {
  * `onImport` bulk-copies every fetched value in one action — the caller decides
  * what "import" means (e.g. filling in a comma-separated Options field).
  */
-export function ReferenceCatalogPicker({ onImport }: { onImport: (values: string[]) => void }) {
+export function ReferenceCatalogPicker({
+  onImport,
+  onPickValue,
+  sourceKey,
+  onSourceChange,
+  pickedValue: controlledPickedValue,
+}: {
+  onImport: (values: string[]) => void
+  /** Called when one Reference Value is picked, with every value in that catalog — lets
+   * the caller use it as the field's fixed value. Without it the value list is browse-only. */
+  onPickValue?: (value: string, allValues: string[]) => void
+  /** The saved catalog ("table::field") to preselect, so reopening shows it again. */
+  sourceKey?: string
+  onSourceChange?: (key: string) => void
+  /** The saved value to show in Reference Value (e.g. the field's fixed value). */
+  pickedValue?: string
+}) {
+  const [localPickedValue, setPickedValue] = useState('')
+  const pickedValue = controlledPickedValue ?? localPickedValue
   const pushToast = useUiStore((s) => s.pushToast)
   const [fields, setFields] = useState<DropdownFieldDto[]>([])
   const [fieldsLoading, setFieldsLoading] = useState(true)
-  const [selectedKey, setSelectedKey] = useState('')
+  const [selectedKey, setSelectedKey] = useState(sourceKey ?? '')
   const [values, setValues] = useState<string[]>([])
   const [valuesLoading, setValuesLoading] = useState(false)
   const [valuesLoadedOnce, setValuesLoadedOnce] = useState(false)
@@ -56,7 +74,10 @@ export function ReferenceCatalogPicker({ onImport }: { onImport: (values: string
     api
       .get<DropdownFieldDto[]>('/reference/catalogs/dropdown-fields/')
       .then((data) => {
-        if (!cancelled) setFields(data)
+        if (cancelled) return
+        setFields(data)
+        // Reload the saved catalog's values so both dropdowns show what was picked before.
+        if (sourceKey) loadValues(sourceKey, data)
       })
       .catch((err) => {
         if (!cancelled) pushToast(err instanceof ApiError ? err.message : 'Failed to load reference fields.', 'error')
@@ -73,10 +94,16 @@ export function ReferenceCatalogPicker({ onImport }: { onImport: (values: string
   const selected = fields.find((f) => `${f.table}::${f.field}` === selectedKey) ?? null
 
   const handleSelectField = (key: string) => {
+    setPickedValue('')
+    onSourceChange?.(key)
+    loadValues(key, fields)
+  }
+
+  function loadValues(key: string, fieldList: DropdownFieldDto[]) {
     setSelectedKey(key)
     setValues([])
     setValuesLoadedOnce(false)
-    const field = fields.find((f) => `${f.table}::${f.field}` === key)
+    const field = fieldList.find((f) => `${f.table}::${f.field}` === key)
     if (!field) return
 
     const requestId = ++requestIdRef.current
@@ -115,7 +142,15 @@ export function ReferenceCatalogPicker({ onImport }: { onImport: (values: string
         </div>
         <div>
           <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Reference Value</label>
-          <select disabled={!selected || valuesLoading || values.length === 0} className={selectClass} defaultValue="">
+          <select
+            disabled={!selected || valuesLoading || values.length === 0}
+            className={selectClass}
+            value={pickedValue}
+            onChange={(e) => {
+              setPickedValue(e.target.value)
+              if (e.target.value) onPickValue?.(e.target.value, values)
+            }}
+          >
             <option value="">
               {!selected
                 ? 'Select a Reference Field first'

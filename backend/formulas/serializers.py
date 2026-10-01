@@ -76,7 +76,7 @@ class TechDataFieldDefinitionSerializer(serializers.ModelSerializer):
     class Meta:
         model = TechDataFieldDefinition
         fields = [
-            "id", "key", "label", "section", "unit", "field_type", "options",
+            "id", "key", "label", "section", "unit", "field_type", "options", "options_source", "fixed_value",
             "is_auto", "is_catalog_derived", "is_read_only", "formula_key", "expression",
             "input_variables", "output_unit", "order", "is_core", "created_at", "updated_at",
         ]

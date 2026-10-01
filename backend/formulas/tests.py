@@ -289,6 +289,27 @@ class TechDataFieldDefinitionApiTests(TestCase):
         self.assertEqual(self.core_field.field_type, "text")
         self.assertEqual(self.core_field.options, [])
 
+    def test_select_field_can_have_a_fixed_value_from_its_options(self):
+        url = f"/api/formulas/tech-data-fields/{self.core_field.key}/"
+        response = self.admin_client.patch(url, {"field_type": "select", "options": ["SNL 532", "SNL 3030"], "fixed_value": "SNL 532"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["fixed_value"], "SNL 532")
+
+        response = self.admin_client.patch(url, {"fixed_value": "SNL 9999"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("fixed_value", response.data)
+
+        response = self.admin_client.patch(url, {"fixed_value": ""}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.core_field.refresh_from_db()
+        self.assertEqual(self.core_field.fixed_value, "")
+
+    def test_number_fixed_value_must_be_numeric_and_auto_fields_cannot_have_one(self):
+        response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"fixed_value": "abc"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.auto_field.key}/", {"fixed_value": "5"}, format="json")
+        self.assertEqual(response.status_code, 400)
+
     def test_auto_field_type_is_immutable(self):
         response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.auto_field.key}/", {"field_type": "text"}, format="json")
         self.assertEqual(response.status_code, 400)

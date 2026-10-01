@@ -20,6 +20,8 @@ export interface TechDataField {
   type: FieldType
   options?: string[]
   auto?: boolean
+  /** Set on the Formulas page — filled in automatically and shown read-only, no input. */
+  fixedValue?: string
 }
 
 export interface TechDataSection {
@@ -215,6 +217,7 @@ function buildTechDataSectionsFromDto(fields: TechDataFieldDto[]): TechDataSecti
       type: f.field_type,
       options: f.field_type === 'select' && f.options.length > 0 ? f.options : undefined,
       auto: f.is_read_only,
+      fixedValue: f.fixed_value || undefined,
     }
     if (!bySection.has(f.section)) bySection.set(f.section, [])
     bySection.get(f.section)!.push({ order: f.order, field })
@@ -241,14 +244,15 @@ export function useTechDataSections(overrides?: TechDataFieldOverrides): TechDat
 
 /** Applies one RFQ item's per-item field type overrides on top of the global sheet.
  * Auto fields are never overridden (the backend rejects that too). */
-function applyFieldOverrides(sections: TechDataSection[], overrides?: TechDataFieldOverrides): TechDataSection[] {
+export function applyFieldOverrides(sections: TechDataSection[], overrides?: TechDataFieldOverrides): TechDataSection[] {
   if (!overrides || Object.keys(overrides).length === 0) return sections
   return sections.map((section) => ({
     ...section,
     fields: section.fields.map((field) => {
       const o = overrides[field.key]
       if (!o || field.auto) return field
-      return { ...field, type: o.fieldType, options: o.fieldType === 'select' ? o.options : undefined }
+      // A per-RFQ type change also unlocks a fixed value, so the field is editable on that RFQ.
+      return { ...field, type: o.fieldType, options: o.fieldType === 'select' ? o.options : undefined, fixedValue: undefined }
     }),
   }))
 }

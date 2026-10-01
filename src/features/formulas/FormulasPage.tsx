@@ -832,6 +832,8 @@ function TechDataFieldSectionCard({
                     <Badge tone="blue">Auto</Badge>
                   ) : f.is_catalog_derived ? (
                     <Badge tone="purple">Catalog</Badge>
+                  ) : f.fixed_value ? (
+                    <Badge tone="amber">Fixed: {f.fixed_value}</Badge>
                   ) : (
                     <Badge tone="neutral">Manual</Badge>
                   )}
@@ -1176,11 +1178,15 @@ function EditTechDataFieldModal({
     unit: string
     field_type: TechDataFieldDto['field_type']
     options: string[]
+    options_source: string
+    fixed_value: string
     expression?: string
   }) => Promise<void>
 }) {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
   const [label, setLabel] = useState('')
+  const [fixedValue, setFixedValue] = useState('')
+  const [optionsSource, setOptionsSource] = useState('')
   const [section, setSection] = useState('')
   const [unit, setUnit] = useState('')
   const [fieldType, setFieldType] = useState<TechDataFieldDto['field_type']>('text')
@@ -1199,6 +1205,8 @@ function EditTechDataFieldModal({
     setUnit(field.unit)
     setFieldType(field.field_type)
     setOptionsText(field.options.join(', '))
+    setFixedValue(field.fixed_value ?? '')
+    setOptionsSource(field.options_source ?? '')
     setExpression(field.expression ?? '')
   }
 
@@ -1257,8 +1265,21 @@ function EditTechDataFieldModal({
   })()
 
   const parsedOptions = optionsText.split(',').map((o) => o.trim()).filter(Boolean)
+  // Same checks as perform_update's fixed_value validation.
+  const trimmedFixed = fixedValue.trim()
+  const fixedValueError = !trimmedFixed
+    ? null
+    : fieldType === 'select' && !parsedOptions.includes(trimmedFixed)
+      ? `'${trimmedFixed}' isn't one of the options above.`
+      : fieldType === 'number' && Number.isNaN(Number(trimmedFixed))
+        ? 'Must be a number for a Number field.'
+        : null
   const canSave =
-    label.trim() && section && (!isManualSelect || parsedOptions.length > 0) && (!field.is_auto || (expression.trim() && !preview?.error))
+    label.trim() &&
+    section &&
+    (!isManualSelect || parsedOptions.length > 0) &&
+    !fixedValueError &&
+    (!field.is_auto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
     setSaving(true)
@@ -1268,6 +1289,8 @@ function EditTechDataFieldModal({
       unit,
       field_type: fieldType,
       options: isManualSelect ? parsedOptions : fieldType === 'select' ? field.options : [],
+      options_source: fieldType === 'select' ? optionsSource : '',
+      fixed_value: field.is_read_only ? '' : trimmedFixed,
       expression: field.is_auto ? expression : undefined,
     })
     setSaving(false)
@@ -1353,7 +1376,18 @@ function EditTechDataFieldModal({
 
         {isManualSelect && (
           <>
-            <ReferenceCatalogPicker onImport={(values) => setOptionsText(values.join(', '))} />
+            <ReferenceCatalogPicker
+              sourceKey={optionsSource}
+              onSourceChange={setOptionsSource}
+              pickedValue={trimmedFixed}
+              onImport={(values) => setOptionsText(values.join(', '))}
+              onPickValue={(value, allValues) => {
+                // Picking one catalog value makes it the fixed value; pull in the whole
+                // catalog as options too if the picked value isn't already among them.
+                if (!parsedOptions.includes(value)) setOptionsText(allValues.join(', '))
+                setFixedValue(value)
+              }}
+            />
             <div>
               <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
               <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} />
@@ -1362,6 +1396,39 @@ function EditTechDataFieldModal({
               )}
             </div>
           </>
+        )}
+
+        {!field.is_read_only && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Fixed value</label>
+            {fieldType === 'select' ? (
+              <select value={trimmedFixed} onChange={(e) => setFixedValue(e.target.value)} className={inputClass}>
+                <option value="">None — Sales picks from a dropdown on each RFQ</option>
+                {trimmedFixed && !parsedOptions.includes(trimmedFixed) && <option value={trimmedFixed}>{trimmedFixed}</option>}
+                {parsedOptions.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={fixedValue}
+                onChange={(e) => setFixedValue(e.target.value)}
+                className={inputClass}
+                placeholder="Leave empty to let Sales fill it in on each RFQ"
+              />
+            )}
+            {fixedValueError ? (
+              <p className="mt-1 text-xs text-[var(--color-red)]">{fixedValueError}</p>
+            ) : (
+              trimmedFixed && (
+                <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
+                  Filled in automatically and shown read-only on every new RFQ — no dropdown.
+                </p>
+              )
+            )}
+          </div>
         )}
 
         <label className="flex items-center gap-2 text-sm" title="Auto can't be toggled after creation">

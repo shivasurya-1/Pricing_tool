@@ -46,6 +46,13 @@ export function PulleyTechDataForm({
                           Auto
                         </Badge>
                       )}
+                      {!field.auto && field.fixedValue !== undefined && (
+                        <span title="Set on the Formulas page">
+                          <Badge tone="blue" className="ml-1.5">
+                            Fixed
+                          </Badge>
+                        </span>
+                      )}
                       {isOverridden && (
                         <span title="Type changed for this RFQ only">
                           <Badge tone="amber" className="ml-1.5">
@@ -164,10 +171,11 @@ function FieldInput({
   value: string | number | undefined
   onChange: (value: string | number) => void
 }) {
-  if (field.auto) {
+  if (field.auto || field.fixedValue !== undefined) {
+    const shown = field.auto ? value : (value ?? field.fixedValue)
     return (
       <input
-        value={value === undefined || value === '' ? '—' : String(value)}
+        value={shown === undefined || shown === '' ? '—' : String(shown)}
         readOnly
         className={clsx(inputClass, 'cursor-not-allowed bg-[var(--color-surface)] text-[var(--color-ink-soft)]')}
       />

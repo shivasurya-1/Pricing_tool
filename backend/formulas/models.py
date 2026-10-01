@@ -81,6 +81,19 @@ class TechDataFieldDefinition(models.Model):
     unit = models.CharField(max_length=30, blank=True)
     field_type = models.CharField(max_length=10, choices=TechDataFieldType.choices, default=TechDataFieldType.TEXT)
     options = models.JSONField(default=list, blank=True, help_text="Only used when field_type='select' and not catalog-driven.")
+    options_source = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="Reference catalog the options were imported from (\"table::field\"), so the Formulas page can show it again.",
+    )
+    fixed_value = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text=(
+            "When set, every RFQ's Technical Data Sheet fills this value in automatically and "
+            "shows it read-only (no input/dropdown). Must be one of `options` for a select field."
+        ),
+    )
     formula = models.OneToOneField(
         FormulaDefinition, null=True, blank=True, on_delete=models.SET_NULL, related_name="tech_data_field"
     )
