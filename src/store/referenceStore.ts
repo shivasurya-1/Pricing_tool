@@ -106,10 +106,13 @@ interface ReferenceState {
   loadAll: () => Promise<void>
 
   createBearing: (input: Omit<BearingCatalogDto, 'id'>) => Promise<void>
+  updateBearing: (id: number, patch: Partial<Omit<BearingCatalogDto, 'id'>>) => Promise<void>
   deleteBearing: (id: number) => Promise<void>
   createSleeve: (input: Omit<SleeveCatalogDto, 'id'>) => Promise<void>
+  updateSleeve: (id: number, patch: Partial<Omit<SleeveCatalogDto, 'id'>>) => Promise<void>
   deleteSleeve: (id: number) => Promise<void>
   createHousing: (input: Omit<HousingCatalogDto, 'id'>) => Promise<void>
+  updateHousing: (id: number, patch: Partial<Omit<HousingCatalogDto, 'id'>>) => Promise<void>
   deleteHousing: (id: number) => Promise<void>
   createLagging: (input: Omit<LaggingCatalogDto, 'id'>) => Promise<void>
   updateLagging: (id: number, patch: Partial<Pick<LaggingCatalogDto, 'lagging_type' | 'thickness_mm' | 'price_inr_per_m2' | 'delivery_days'>>) => Promise<void>
@@ -172,6 +175,10 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
     const created = await api.post<BearingCatalogDto>('/reference/catalogs/bearings/', input)
     set((s) => ({ bearings: [...s.bearings, created] }))
   },
+  updateBearing: async (id, patch) => {
+    const updated = await api.patch<BearingCatalogDto>(`/reference/catalogs/bearings/${id}/`, patch)
+    set((s) => ({ bearings: s.bearings.map((b) => (b.id === id ? updated : b)) }))
+  },
   deleteBearing: async (id) => {
     await api.delete(`/reference/catalogs/bearings/${id}/`)
     set((s) => ({ bearings: s.bearings.filter((b) => b.id !== id) }))
@@ -181,6 +188,10 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
     const created = await api.post<SleeveCatalogDto>('/reference/catalogs/sleeves/', input)
     set((s) => ({ sleeves: [...s.sleeves, created] }))
   },
+  updateSleeve: async (id, patch) => {
+    const updated = await api.patch<SleeveCatalogDto>(`/reference/catalogs/sleeves/${id}/`, patch)
+    set((s) => ({ sleeves: s.sleeves.map((x) => (x.id === id ? updated : x)) }))
+  },
   deleteSleeve: async (id) => {
     await api.delete(`/reference/catalogs/sleeves/${id}/`)
     set((s) => ({ sleeves: s.sleeves.filter((x) => x.id !== id) }))
@@ -189,6 +200,10 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
   createHousing: async (input) => {
     const created = await api.post<HousingCatalogDto>('/reference/catalogs/housings/', input)
     set((s) => ({ housings: [...s.housings, created] }))
+  },
+  updateHousing: async (id, patch) => {
+    const updated = await api.patch<HousingCatalogDto>(`/reference/catalogs/housings/${id}/`, patch)
+    set((s) => ({ housings: s.housings.map((x) => (x.id === id ? updated : x)) }))
   },
   deleteHousing: async (id) => {
     await api.delete(`/reference/catalogs/housings/${id}/`)

@@ -6,10 +6,10 @@ import { useReferenceStore, type ShaftBandDto, type ShellBandDto } from '@/store
 import { formatCurrency } from '@/lib/format'
 
 const shaftColumns: ReferenceColumn<ShaftBandDto>[] = [
-  { key: 'material', header: 'Material', type: 'text', required: true },
-  { key: 'diameter', header: 'Diameter', type: 'text', required: true },
-  { key: 'length', header: 'Length', type: 'text', required: true },
-  { key: 'sourcing', header: 'Sourcing', type: 'select', options: ['Outsourced', 'Inhouse'] },
+  { key: 'material', header: 'Material', type: 'text', required: true, editable: true },
+  { key: 'diameter', header: 'Diameter', type: 'text', required: true, editable: true },
+  { key: 'length', header: 'Length', type: 'text', required: true, editable: true },
+  { key: 'sourcing', header: 'Sourcing', type: 'select', options: ['Outsourced', 'Inhouse'], editable: true },
   {
     key: 'as_forge_rate_inr_per_kg',
     header: 'As-forge Rate (₹/kg)',
@@ -20,12 +20,12 @@ const shaftColumns: ReferenceColumn<ShaftBandDto>[] = [
 ]
 
 const shellColumns: ReferenceColumn<ShellBandDto>[] = [
-  { key: 'sourcing', header: 'Sourcing', type: 'select', options: ['Outsourced', 'Inhouse'] },
-  { key: 'diameter_body', header: 'Diameter Body', type: 'text', required: true },
-  { key: 'face_width_body', header: 'Face Width Body', type: 'text', required: true },
-  { key: 'wall_thickness', header: 'Wall Thickness', type: 'text' },
-  { key: 'welded_in_plate_thickness', header: 'Welded-in Plate Thickness', type: 'text' },
-  { key: 't_bottom_thickness', header: 'T-bottom Thickness', type: 'text' },
+  { key: 'sourcing', header: 'Sourcing', type: 'select', options: ['Outsourced', 'Inhouse'], editable: true },
+  { key: 'diameter_body', header: 'Diameter Body', type: 'text', required: true, editable: true },
+  { key: 'face_width_body', header: 'Face Width Body', type: 'text', required: true, editable: true },
+  { key: 'wall_thickness', header: 'Wall Thickness', type: 'text', editable: true },
+  { key: 'welded_in_plate_thickness', header: 'Welded-in Plate Thickness', type: 'text', editable: true },
+  { key: 't_bottom_thickness', header: 'T-bottom Thickness', type: 'text', editable: true },
   {
     key: 'plate_rate_inr_per_kg',
     header: 'Plate Rate (₹/kg)',

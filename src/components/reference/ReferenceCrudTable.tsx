@@ -228,7 +228,20 @@ function EditableRow<T extends { id: number }>({
     <tr className={clsx('border-b border-[var(--color-border)] last:border-0', dirty && 'bg-[var(--color-amber-50)]')}>
       {columns.map((c, j) => (
         <td key={c.key} className={`px-4 py-2.5 ${j === 0 ? 'font-medium' : ''}`}>
-          {c.editable ? (
+          {c.editable && c.type === 'select' ? (
+            <select
+              value={String(draft[c.key] ?? '')}
+              onChange={(e) => setDraft((prev) => ({ ...prev, [c.key]: e.target.value }))}
+              className="w-full min-w-[140px] rounded-md border border-[var(--color-border)] px-2 py-1 text-sm outline-none focus:border-[var(--color-blue)]"
+            >
+              <option value="">—</option>
+              {c.options?.map((opt) => (
+                <option key={opt} value={opt}>
+                  {opt}
+                </option>
+              ))}
+            </select>
+          ) : c.editable ? (
             <input
               type={c.type === 'number' ? 'number' : 'text'}
               value={draft[c.key] ?? (c.type === 'number' ? 0 : '')}

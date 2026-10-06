@@ -107,6 +107,10 @@ export function FormulasPage() {
 
   const sectionOrder = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s.order])), [sections])
   const sectionLabels = useMemo(() => [...sections].sort((a, b) => a.order - b.order).map((s) => s.label), [sections])
+  // `tab` isn't returned by the backend yet (see SectionDto) — falls back to the one
+  // hardcoded reserved label so today's grouping keeps working exactly as before.
+  const sectionByLabel = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s])), [sections])
+  const isTechSheetLabel = (label: string) => sectionByLabel[label]?.tab === 'tech_sheet' || label === TECH_DATA_AUTO_SECTION_LABEL
 
   const grouped = useMemo(() => {
     const bySection: Record<string, FormulaDefinitionDto[]> = {}
@@ -122,8 +126,8 @@ export function FormulasPage() {
     [grouped, sectionOrder],
   )
   const pricingFormulaSections = useMemo(
-    () => formulaSectionsPresent.filter((s) => s !== TECH_DATA_AUTO_SECTION_LABEL),
-    [formulaSectionsPresent],
+    () => formulaSectionsPresent.filter((s) => !isTechSheetLabel(s)),
+    [formulaSectionsPresent, sectionByLabel],
   )
 
   const sectionUsage = useMemo(() => {
@@ -283,8 +287,15 @@ export function FormulasPage() {
         existingSections={sectionLabels}
         sampleVars={sampleVars}
         onCreate={async (input) => {
+          const { fixed_value, options_source, ...createInput } = input
           try {
-            await createTechDataField(input)
+            const created = await createTechDataField(createInput)
+            // The create endpoint has no fixed_value/options_source fields (backend
+            // only accepts those on update) — set them right after, in a second call,
+            // so both are fully saved instead of silently dropped.
+            if (fixed_value || options_source) {
+              await updateTechDataField(created.key, { fixed_value: fixed_value ?? '', options_source: options_source ?? '' })
+            }
             pushToast(`'${input.label}' added to the Technical Data Sheet.`, 'success')
             setAddFieldOpen(false)
           } catch (err) {
@@ -328,8 +339,12 @@ export function FormulasPage() {
           const { expression, ...fieldPatch } = patch
           try {
             await updateTechDataField(editTarget.key, fieldPatch)
-            if (editTarget.is_auto && expression !== undefined && expression !== editTarget.expression) {
-              await updateFormula(editTarget.formula_key ?? editTarget.key, expression)
+            // Only an already-Auto field has a FormulaDefinition to update — a field
+            // just toggled Manual->Auto in this form has nowhere to save its expression
+            // yet, since is_auto itself can't persist until the backend allows it (see
+            // updateTechDataField's patch type). Skip rather than hit a 404.
+            if (editTarget.formula_key && expression !== undefined && expression !== editTarget.expression) {
+              await updateFormula(editTarget.formula_key, expression)
             }
             pushToast(`'${patch.label ?? editTarget.label}' updated.`, 'success')
             setEditTarget(null)
@@ -480,24 +495,27 @@ function SectionsManagerModal({
   onClose: () => void
   sections: SectionDto[]
   usage: Record<string, { formulaCount: number; fieldCount: number }>
-  onCreate: (input: { key: string; label: string; order?: number }) => Promise<void>
+  onCreate: (input: { key: string; label: string; order?: number; tab: 'pricing_tool' | 'tech_sheet' }) => Promise<void>
   onRename: (id: number, label: string) => Promise<void>
   onDelete: (section: SectionDto) => Promise<void>
 }) {
   const [newLabel, setNewLabel] = useState('')
+  const [newTab, setNewTab] = useState<'pricing_tool' | 'tech_sheet'>('pricing_tool')
   const [renameDrafts, setRenameDrafts] = useState<Record<number, string>>({})
   const [deleteTarget, setDeleteTarget] = useState<SectionDto | null>(null)
   const [saving, setSaving] = useState(false)
 
   const sorted = [...sections].sort((a, b) => a.order - b.order)
+  const isTechSheet = (s: SectionDto) => s.tab === 'tech_sheet' || s.label === TECH_DATA_AUTO_SECTION_LABEL
 
   const handleCreate = async () => {
     const label = newLabel.trim()
     if (!label) return
     setSaving(true)
-    await onCreate({ key: slugifyToCamelCase(label) || `section-${Date.now()}`, label, order: sections.length })
+    await onCreate({ key: slugifyToCamelCase(label) || `section-${Date.now()}`, label, order: sections.length, tab: newTab })
     setSaving(false)
     setNewLabel('')
+    setNewTab('pricing_tool')
   }
 
   return (
@@ -535,12 +553,11 @@ function SectionsManagerModal({
                     </Button>
                     <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => setDeleteTarget(s)} />
                   </div>
-                  <div className="mt-1.5 flex gap-1.5">
-                    {u.formulaCount > 0 && (
-                      <Badge tone={s.label === TECH_DATA_AUTO_SECTION_LABEL ? 'purple' : 'blue'}>
-                        {u.formulaCount} formula{u.formulaCount === 1 ? '' : 's'}
-                      </Badge>
-                    )}
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <Badge tone={isTechSheet(s) ? 'purple' : 'blue'}>
+                      {isTechSheet(s) ? 'Technical Sheet Formulas tab' : 'Pricing Tool Formulas tab'}
+                    </Badge>
+                    {u.formulaCount > 0 && <Badge tone="neutral">{u.formulaCount} formula{u.formulaCount === 1 ? '' : 's'}</Badge>}
                     {u.fieldCount > 0 && <Badge tone="teal">{u.fieldCount} field{u.fieldCount === 1 ? '' : 's'}</Badge>}
                     {u.formulaCount === 0 && u.fieldCount === 0 && <Badge tone="neutral">Unused</Badge>}
                   </div>
@@ -548,9 +565,33 @@ function SectionsManagerModal({
               )
             })}
           </div>
-          <div className="flex gap-2 border-t border-[var(--color-border)] pt-3">
+          <div className="space-y-2 border-t border-[var(--color-border)] pt-3">
             <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} className={inputClass} placeholder="New section name" />
-            <Button variant="primary" disabled={!newLabel.trim() || saving} onClick={handleCreate}>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Which sheet is this section for?</label>
+              <div className="flex gap-2">
+                {(
+                  [
+                    { value: 'pricing_tool', label: 'Pricing Tool Formulas' },
+                    { value: 'tech_sheet', label: 'Technical Data Sheet' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setNewTab(opt.value)}
+                    className={clsx(
+                      'flex-1 rounded-md border px-3 py-1.5 text-sm',
+                      newTab === opt.value ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)] text-[var(--color-blue)]' : 'border-[var(--color-border)]',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Needs a small backend update to take effect — ask your backend dev.</p>
+            </div>
+            <Button variant="primary" disabled={!newLabel.trim() || saving} onClick={handleCreate} className="w-full">
               Add Section
             </Button>
           </div>
@@ -891,6 +932,8 @@ function AddTechDataFieldModal({
     expression: string
     input_variables: string[]
     output_unit: string
+    fixed_value?: string
+    options_source?: string
   }) => Promise<void>
 }) {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
@@ -901,6 +944,8 @@ function AddTechDataFieldModal({
   const [unit, setUnit] = useState('')
   const [fieldType, setFieldType] = useState<'text' | 'number' | 'select'>('text')
   const [optionsText, setOptionsText] = useState('')
+  const [optionsSource, setOptionsSource] = useState('')
+  const [fixedValue, setFixedValue] = useState('')
   const [isAuto, setIsAuto] = useState(false)
   const [expression, setExpression] = useState('')
   const [insertKey, setInsertKey] = useState('')
@@ -915,6 +960,8 @@ function AddTechDataFieldModal({
     setUnit('')
     setFieldType('text')
     setOptionsText('')
+    setOptionsSource('')
+    setFixedValue('')
     setIsAuto(false)
     setExpression('')
     setInsertKey('')
@@ -970,8 +1017,24 @@ function AddTechDataFieldModal({
     }
   })()
 
+  const parsedOptions = optionsText.split(',').map((o) => o.trim()).filter(Boolean)
+  const trimmedFixed = fixedValue.trim()
+  // Same checks as the Edit form / backend's perform_update fixed_value validation.
+  const fixedValueError = !trimmedFixed
+    ? null
+    : fieldType === 'select' && !parsedOptions.includes(trimmedFixed)
+      ? `'${trimmedFixed}' isn't one of the options above.`
+      : fieldType === 'number' && Number.isNaN(Number(trimmedFixed))
+        ? 'Must be a number for a Number field.'
+        : null
+
   const canSave =
-    label.trim() && key.trim() && section && (fieldType !== 'select' || isAuto || optionsText.trim()) && (!isAuto || (expression.trim() && !preview?.error))
+    label.trim() &&
+    key.trim() &&
+    section &&
+    (fieldType !== 'select' || isAuto || optionsText.trim()) &&
+    !fixedValueError &&
+    (!isAuto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
     setSaving(true)
@@ -981,11 +1044,13 @@ function AddTechDataFieldModal({
       section,
       unit,
       field_type: fieldType,
-      options: fieldType === 'select' ? optionsText.split(',').map((o) => o.trim()).filter(Boolean) : [],
+      options: fieldType === 'select' ? parsedOptions : [],
       is_auto: isAuto,
       expression,
       input_variables: detectedVariables,
       output_unit: unit,
+      fixed_value: isAuto ? undefined : trimmedFixed,
+      options_source: fieldType === 'select' ? optionsSource : undefined,
     })
     setSaving(false)
     reset()
@@ -1066,12 +1131,55 @@ function AddTechDataFieldModal({
 
         {fieldType === 'select' && !isAuto && (
           <>
-            <ReferenceCatalogPicker onImport={(values) => setOptionsText(values.join(', '))} />
+            <ReferenceCatalogPicker
+              sourceKey={optionsSource}
+              onSourceChange={setOptionsSource}
+              pickedValue={trimmedFixed}
+              onImport={(values) => setOptionsText(values.join(', '))}
+              onPickValue={(value, allValues) => {
+                // Picking one catalog value makes it the fixed value; pull in the whole
+                // catalog as options too if the picked value isn't already among them.
+                if (!parsedOptions.includes(value)) setOptionsText(allValues.join(', '))
+                setFixedValue(value)
+              }}
+            />
             <div>
               <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
               <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} placeholder="Option A, Option B, Option C" />
             </div>
           </>
+        )}
+
+        {!isAuto && (
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Fixed value</label>
+            {fieldType === 'select' ? (
+              <select value={trimmedFixed} onChange={(e) => setFixedValue(e.target.value)} className={inputClass}>
+                <option value="">None — Sales picks from a dropdown on each RFQ</option>
+                {parsedOptions.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={fixedValue}
+                onChange={(e) => setFixedValue(e.target.value)}
+                className={inputClass}
+                placeholder="Leave empty to let Sales fill it in on each RFQ"
+              />
+            )}
+            {fixedValueError ? (
+              <p className="mt-1 text-xs text-[var(--color-red)]">{fixedValueError}</p>
+            ) : (
+              trimmedFixed && (
+                <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
+                  Filled in automatically and shown read-only on every new RFQ — no dropdown.
+                </p>
+              )
+            )}
+          </div>
         )}
 
         <label className="flex items-center gap-2 text-sm">
@@ -1180,6 +1288,7 @@ function EditTechDataFieldModal({
     options: string[]
     options_source: string
     fixed_value: string
+    is_auto?: boolean
     expression?: string
   }) => Promise<void>
 }) {
@@ -1191,6 +1300,7 @@ function EditTechDataFieldModal({
   const [unit, setUnit] = useState('')
   const [fieldType, setFieldType] = useState<TechDataFieldDto['field_type']>('text')
   const [optionsText, setOptionsText] = useState('')
+  const [isAuto, setIsAuto] = useState(false)
   const [expression, setExpression] = useState('')
   const [insertKey, setInsertKey] = useState('')
   const [saving, setSaving] = useState(false)
@@ -1207,6 +1317,7 @@ function EditTechDataFieldModal({
     setOptionsText(field.options.join(', '))
     setFixedValue(field.fixed_value ?? '')
     setOptionsSource(field.options_source ?? '')
+    setIsAuto(field.is_auto)
     setExpression(field.expression ?? '')
   }
 
@@ -1252,10 +1363,10 @@ function EditTechDataFieldModal({
       : field.is_core && !isAdmin
         ? 'Only an Admin can change the type of a core field'
         : null
-  const isManualSelect = fieldType === 'select' && !field.is_auto && !field.is_catalog_derived
+  const isManualSelect = fieldType === 'select' && !isAuto && !field.is_catalog_derived
 
   const preview = (() => {
-    if (!field.is_auto || !expression.trim()) return null
+    if (!isAuto || !expression.trim()) return null
     try {
       const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
       return { value: evaluateFormula(expression, vars), error: null as string | null }
@@ -1279,7 +1390,7 @@ function EditTechDataFieldModal({
     section &&
     (!isManualSelect || parsedOptions.length > 0) &&
     !fixedValueError &&
-    (!field.is_auto || (expression.trim() && !preview?.error))
+    (!isAuto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
     setSaving(true)
@@ -1291,7 +1402,8 @@ function EditTechDataFieldModal({
       options: isManualSelect ? parsedOptions : fieldType === 'select' ? field.options : [],
       options_source: fieldType === 'select' ? optionsSource : '',
       fixed_value: field.is_read_only ? '' : trimmedFixed,
-      expression: field.is_auto ? expression : undefined,
+      is_auto: isAuto,
+      expression: isAuto ? expression : undefined,
     })
     setSaving(false)
   }
@@ -1431,12 +1543,25 @@ function EditTechDataFieldModal({
           </div>
         )}
 
-        <label className="flex items-center gap-2 text-sm" title="Auto can't be toggled after creation">
-          <input type="checkbox" checked={field.is_auto} disabled className="cursor-not-allowed rounded border-[var(--color-border)]" />
-          Auto — computed from a formula, read-only on the sheet
-        </label>
+        <div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={isAuto}
+              onChange={(e) => setIsAuto(e.target.checked)}
+              className="rounded border-[var(--color-border)]"
+            />
+            Auto — computed from a formula, read-only on the sheet
+          </label>
+          {isAuto !== field.is_auto && (
+            <p className="mt-1 text-xs text-[var(--color-amber)]">
+              Switching Manual/Auto after creation isn&rsquo;t supported by the backend yet — this won&rsquo;t actually save until that's
+              added.
+            </p>
+          )}
+        </div>
 
-        {field.is_auto && (
+        {isAuto && (
           <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
             <div className="grid grid-cols-2 gap-2">
               <div>

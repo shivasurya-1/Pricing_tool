@@ -25,33 +25,33 @@ function slugifySnakeCase(text: string): string {
 }
 
 const bearingColumns: ReferenceColumn<BearingCatalogDto>[] = [
-  { key: 'designation', header: 'Designation', type: 'text', required: true },
-  { key: 'bore_mm', header: 'Bore (mm)', type: 'number', required: true },
-  { key: 'price_inr', header: 'INR/piece', type: 'number', required: true, format: (r) => formatCurrency(r.price_inr) },
-  { key: 'price_eur', header: 'EUR/piece', type: 'number', required: true, format: (r) => `€${r.price_eur.toFixed(2)}` },
-  { key: 'delivery_days', header: 'Delivery (days)', type: 'number', required: true },
+  { key: 'designation', header: 'Designation', type: 'text', required: true, editable: true },
+  { key: 'bore_mm', header: 'Bore (mm)', type: 'number', required: true, editable: true },
+  { key: 'price_inr', header: 'INR/piece', type: 'number', required: true, editable: true, format: (r) => formatCurrency(r.price_inr) },
+  { key: 'price_eur', header: 'EUR/piece', type: 'number', required: true, editable: true, format: (r) => `€${r.price_eur.toFixed(2)}` },
+  { key: 'delivery_days', header: 'Delivery (days)', type: 'number', required: true, editable: true },
 ]
 
 const sleeveColumns: ReferenceColumn<SleeveCatalogDto>[] = [
-  { key: 'sleeve_code', header: 'Sleeve Code', type: 'text', required: true },
-  { key: 'for_bearing', header: 'For Bearing', type: 'text' },
-  { key: 'price_inr', header: 'INR/piece', type: 'number', required: true, format: (r) => formatCurrency(r.price_inr) },
-  { key: 'price_eur', header: 'EUR/piece', type: 'number', required: true, format: (r) => `€${r.price_eur.toFixed(2)}` },
+  { key: 'sleeve_code', header: 'Sleeve Code', type: 'text', required: true, editable: true },
+  { key: 'for_bearing', header: 'For Bearing', type: 'text', editable: true },
+  { key: 'price_inr', header: 'INR/piece', type: 'number', required: true, editable: true, format: (r) => formatCurrency(r.price_inr) },
+  { key: 'price_eur', header: 'EUR/piece', type: 'number', required: true, editable: true, format: (r) => `€${r.price_eur.toFixed(2)}` },
 ]
 
 const housingColumns: ReferenceColumn<HousingCatalogDto>[] = [
-  { key: 'housing_designation', header: 'Housing Designation', type: 'text', required: true },
-  { key: 'for_bearing', header: 'For Bearing', type: 'text' },
-  { key: 'price_inr', header: 'INR/piece', type: 'number', required: true, format: (r) => formatCurrency(r.price_inr) },
-  { key: 'delivery_days', header: 'Delivery (days)', type: 'number', required: true },
+  { key: 'housing_designation', header: 'Housing Designation', type: 'text', required: true, editable: true },
+  { key: 'for_bearing', header: 'For Bearing', type: 'text', editable: true },
+  { key: 'price_inr', header: 'INR/piece', type: 'number', required: true, editable: true, format: (r) => formatCurrency(r.price_inr) },
+  { key: 'delivery_days', header: 'Delivery (days)', type: 'number', required: true, editable: true },
 ]
 
 const laggingColumns: ReferenceColumn<LaggingCatalogDto>[] = [
-  { key: 'lagging_type', header: 'Lagging Type (key)', type: 'text', required: true },
-  { key: 'thickness_mm', header: 'Thickness (mm)', type: 'number', required: true },
-  { key: 'price_inr_per_m2', header: 'INR/m²', type: 'number', required: true, format: (r) => formatCurrency(r.price_inr_per_m2) },
-  { key: 'delivery_days', header: 'Delivery (days)', type: 'number', required: true },
-  { key: 'description', header: 'Description', type: 'text' },
+  { key: 'lagging_type', header: 'Lagging Type (key)', type: 'text', required: true, editable: true },
+  { key: 'thickness_mm', header: 'Thickness (mm)', type: 'number', required: true, editable: true },
+  { key: 'price_inr_per_m2', header: 'INR/m²', type: 'number', required: true, editable: true, format: (r) => formatCurrency(r.price_inr_per_m2) },
+  { key: 'delivery_days', header: 'Delivery (days)', type: 'number', required: true, editable: true },
+  { key: 'description', header: 'Description', type: 'text', editable: true },
 ]
 
 const lockingDeviceColumns: ReferenceColumn<LockingDeviceCatalogDto>[] = [
@@ -71,10 +71,13 @@ export function BearingSleeveDataPage() {
     lagging,
     lockingDevices,
     createBearing,
+    updateBearing,
     deleteBearing,
     createSleeve,
+    updateSleeve,
     deleteSleeve,
     createHousing,
+    updateHousing,
     deleteHousing,
     createLagging,
     updateLagging,
@@ -117,6 +120,7 @@ export function BearingSleeveDataPage() {
               delivery_days: Number(v.delivery_days ?? 0),
             })
           }
+          onUpdate={(id, patch) => updateBearing(id, patch)}
           onDelete={deleteBearing}
         />
 
@@ -135,6 +139,7 @@ export function BearingSleeveDataPage() {
               price_eur: Number(v.price_eur ?? 0),
             })
           }
+          onUpdate={(id, patch) => updateSleeve(id, patch)}
           onDelete={deleteSleeve}
         />
 
@@ -153,6 +158,7 @@ export function BearingSleeveDataPage() {
               delivery_days: Number(v.delivery_days ?? 0),
             })
           }
+          onUpdate={(id, patch) => updateHousing(id, patch)}
           onDelete={deleteHousing}
         />
 

@@ -144,6 +144,11 @@ export interface SectionDto {
   key: string
   label: string
   order: number
+  // Not yet returned by the backend (Section has no such column there today) — once
+  // it is, every section can pick its own tab instead of only the one hardcoded
+  // 'Technical Data Sheet — Auto Fields' label ever landing under Technical Sheet
+  // Formulas. See FormulasPage's TECH_DATA_AUTO_SECTION_LABEL fallback.
+  tab?: 'pricing_tool' | 'tech_sheet'
 }
 
 export interface NewFormulaInput {
@@ -181,12 +186,20 @@ interface FormulaState {
   deleteAllFormulas: () => Promise<void>
   previewFormula: (key: string, expression: string, variables: Record<string, number>) => Promise<FormulaPreviewResult>
 
-  createSection: (input: { key: string; label: string; order?: number }) => Promise<void>
+  // `tab` is sent whenever the backend adds support for it; today it's simply
+  // ignored by the create endpoint (not a declared field there yet).
+  createSection: (input: { key: string; label: string; order?: number; tab?: 'pricing_tool' | 'tech_sheet' }) => Promise<void>
   renameSection: (id: number, label: string) => Promise<void>
   deleteSection: (id: number) => Promise<void>
 
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
-  updateTechDataField: (key: string, patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'field_type' | 'options' | 'options_source' | 'fixed_value' | 'order'>>) => Promise<void>
+  updateTechDataField: (
+    key: string,
+    // `is_auto` is read-only server-side today (see backend/formulas/serializers.py's
+    // TechDataFieldDefinitionSerializer) — included here so the Edit form can send it
+    // once the backend accepts it; until then the backend just ignores it.
+    patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'field_type' | 'options' | 'options_source' | 'fixed_value' | 'is_auto' | 'order'>>,
+  ) => Promise<void>
   deleteTechDataField: (key: string) => Promise<void>
 
   createGlobalParameter: (input: NewGlobalParameterInput) => Promise<void>

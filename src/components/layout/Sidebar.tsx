@@ -40,8 +40,12 @@ export function Sidebar() {
               )}
               <div className="space-y-0.5">
                 {visibleItems.map((item) => {
-                  const path = item.to.split('?')[0]
-                  const active = location.pathname === path
+                  const [path, itemQuery] = item.to.split('?')
+                  // Several items (RFQs / Approvals / Sourcing / Pricing-Costing) share
+                  // the same path and differ only by a `?stage=` query string — comparing
+                  // pathname alone made all of them "active" together whenever any one
+                  // was open. Match the query string too so only the exact link lights up.
+                  const active = location.pathname === path && new URLSearchParams(itemQuery ?? '').toString() === new URLSearchParams(location.search).toString()
                   const badge = item.to.startsWith('/tasks') ? taskCount : item.to.startsWith('/notifications') ? unreadCount : 0
                   const Icon = item.icon
                   return (
