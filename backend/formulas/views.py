@@ -9,7 +9,15 @@ from rest_framework.response import Response
 from accounts.permissions import CanEditReferenceData, IsAdminRole
 
 from .evaluator import FormulaError, evaluate_formula
-from .models import FormulaDefinition, Section, TECH_DATA_AUTO_SECTION_LABEL, FormulaVersion, TechDataFieldDefinition
+from .models import (
+    TECH_DATA_AUTO_SECTION_KEY,
+    TECH_DATA_AUTO_SECTION_LABEL,
+    FormulaDefinition,
+    FormulaVersion,
+    Section,
+    SectionTab,
+    TechDataFieldDefinition,
+)
 from .serializers import (
     FormulaCreateSerializer,
     FormulaDefinitionSerializer,
@@ -318,6 +326,8 @@ class SectionViewSet(viewsets.ModelViewSet):
     (see Section's docstring in models.py for why), so renaming here cascades to
     every row that used the old label, and deleting is blocked while any row still
     does.
+
+    PATCH /api/formulas/sections/{id}/ — edit label, order and/or tab
     """
 
     queryset = Section.objects.all()
@@ -333,6 +343,16 @@ class SectionViewSet(viewsets.ModelViewSet):
         section: Section = serializer.instance
         old_label = section.label
         new_label = serializer.validated_data.get("label", old_label)
+        new_tab = serializer.validated_data.get("tab", section.tab)
+
+        # TechDataFieldDefinitionViewSet.create files every new Auto field's formula
+        # under the hardcoded TECH_DATA_AUTO_SECTION_LABEL — renaming or re-tabbing
+        # that one row would orphan every future Auto formula from its section.
+        if section.key == TECH_DATA_AUTO_SECTION_KEY:
+            if new_label != old_label:
+                raise ValidationError({"label": "The built-in Auto Fields section can't be renamed."})
+            if new_tab != SectionTab.TECH_SHEET:
+                raise ValidationError({"tab": "The built-in Auto Fields section must stay on the Technical Sheet tab."})
 
         with transaction.atomic():
             serializer.save()

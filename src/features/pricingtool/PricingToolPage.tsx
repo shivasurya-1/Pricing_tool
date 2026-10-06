@@ -8,11 +8,14 @@ import { EmptyState } from '@/components/EmptyState'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { useDataStore } from '@/store/dataStore'
-import { useFormulaStore } from '@/store/formulaStore'
+import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { computePulleyPricing, type CostLine } from '@/lib/pulleyPricingCalc'
+import { computeAutoFields } from '@/lib/pulleyTechDataCalc'
 import { formatCurrency } from '@/lib/format'
 import type { RFQItem } from '@/types'
+
+const inputClass = 'w-full min-w-[120px] rounded-md border border-[var(--color-border)] px-2 py-1 text-right text-sm outline-none focus:border-[var(--color-blue)]'
 
 const SECTION_LABELS: { key: 'sectionA' | 'sectionB' | 'sectionC' | 'sectionD' | 'sectionE'; title: string; totalKey: 'totalA' | 'totalB' | 'totalC' | 'totalD' | 'totalE' }[] = [
   { key: 'sectionA', title: 'SECTION A — RAW MATERIALS COST', totalKey: 'totalA' },
@@ -35,10 +38,33 @@ export function PricingToolPage() {
   // instead of only refreshing the next time `items` happens to change.
   const formulas = useFormulaStore((s) => s.formulas)
   const costRates = useFormulaStore((s) => s.costRates)
+  const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const sections = useFormulaStore((s) => s.sections)
+  const updateItemTechData = useDataStore((s) => s.updateItemTechData)
   const results = useMemo(
-    () => items.map((it) => ({ item: it, pricing: computePulleyPricing(it.technicalData ?? {}) })),
-    [items, formulas, costRates],
+    () =>
+      items.map((it) => ({
+        item: it,
+        pricing: computePulleyPricing(it.technicalData ?? {}),
+        autoValues: computeAutoFields(it.technicalData ?? {}),
+      })),
+    [items, formulas, costRates, techDataFields],
   )
+
+  // Fields filed under a Pricing Tool section (Manage Sections) live on this page
+  // rather than the Technical Data Sheet — grouped by section, in section order.
+  const pricingFieldSections = useMemo(() => {
+    const sectionOrder = Object.fromEntries(sections.map((s) => [s.label, s.order]))
+    const bySection: Record<string, TechDataFieldDto[]> = {}
+    for (const f of Object.values(techDataFields)) {
+      if (f.sheet !== 'pricing_tool') continue
+      bySection[f.section] = bySection[f.section] ?? []
+      bySection[f.section].push(f)
+    }
+    return Object.entries(bySection)
+      .sort(([a], [b]) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999) || a.localeCompare(b))
+      .map(([title, fields]) => ({ title, fields: fields.sort((a, b) => a.order - b.order) }))
+  }, [techDataFields, sections])
 
   return (
     <div>
@@ -143,6 +169,36 @@ export function PricingToolPage() {
                     </Fragment>
                   ))}
 
+                  {pricingFieldSections.map((section) => (
+                    <Fragment key={`custom-${section.title}`}>
+                      <tr>
+                        <td
+                          colSpan={results.length + 1}
+                          className="sticky left-0 border-b border-t border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-blue)]"
+                        >
+                          {section.title}
+                        </td>
+                      </tr>
+                      {section.fields.map((field) => (
+                        <tr key={field.key} className="border-b border-[var(--color-border)]">
+                          <td className="sticky left-0 z-10 border-r border-[var(--color-border)] bg-white px-3 py-2">
+                            {field.label}
+                            {field.unit && <span className="text-xs text-[var(--color-ink-faint)]"> ({field.unit})</span>}
+                          </td>
+                          {results.map(({ item, autoValues }) => (
+                            <td key={item.id} className="px-3 py-2 text-right">
+                              <PricingFieldCell
+                                field={field}
+                                value={field.is_read_only ? (autoValues[field.key] ?? item.technicalData?.[field.key]) : item.technicalData?.[field.key]}
+                                onCommit={(v) => updateItemTechData(rfq.id, item.id, field.key, v).catch(() => undefined)}
+                              />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </Fragment>
+                  ))}
+
                   <tr>
                     <td
                       colSpan={results.length + 1}
@@ -196,5 +252,55 @@ function SummaryRow({
         )
       })}
     </tr>
+  )
+}
+
+/** One item's value for a Pricing Tool field: read-only for Auto/catalog/fixed-value
+ * fields, otherwise an input that saves to the item's technical data on blur/Enter. */
+function PricingFieldCell({
+  field,
+  value,
+  onCommit,
+}: {
+  field: TechDataFieldDto
+  value: string | number | undefined
+  onCommit: (value: string | number) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+
+  if (field.is_read_only || field.fixed_value) {
+    const shown = field.fixed_value || value
+    if (shown === undefined || shown === '') return <span className="text-[var(--color-ink-faint)]">—</span>
+    return <span>{typeof shown === 'number' ? shown.toLocaleString('en-IN') : shown}</span>
+  }
+
+  const commit = (raw: string) => {
+    setDraft(null)
+    const next = field.field_type === 'number' ? (raw === '' ? '' : Number(raw)) : raw
+    if (String(next) !== String(value ?? '')) onCommit(next)
+  }
+
+  if (field.field_type === 'select') {
+    return (
+      <select value={String(value ?? '')} onChange={(e) => commit(e.target.value)} className={inputClass}>
+        <option value="">—</option>
+        {field.options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    )
+  }
+
+  return (
+    <input
+      type={field.field_type === 'number' ? 'number' : 'text'}
+      value={draft ?? String(value ?? '')}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={(e) => commit(e.target.value)}
+      onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+      className={inputClass}
+    />
   )
 }

@@ -1,11 +1,16 @@
 import { create } from 'zustand'
 import { api, ApiError } from '@/lib/apiClient'
 
+/** Which sheet a section — and every formula/field filed under it — belongs to. */
+export type SheetTab = 'pricing_tool' | 'tech_sheet'
+
 export interface FormulaDefinitionDto {
   id: number
   key: string
   label: string
   section: string
+  /** Resolved server-side from the section's Section.tab. */
+  sheet?: SheetTab
   expression: string
   input_variables: string[]
   output_unit: string
@@ -64,6 +69,9 @@ export interface TechDataFieldDto {
   key: string
   label: string
   section: string
+  /** Resolved server-side from the section's Section.tab — a 'pricing_tool' field is
+   * shown on the Pricing Tool page instead of the Technical Data Sheet. */
+  sheet?: SheetTab
   unit: string
   field_type: 'text' | 'number' | 'select'
   options: string[]
@@ -144,11 +152,9 @@ export interface SectionDto {
   key: string
   label: string
   order: number
-  // Not yet returned by the backend (Section has no such column there today) — once
-  // it is, every section can pick its own tab instead of only the one hardcoded
-  // 'Technical Data Sheet — Auto Fields' label ever landing under Technical Sheet
-  // Formulas. See FormulasPage's TECH_DATA_AUTO_SECTION_LABEL fallback.
-  tab?: 'pricing_tool' | 'tech_sheet'
+  // Which Formulas-page tab the section is listed under — editable via updateSection.
+  // Optional only for safety; FormulasPage falls back to TECH_DATA_AUTO_SECTION_LABEL.
+  tab?: SheetTab
 }
 
 export interface NewFormulaInput {
@@ -189,7 +195,7 @@ interface FormulaState {
   // `tab` is sent whenever the backend adds support for it; today it's simply
   // ignored by the create endpoint (not a declared field there yet).
   createSection: (input: { key: string; label: string; order?: number; tab?: 'pricing_tool' | 'tech_sheet' }) => Promise<void>
-  renameSection: (id: number, label: string) => Promise<void>
+  updateSection: (id: number, patch: Partial<Pick<SectionDto, 'label' | 'order' | 'tab'>>) => Promise<void>
   deleteSection: (id: number) => Promise<void>
 
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
@@ -315,9 +321,9 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
     set((s) => ({ sections: [...s.sections, created] }))
   },
 
-  renameSection: async (id, label) => {
-    await api.patch<SectionDto>(`/formulas/sections/${id}/`, { label })
-    // The rename cascades server-side to every formula/field that used the old
+  updateSection: async (id, patch) => {
+    await api.patch<SectionDto>(`/formulas/sections/${id}/`, patch)
+    // A rename cascades server-side to every formula/field that used the old
     // label — refetch rather than patch every local record individually.
     await get().loadAll()
   },

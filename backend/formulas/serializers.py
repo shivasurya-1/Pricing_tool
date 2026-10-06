@@ -1,6 +1,36 @@
 from rest_framework import serializers
 
-from .models import FormulaDefinition, FormulaVersion, Section, TechDataFieldDefinition
+from .models import TECH_DATA_AUTO_SECTION_LABEL, FormulaDefinition, FormulaVersion, Section, SectionTab, TechDataFieldDefinition
+
+
+def validate_registered_section(value: str) -> str:
+    """A formula's/field's section decides which sheet it shows on (Section.tab), so it
+    must be a section from the Manage Sections registry — not free text."""
+    value = value.strip()
+    if not Section.objects.filter(label=value).exists():
+        raise serializers.ValidationError(f"'{value}' isn't a known section — add it under Manage Sections first.")
+    return value
+
+
+class SheetMixin(serializers.Serializer):
+    """Read-only `sheet`: which sheet ("pricing_tool" / "tech_sheet") this row belongs
+    to, resolved from its section's Section.tab. The label->tab map is fetched once
+    and cached on the (shared, for many=True) serializer context — no N+1."""
+
+    sheet = serializers.SerializerMethodField()
+    # Used when a row's section isn't in the registry (legacy data).
+    default_sheet = SectionTab.PRICING_TOOL
+
+    def get_sheet(self, obj) -> str:
+        tabs = self.context.get("_section_tabs")
+        if tabs is None:
+            tabs = dict(Section.objects.values_list("label", "tab"))
+            self.context["_section_tabs"] = tabs
+        if obj.section in tabs:
+            return tabs[obj.section]
+        if obj.section == TECH_DATA_AUTO_SECTION_LABEL:
+            return SectionTab.TECH_SHEET
+        return self.default_sheet
 
 
 class FormulaVersionSerializer(serializers.ModelSerializer):
@@ -11,7 +41,7 @@ class FormulaVersionSerializer(serializers.ModelSerializer):
         fields = ["id", "previous_expression", "new_expression", "changed_by_name", "changed_at", "note"]
 
 
-class FormulaDefinitionSerializer(serializers.ModelSerializer):
+class FormulaDefinitionSerializer(SheetMixin, serializers.ModelSerializer):
     updated_by_name = serializers.CharField(source="updated_by.username", default=None, read_only=True)
 
     class Meta:
@@ -21,6 +51,7 @@ class FormulaDefinitionSerializer(serializers.ModelSerializer):
             "key",
             "label",
             "section",
+            "sheet",
             "expression",
             "input_variables",
             "output_unit",
@@ -39,17 +70,27 @@ class FormulaCreateSerializer(serializers.ModelSerializer):
         fields = ["id", "key", "label", "section", "expression", "input_variables", "output_unit", "order"]
         read_only_fields = ["id"]
 
+    def validate_section(self, value):
+        return validate_registered_section(value)
+
 
 class SectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Section
         fields = ["id", "key", "label", "order", "tab"]
-        read_only_fields = ["id", "key", "tab"]
+        read_only_fields = ["id", "key"]
         # `key` is fixed at create time (it's how existing formulas/fields already
         # reference a section that predates this API, by label match) — renaming is
         # done by changing `label`, which SectionViewSet.perform_update cascades to
         # every FormulaDefinition/TechDataFieldDefinition row that used the old one.
-        # `tab` is likewise set once at create time (SectionCreateSerializer).
+        # `label`, `order` and `tab` are all editable (see perform_update for the
+        # one built-in section whose label/tab stay locked).
+
+    def validate_label(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Section name can't be blank.")
+        return value
 
 
 class SectionCreateSerializer(serializers.ModelSerializer):
@@ -64,8 +105,10 @@ class FormulaPreviewRequestSerializer(serializers.Serializer):
     variables = serializers.DictField(child=serializers.FloatField(), required=False, default=dict)
 
 
-class TechDataFieldDefinitionSerializer(serializers.ModelSerializer):
+class TechDataFieldDefinitionSerializer(SheetMixin, serializers.ModelSerializer):
     """Read/list representation — a Manual field simply has null formula-derived fields."""
+
+    default_sheet = SectionTab.TECH_SHEET
 
     is_auto = serializers.BooleanField(read_only=True)
     is_read_only = serializers.BooleanField(read_only=True)
@@ -77,7 +120,7 @@ class TechDataFieldDefinitionSerializer(serializers.ModelSerializer):
     class Meta:
         model = TechDataFieldDefinition
         fields = [
-            "id", "key", "label", "section", "unit", "field_type", "options", "options_source", "fixed_value",
+            "id", "key", "label", "section", "sheet", "unit", "field_type", "options", "options_source", "fixed_value",
             "is_auto", "is_catalog_derived", "is_read_only", "formula_key", "expression",
             "input_variables", "output_unit", "order", "is_core", "created_at", "updated_at",
         ]
@@ -88,6 +131,12 @@ class TechDataFieldDefinitionSerializer(serializers.ModelSerializer):
         # `field_type` is also effectively immutable (enforced in the view rather than
         # here, since a core field's own PATCH still needs to reject it while a create
         # payload needs to set it) — see TechDataFieldDefinitionViewSet.
+
+    def validate_section(self, value):
+        # An edit that leaves a legacy (unregistered) section unchanged stays allowed.
+        if self.instance is not None and value.strip() == self.instance.section:
+            return self.instance.section
+        return validate_registered_section(value)
 
 
 class TechDataFieldCreateSerializer(serializers.Serializer):
@@ -108,6 +157,9 @@ class TechDataFieldCreateSerializer(serializers.Serializer):
     expression = serializers.CharField(required=False, allow_blank=True, default="")
     input_variables = serializers.ListField(child=serializers.CharField(), required=False, default=list)
     output_unit = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+
+    def validate_section(self, value):
+        return validate_registered_section(value)
 
     def validate(self, data):
         if data["field_type"] == "select" and not data.get("options") and data["is_auto"] is False:

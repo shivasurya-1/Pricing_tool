@@ -6,7 +6,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from .evaluator import FormulaError, evaluate_formula
-from .models import FormulaDefinition, Section, TECH_DATA_AUTO_SECTION_LABEL, TechDataFieldDefinition
+from .models import FormulaDefinition, Section, TECH_DATA_AUTO_SECTION_KEY, TECH_DATA_AUTO_SECTION_LABEL, TechDataFieldDefinition
 
 User = get_user_model()
 
@@ -68,6 +68,7 @@ class FormulaApiTests(TestCase):
         self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
         self.controlling_client = APIClient()
         self.controlling_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.controlling).key}")
+        Section.objects.get_or_create(key="test-section-b", defaults={"label": "SectionB"})
 
         self.formula = FormulaDefinition.objects.create(
             key="testFormula",
@@ -197,6 +198,8 @@ class TechDataFieldDefinitionApiTests(TestCase):
         self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
         self.sales_client = APIClient()
         self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        Section.objects.create(key="test-project-info", label="1. PROJECT INFORMATION", tab="tech_sheet")
+        Section.objects.create(key="test-body-dims", label="2. PULLEY BODY DIMENSIONS", tab="tech_sheet")
 
         self.core_field = TechDataFieldDefinition.objects.create(
             key="shellOD", label="Shell Outer Diameter", section="2. PULLEY BODY DIMENSIONS",
@@ -437,6 +440,35 @@ class SectionApiTests(TestCase):
         self.assertEqual(FormulaDefinition.objects.get(key="f1").section, "Raw Material Inputs")
         self.assertEqual(TechDataFieldDefinition.objects.get(key="tf1").section, "Raw Material Inputs")
 
+    def test_edit_updates_label_order_and_tab_together(self):
+        response = self.admin_client.patch(
+            f"/api/formulas/sections/{self.section.id}/",
+            {"label": "  Raw Mats  ", "order": 7, "tab": "tech_sheet"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.section.refresh_from_db()
+        self.assertEqual((self.section.label, self.section.order, self.section.tab), ("Raw Mats", 7, "tech_sheet"))
+
+    def test_edit_rejects_blank_or_duplicate_label(self):
+        Section.objects.create(key="other", label="Other")
+        url = f"/api/formulas/sections/{self.section.id}/"
+        self.assertEqual(self.admin_client.patch(url, {"label": "   "}, format="json").status_code, 400)
+        self.assertEqual(self.admin_client.patch(url, {"label": "Other"}, format="json").status_code, 400)
+
+    def test_edit_is_forbidden_for_sales(self):
+        response = self.sales_client.patch(f"/api/formulas/sections/{self.section.id}/", {"order": 3}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_built_in_auto_section_label_and_tab_are_locked_but_order_is_editable(self):
+        auto, _ = Section.objects.get_or_create(
+            key=TECH_DATA_AUTO_SECTION_KEY, defaults={"label": TECH_DATA_AUTO_SECTION_LABEL, "tab": "tech_sheet"}
+        )
+        url = f"/api/formulas/sections/{auto.id}/"
+        self.assertEqual(self.admin_client.patch(url, {"label": "Renamed"}, format="json").status_code, 400)
+        self.assertEqual(self.admin_client.patch(url, {"tab": "pricing_tool"}, format="json").status_code, 400)
+        self.assertEqual(self.admin_client.patch(url, {"order": 42}, format="json").status_code, 200)
+
     def test_delete_is_blocked_while_a_formula_uses_it(self):
         FormulaDefinition.objects.create(key="f2", label="F2", section="Raw Materials", expression="1", input_variables=[])
         response = self.admin_client.delete(f"/api/formulas/sections/{self.section.id}/")
@@ -447,3 +479,55 @@ class SectionApiTests(TestCase):
         response = self.admin_client.delete(f"/api/formulas/sections/{self.section.id}/")
         self.assertEqual(response.status_code, 204)
         self.assertFalse(Section.objects.filter(id=self.section.id).exists())
+
+
+class SheetAssignmentTests(TestCase):
+    """A formula/field shows on the sheet its section's `tab` points at — the `sheet`
+    value the API returns — and can only be filed under a registered section."""
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser("admin5", "admin5@example.com", "adminpass123", role="Admin")
+        self.client_ = APIClient()
+        self.client_.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.pricing = Section.objects.create(key="custom-pricing", label="Custom Pricing", tab="pricing_tool")
+        self.tech = Section.objects.create(key="custom-tech", label="Custom Tech", tab="tech_sheet")
+
+    def _field(self, key, section):
+        payload = {"key": key, "label": key, "section": section, "field_type": "number", "is_auto": False}
+        return self.client_.post("/api/formulas/tech-data-fields/", payload, format="json")
+
+    def _formula(self, key, section):
+        payload = {"key": key, "label": key, "section": section, "expression": "1", "input_variables": []}
+        return self.client_.post("/api/formulas/", payload, format="json")
+
+    def test_field_in_pricing_section_is_on_pricing_sheet(self):
+        response = self._field("pricingField", "Custom Pricing")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["sheet"], "pricing_tool")
+
+    def test_field_in_tech_section_is_on_tech_sheet(self):
+        response = self._field("techField", "Custom Tech")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["sheet"], "tech_sheet")
+
+    def test_formula_sheet_follows_its_section(self):
+        self.assertEqual(self._formula("pricingFormula", "Custom Pricing").data["sheet"], "pricing_tool")
+        self.assertEqual(self._formula("techFormula", "Custom Tech").data["sheet"], "tech_sheet")
+
+    def test_unregistered_section_is_rejected(self):
+        self.assertEqual(self._field("strayField", "Nope").status_code, 400)
+        self.assertEqual(self._formula("strayFormula", "Nope").status_code, 400)
+
+    def test_moving_a_section_to_the_other_sheet_moves_its_rows(self):
+        self._field("movingField", "Custom Pricing")
+        self.client_.patch(f"/api/formulas/sections/{self.pricing.id}/", {"tab": "tech_sheet"}, format="json")
+        response = self.client_.get("/api/formulas/tech-data-fields/movingField/")
+        self.assertEqual(response.data["sheet"], "tech_sheet")
+
+    def test_editing_a_field_into_an_unregistered_section_is_rejected(self):
+        self._field("editField", "Custom Pricing")
+        response = self.client_.patch("/api/formulas/tech-data-fields/editField/", {"section": "Nope"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        response = self.client_.patch("/api/formulas/tech-data-fields/editField/", {"section": "Custom Tech"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["sheet"], "tech_sheet")

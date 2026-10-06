@@ -237,8 +237,9 @@ function buildTechDataSectionsFromDto(fields: TechDataFieldDto[]): TechDataSecti
 export function useTechDataSections(overrides?: TechDataFieldOverrides): TechDataSection[] {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
   const loaded = useFormulaStore((s) => s.loaded)
-  const sections =
-    !loaded || Object.keys(techDataFields).length === 0 ? TECH_DATA_SECTIONS : buildTechDataSectionsFromDto(Object.values(techDataFields))
+  // Fields filed under a Pricing Tool section belong on the Pricing Tool page, not here.
+  const sheetFields = Object.values(techDataFields).filter((f) => f.sheet !== 'pricing_tool')
+  const sections = !loaded || sheetFields.length === 0 ? TECH_DATA_SECTIONS : buildTechDataSectionsFromDto(sheetFields)
   return applyFieldOverrides(sections, overrides)
 }
 

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { Fragment, useMemo, useRef, useState } from 'react'
 import { Info, Layers, ListTree, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
@@ -12,7 +12,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ReferenceCatalogPicker } from '@/components/reference/ReferenceCatalogPicker'
 import { useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
-import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type TechDataFieldDto } from '@/store/formulaStore'
+import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type SheetTab, type TechDataFieldDto } from '@/store/formulaStore'
 import { useUiStore } from '@/store/uiStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { toNumericVars } from '@/lib/pulleyTechDataCalc'
@@ -35,6 +35,7 @@ const OPERATOR_TOKENS = ['+', '-', '*', '/', '(', ')']
 // formula section that isn't a pricing stage, used to split the page into
 // "Technical Sheet Formulas" vs "Pricing Tool Formulas" tabs below.
 const TECH_DATA_AUTO_SECTION_LABEL = 'Technical Data Sheet — Auto Fields'
+const TECH_DATA_AUTO_SECTION_KEY = 'TechDataAuto'
 const FORMULA_TABS = ['Technical Sheet Formulas', 'Pricing Tool Formulas'] as const
 
 function slugifyToCamelCase(label: string): string {
@@ -66,7 +67,7 @@ export function FormulasPage() {
     updateTechDataField,
     deleteTechDataField,
     createSection,
-    renameSection,
+    updateSection,
     deleteSection,
   } = useFormulaStore()
   const pushToast = useUiStore((s) => s.pushToast)
@@ -107,28 +108,29 @@ export function FormulasPage() {
 
   const sectionOrder = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s.order])), [sections])
   const sectionLabels = useMemo(() => [...sections].sort((a, b) => a.order - b.order).map((s) => s.label), [sections])
-  // `tab` isn't returned by the backend yet (see SectionDto) — falls back to the one
-  // hardcoded reserved label so today's grouping keeps working exactly as before.
-  const sectionByLabel = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s])), [sections])
-  const isTechSheetLabel = (label: string) => sectionByLabel[label]?.tab === 'tech_sheet' || label === TECH_DATA_AUTO_SECTION_LABEL
+  const activeSheet: SheetTab = formulaTab === 'Pricing Tool Formulas' ? 'pricing_tool' : 'tech_sheet'
+  // Add Field / Add Formula only offer sections of the tab you're on, so whatever you
+  // add lands on that same sheet.
+  const activeSheetSectionLabels = useMemo(
+    () => [...sections].filter((s) => (s.tab ?? 'pricing_tool') === activeSheet).sort((a, b) => a.order - b.order).map((s) => s.label),
+    [sections, activeSheet],
+  )
 
+  // Formulas that back an Auto field are shown (and edited) through that field instead.
+  const fieldBackedFormulaKeys = useMemo(
+    () => new Set(Object.values(techDataFields).map((f) => f.formula_key).filter((k): k is string => !!k)),
+    [techDataFields],
+  )
   const grouped = useMemo(() => {
     const bySection: Record<string, FormulaDefinitionDto[]> = {}
     for (const f of Object.values(formulas)) {
+      if (fieldBackedFormulaKeys.has(f.key)) continue
       bySection[f.section] = bySection[f.section] ?? []
       bySection[f.section].push(f)
     }
     for (const list of Object.values(bySection)) list.sort((a, b) => a.order - b.order)
     return bySection
-  }, [formulas])
-  const formulaSectionsPresent = useMemo(
-    () => Object.keys(grouped).sort((a, b) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999)),
-    [grouped, sectionOrder],
-  )
-  const pricingFormulaSections = useMemo(
-    () => formulaSectionsPresent.filter((s) => !isTechSheetLabel(s)),
-    [formulaSectionsPresent, sectionByLabel],
-  )
+  }, [formulas, fieldBackedFormulaKeys])
 
   const sectionUsage = useMemo(() => {
     const usage: Record<string, { formulaCount: number; fieldCount: number }> = {}
@@ -144,7 +146,6 @@ export function FormulasPage() {
     return usage
   }, [sections, formulas, techDataFields])
 
-  const techDataSections = useMemo(() => [...new Set(Object.values(techDataFields).map((f) => f.section))].sort(), [techDataFields])
   const techDataBySection = useMemo(() => {
     const bySection: Record<string, TechDataFieldDto[]> = {}
     for (const f of Object.values(techDataFields)) {
@@ -154,6 +155,49 @@ export function FormulasPage() {
     for (const list of Object.values(bySection)) list.sort((a, b) => a.order - b.order)
     return bySection
   }, [techDataFields])
+
+  // Every section on one sheet that has anything to show, in Manage Sections order.
+  // A row's sheet comes from the backend (`sheet`, resolved from its section's tab).
+  const sheetSections = (sheet: SheetTab) => {
+    const labels = new Set<string>()
+    for (const f of Object.values(techDataFields)) if ((f.sheet ?? 'tech_sheet') === sheet) labels.add(f.section)
+    for (const [label, list] of Object.entries(grouped)) if ((list[0].sheet ?? 'pricing_tool') === sheet) labels.add(label)
+    return [...labels].sort((a, b) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999) || a.localeCompare(b))
+  }
+  const pricingSheetSections = useMemo(() => sheetSections('pricing_tool'), [techDataFields, grouped, sectionOrder])
+  const techSheetSections = useMemo(() => sheetSections('tech_sheet'), [techDataFields, grouped, sectionOrder])
+  // The "View Technical Data Sheet" preview — only fields that actually render there.
+  const techDataSections = useMemo(() => techSheetSections.filter((s) => techDataBySection[s]?.length), [techSheetSections, techDataBySection])
+
+  const renderSheetSection = (section: string) => (
+    <Fragment key={section}>
+      {grouped[section]?.length > 0 && (
+        <FormulaSectionCard
+          title={section}
+          formulas={grouped[section]}
+          sampleVars={sampleVars}
+          onDelete={setDeleteFormulaTarget}
+          onSave={async (key, expression) => {
+            try {
+              await updateFormula(key, expression)
+              pushToast('Formula saved.', 'success')
+            } catch (err) {
+              pushToast(err instanceof Error ? err.message : 'Failed to save formula.', 'error')
+            }
+          }}
+        />
+      )}
+      {techDataBySection[section]?.length > 0 && (
+        <TechDataFieldSectionCard
+          title={grouped[section]?.length > 0 ? `${section} — Fields` : section}
+          fields={techDataBySection[section]}
+          isAdmin={role === 'Admin'}
+          onEdit={setEditTarget}
+          onDelete={setDeleteTarget}
+        />
+      )}
+    </Fragment>
+  )
 
   if (loading) return <EmptyState title="Loading formulas..." />
   if (!loaded) {
@@ -236,26 +280,10 @@ export function FormulasPage() {
 
       {formulaTab === 'Pricing Tool Formulas' && (
         <div className="space-y-5">
-          {pricingFormulaSections.length === 0 ? (
-            <EmptyState title="No pricing formulas" description="Add one with the 'Add Formula' button above." />
+          {pricingSheetSections.length === 0 ? (
+            <EmptyState title="Nothing on the Pricing Tool sheet yet" description="Add a formula or field with the buttons above." />
           ) : (
-            pricingFormulaSections.map((section) => (
-              <FormulaSectionCard
-                key={section}
-                title={section}
-                formulas={grouped[section]}
-                sampleVars={sampleVars}
-                onDelete={setDeleteFormulaTarget}
-                onSave={async (key, expression) => {
-                  try {
-                    await updateFormula(key, expression)
-                    pushToast('Formula saved.', 'success')
-                  } catch (err) {
-                    pushToast(err instanceof Error ? err.message : 'Failed to save formula.', 'error')
-                  }
-                }}
-              />
-            ))
+            pricingSheetSections.map(renderSheetSection)
           )}
         </div>
       )}
@@ -267,24 +295,21 @@ export function FormulasPage() {
             description="Every field on the sheet Sales/Operations fill in. Add a new one below, Manual or Auto — an Auto field's formula is edited from its own Edit button."
           />
           <div className="space-y-5">
-            {techDataSections.map((section) => (
-              <TechDataFieldSectionCard
-                key={section}
-                title={section}
-                fields={techDataBySection[section]}
-                isAdmin={role === 'Admin'}
-                onEdit={setEditTarget}
-                onDelete={setDeleteTarget}
-              />
-            ))}
+            {techSheetSections.length === 0 ? (
+              <EmptyState title="Nothing on the Technical Data Sheet yet" description="Add a field or formula with the buttons above." />
+            ) : (
+              techSheetSections.map(renderSheetSection)
+            )}
           </div>
         </div>
       )}
 
       <AddTechDataFieldModal
+        key={`field-${activeSheet}`}
         open={addFieldOpen}
         onClose={() => setAddFieldOpen(false)}
-        existingSections={sectionLabels}
+        title={activeSheet === 'pricing_tool' ? 'Add Pricing Tool Field' : 'Add Technical Data Sheet Field'}
+        existingSections={activeSheetSectionLabels}
         sampleVars={sampleVars}
         onCreate={async (input) => {
           const { fixed_value, options_source, ...createInput } = input
@@ -296,7 +321,7 @@ export function FormulasPage() {
             if (fixed_value || options_source) {
               await updateTechDataField(created.key, { fixed_value: fixed_value ?? '', options_source: options_source ?? '' })
             }
-            pushToast(`'${input.label}' added to the Technical Data Sheet.`, 'success')
+            pushToast(`'${input.label}' added to the ${activeSheet === 'pricing_tool' ? 'Pricing Tool' : 'Technical Data Sheet'}.`, 'success')
             setAddFieldOpen(false)
           } catch (err) {
             pushToast(err instanceof ApiError ? err.message : 'Failed to create field.', 'error')
@@ -355,9 +380,11 @@ export function FormulasPage() {
       />
 
       <AddFormulaModal
+        key={`formula-${activeSheet}`}
         open={addFormulaOpen}
         onClose={() => setAddFormulaOpen(false)}
-        sectionLabels={sectionLabels}
+        title={activeSheet === 'pricing_tool' ? 'Add Pricing Tool Formula' : 'Add Technical Sheet Formula'}
+        sectionLabels={activeSheetSectionLabels}
         sampleVars={sampleVars}
         onCreate={async (input) => {
           try {
@@ -422,12 +449,14 @@ export function FormulasPage() {
             pushToast(err instanceof ApiError ? err.message : 'Failed to add section.', 'error')
           }
         }}
-        onRename={async (id, label) => {
+        onUpdate={async (id, patch) => {
           try {
-            await renameSection(id, label)
-            pushToast('Section renamed.', 'success')
+            await updateSection(id, patch)
+            pushToast('Section updated.', 'success')
+            return true
           } catch (err) {
-            pushToast(err instanceof ApiError ? err.message : 'Failed to rename section.', 'error')
+            pushToast(err instanceof ApiError ? err.message : 'Failed to update section.', 'error')
+            return false
           }
         }}
         onDelete={async (section) => {
@@ -482,31 +511,82 @@ function TechDataSheetStructureView({ sections, bySection }: { sections: string[
   )
 }
 
+type SectionTabValue = 'pricing_tool' | 'tech_sheet'
+
+const SECTION_TAB_OPTIONS = [
+  { value: 'pricing_tool', label: 'Pricing Tool Formulas' },
+  { value: 'tech_sheet', label: 'Technical Data Sheet' },
+] as const
+
+function SectionTabToggle({ value, onChange, disabled }: { value: SectionTabValue; onChange: (tab: SectionTabValue) => void; disabled?: boolean }) {
+  return (
+    <div className="flex gap-2">
+      {SECTION_TAB_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange(opt.value)}
+          className={clsx(
+            'flex-1 rounded-md border px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-60',
+            value === opt.value ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)] text-[var(--color-blue)]' : 'border-[var(--color-border)] bg-white',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function SectionsManagerModal({
   open,
   onClose,
   sections,
   usage,
   onCreate,
-  onRename,
+  onUpdate,
   onDelete,
 }: {
   open: boolean
   onClose: () => void
   sections: SectionDto[]
   usage: Record<string, { formulaCount: number; fieldCount: number }>
-  onCreate: (input: { key: string; label: string; order?: number; tab: 'pricing_tool' | 'tech_sheet' }) => Promise<void>
-  onRename: (id: number, label: string) => Promise<void>
+  onCreate: (input: { key: string; label: string; order?: number; tab: SectionTabValue }) => Promise<void>
+  onUpdate: (id: number, patch: { label?: string; order?: number; tab?: SectionTabValue }) => Promise<boolean>
   onDelete: (section: SectionDto) => Promise<void>
 }) {
   const [newLabel, setNewLabel] = useState('')
-  const [newTab, setNewTab] = useState<'pricing_tool' | 'tech_sheet'>('pricing_tool')
-  const [renameDrafts, setRenameDrafts] = useState<Record<number, string>>({})
+  const [newTab, setNewTab] = useState<SectionTabValue>('pricing_tool')
+  const [editing, setEditing] = useState<{ id: number; label: string; order: string; tab: SectionTabValue } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<SectionDto | null>(null)
   const [saving, setSaving] = useState(false)
 
   const sorted = [...sections].sort((a, b) => a.order - b.order)
   const isTechSheet = (s: SectionDto) => s.tab === 'tech_sheet' || s.label === TECH_DATA_AUTO_SECTION_LABEL
+  // Backend locks this one row's label/tab (SectionViewSet.perform_update) — only its order is editable.
+  const isBuiltInAuto = (s: SectionDto) => s.key === TECH_DATA_AUTO_SECTION_KEY
+
+  const startEdit = (s: SectionDto) =>
+    setEditing({ id: s.id, label: s.label, order: String(s.order), tab: isTechSheet(s) ? 'tech_sheet' : 'pricing_tool' })
+
+  const handleSaveEdit = async (s: SectionDto) => {
+    if (!editing) return
+    const label = editing.label.trim()
+    const order = Number(editing.order)
+    const patch: { label?: string; order?: number; tab?: SectionTabValue } = {}
+    if (label !== s.label) patch.label = label
+    if (order !== s.order) patch.order = order
+    if (editing.tab !== s.tab) patch.tab = editing.tab
+    if (Object.keys(patch).length === 0) {
+      setEditing(null)
+      return
+    }
+    setSaving(true)
+    const ok = await onUpdate(s.id, patch)
+    setSaving(false)
+    if (ok) setEditing(null)
+  }
 
   const handleCreate = async () => {
     const label = newLabel.trim()
@@ -528,30 +608,65 @@ function SectionsManagerModal({
           <div className="max-h-[50vh] space-y-1.5 overflow-y-auto">
             {sorted.map((s) => {
               const u = usage[s.label] ?? { formulaCount: 0, fieldCount: 0 }
+              if (editing?.id === s.id) {
+                const locked = isBuiltInAuto(s)
+                const orderValid = editing.order.trim() !== '' && Number.isInteger(Number(editing.order)) && Number(editing.order) >= 0
+                return (
+                  <div key={s.id} className="space-y-2 rounded-md border border-[var(--color-blue)] bg-[var(--color-blue-50)] px-2.5 py-2">
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Section name</label>
+                        <input
+                          value={editing.label}
+                          disabled={locked}
+                          onChange={(e) => setEditing({ ...editing, label: e.target.value })}
+                          className={clsx(inputClass, 'bg-white disabled:opacity-60')}
+                          autoFocus
+                        />
+                      </div>
+                      <div className="w-20">
+                        <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Order</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={editing.order}
+                          onChange={(e) => setEditing({ ...editing, order: e.target.value })}
+                          className={clsx(inputClass, 'bg-white')}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Which sheet is this section for?</label>
+                      <SectionTabToggle value={editing.tab} onChange={(tab) => setEditing({ ...editing, tab })} disabled={locked} />
+                    </div>
+                    {locked && <p className="text-xs text-[var(--color-ink-faint)]">Built-in section — only its order can be changed.</p>}
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={saving}>
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        icon={<Save size={12} />}
+                        disabled={saving || !editing.label.trim() || !orderValid}
+                        onClick={() => handleSaveEdit(s)}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                )
+              }
               return (
                 <div key={s.id} className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5">
                   <div className="flex items-center gap-2">
-                    <input
-                      value={renameDrafts[s.id] ?? s.label}
-                      onChange={(e) => setRenameDrafts((d) => ({ ...d, [s.id]: e.target.value }))}
-                      className={clsx(inputClass, 'flex-1')}
-                    />
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={(renameDrafts[s.id] ?? s.label) === s.label || !(renameDrafts[s.id] ?? '').trim()}
-                      onClick={async () => {
-                        await onRename(s.id, renameDrafts[s.id].trim())
-                        setRenameDrafts((d) => {
-                          const next = { ...d }
-                          delete next[s.id]
-                          return next
-                        })
-                      }}
-                    >
-                      Save
+                    <span className="flex-1 truncate text-sm font-medium">{s.label}</span>
+                    <span className="text-xs text-[var(--color-ink-faint)]">#{s.order}</span>
+                    <Button size="sm" variant="secondary" icon={<Pencil size={12} />} onClick={() => startEdit(s)} disabled={!!editing}>
+                      Edit
                     </Button>
-                    <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => setDeleteTarget(s)} />
+                    <Button size="sm" variant="ghost" icon={<Trash2 size={12} />} onClick={() => setDeleteTarget(s)} disabled={!!editing} />
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                     <Badge tone={isTechSheet(s) ? 'purple' : 'blue'}>
@@ -569,27 +684,7 @@ function SectionsManagerModal({
             <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} className={inputClass} placeholder="New section name" />
             <div>
               <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Which sheet is this section for?</label>
-              <div className="flex gap-2">
-                {(
-                  [
-                    { value: 'pricing_tool', label: 'Pricing Tool Formulas' },
-                    { value: 'tech_sheet', label: 'Technical Data Sheet' },
-                  ] as const
-                ).map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setNewTab(opt.value)}
-                    className={clsx(
-                      'flex-1 rounded-md border px-3 py-1.5 text-sm',
-                      newTab === opt.value ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)] text-[var(--color-blue)]' : 'border-[var(--color-border)]',
-                    )}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-1 text-xs text-[var(--color-ink-faint)]">Needs a small backend update to take effect — ask your backend dev.</p>
+              <SectionTabToggle value={newTab} onChange={setNewTab} />
             </div>
             <Button variant="primary" disabled={!newLabel.trim() || saving} onClick={handleCreate} className="w-full">
               Add Section
@@ -618,12 +713,14 @@ function SectionsManagerModal({
 function AddFormulaModal({
   open,
   onClose,
+  title = 'Add Formula',
   sectionLabels,
   sampleVars,
   onCreate,
 }: {
   open: boolean
   onClose: () => void
+  title?: string
   sectionLabels: string[]
   sampleVars: Record<string, number>
   onCreate: (input: { key: string; label: string; section: string; expression: string; input_variables: string[]; output_unit: string }) => Promise<void>
@@ -707,7 +804,7 @@ function AddFormulaModal({
         onClose()
         reset()
       }}
-      title="Add Formula"
+      title={title}
       width="max-w-xl"
       footer={
         <>
@@ -746,7 +843,7 @@ function AddFormulaModal({
                 </option>
               ))}
             </select>
-            {sectionLabels.length === 0 && <p className="mt-1 text-xs text-[var(--color-red)]">No sections yet — add one under "Manage Sections" first.</p>}
+            {sectionLabels.length === 0 && <p className="mt-1 text-xs text-[var(--color-red)]">No sections on this sheet yet — add one under "Manage Sections" first.</p>}
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Output Unit</label>
@@ -913,12 +1010,14 @@ function TechDataFieldSectionCard({
 function AddTechDataFieldModal({
   open,
   onClose,
+  title = 'Add Technical Data Sheet Field',
   existingSections,
   sampleVars,
   onCreate,
 }: {
   open: boolean
   onClose: () => void
+  title?: string
   existingSections: string[]
   sampleVars: Record<string, number>
   onCreate: (input: {
@@ -1063,7 +1162,7 @@ function AddTechDataFieldModal({
         onClose()
         reset()
       }}
-      title="Add Technical Data Sheet Field"
+      title={title}
       width="max-w-xl"
       footer={
         <>
@@ -1102,7 +1201,7 @@ function AddTechDataFieldModal({
                 </option>
               ))}
             </select>
-            {existingSections.length === 0 && <p className="mt-1 text-xs text-[var(--color-red)]">No sections yet — add one under "Manage Sections" first.</p>}
+            {existingSections.length === 0 && <p className="mt-1 text-xs text-[var(--color-red)]">No sections on this sheet yet — add one under "Manage Sections" first.</p>}
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Unit</label>

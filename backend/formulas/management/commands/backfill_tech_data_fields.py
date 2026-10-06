@@ -19,8 +19,10 @@ These are flagged is_catalog_derived=True instead of getting a `formula`.
 """
 
 from django.core.management.base import BaseCommand
+from django.db.models import Max
+from django.utils.text import slugify
 
-from formulas.models import FormulaDefinition, TechDataFieldDefinition
+from formulas.models import FormulaDefinition, Section, SectionTab, TechDataFieldDefinition
 
 CATALOG_DERIVED_KEYS = {"bearing1Price", "bearing2Price", "sleevePrice", "housingPrice", "laggingRate", "lockingDevicePrice"}
 
@@ -147,4 +149,21 @@ class Command(BaseCommand):
             )
             total += 1
 
+        self._register_sections(section_orders.keys())
         self.stdout.write(self.style.SUCCESS(f"Backfilled {total} technical data sheet field definitions."))
+
+    def _register_sections(self, labels):
+        """Every sheet section needs a Section row on the Technical Sheet tab — a field's
+        Section.tab is what decides which sheet it renders on. Existing rows (possibly
+        moved/reordered by an admin since) are left untouched."""
+        next_order = (Section.objects.aggregate(m=Max("order"))["m"] or 0) + 1
+        for label in labels:
+            if Section.objects.filter(label=label).exists():
+                continue
+            base = slugify(label)[:50] or f"section-{next_order}"
+            key, suffix = base, 1
+            while Section.objects.filter(key=key).exists():
+                suffix += 1
+                key = f"{base}-{suffix}"[:50]
+            Section.objects.create(key=key, label=label, order=next_order, tab=SectionTab.TECH_SHEET)
+            next_order += 1
