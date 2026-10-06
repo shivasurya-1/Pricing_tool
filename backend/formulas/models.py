@@ -12,6 +12,13 @@ TECH_DATA_AUTO_SECTION_KEY = "TechDataAuto"
 TECH_DATA_AUTO_SECTION_LABEL = "Technical Data Sheet — Auto Fields"
 
 
+class SectionTab(models.TextChoices):
+    """Which tab of the Formulas page a section is listed under."""
+
+    PRICING_TOOL = "pricing_tool", "Pricing Tool Formulas"
+    TECH_SHEET = "tech_sheet", "Technical Sheet Formulas"
+
+
 class Section(models.Model):
     """A user-managed grouping shared by FormulaDefinition and TechDataFieldDefinition
     — both models just store this section's `label` as a plain string (no FK): a
@@ -22,6 +29,7 @@ class Section(models.Model):
     key = models.SlugField(max_length=50, unique=True)
     label = models.CharField(max_length=200, unique=True)
     order = models.PositiveIntegerField(default=0)
+    tab = models.CharField(max_length=20, choices=SectionTab.choices, default=SectionTab.PRICING_TOOL)
 
     class Meta:
         ordering = ["order", "label"]

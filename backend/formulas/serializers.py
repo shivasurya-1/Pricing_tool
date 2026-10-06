@@ -43,18 +43,19 @@ class FormulaCreateSerializer(serializers.ModelSerializer):
 class SectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Section
-        fields = ["id", "key", "label", "order"]
-        read_only_fields = ["id", "key"]
+        fields = ["id", "key", "label", "order", "tab"]
+        read_only_fields = ["id", "key", "tab"]
         # `key` is fixed at create time (it's how existing formulas/fields already
         # reference a section that predates this API, by label match) — renaming is
         # done by changing `label`, which SectionViewSet.perform_update cascades to
         # every FormulaDefinition/TechDataFieldDefinition row that used the old one.
+        # `tab` is likewise set once at create time (SectionCreateSerializer).
 
 
 class SectionCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Section
-        fields = ["id", "key", "label", "order"]
+        fields = ["id", "key", "label", "order", "tab"]
         read_only_fields = ["id"]
 
 
