@@ -137,8 +137,8 @@ class Command(BaseCommand):
         # "As per RFQ / Need Basis". Shell rates = columns I (Plate) and J (End Disc/Hub);
         # the workbook's "???" cells are left blank.
         shaft_rows = [
-            dict(material="C45", diameter="Ø 80 - 180", length="2000 - 3000", as_forge_rate_inr_per_kg=310),
-            dict(material="42CrMo4+QT", diameter="Ø 200 - 880", length="2300 - 7300", as_forge_rate_inr_per_kg=330),
+            dict(material="C45", diameter="Ø 80 - 180", length="2000 - 3000", as_forge_rate_inr_per_kg="310"),
+            dict(material="42CrMo4+QT", diameter="Ø 200 - 880", length="2300 - 7300", as_forge_rate_inr_per_kg="330"),
             dict(material="30CrNiMo8+QT/36CrNiMo4+QT/34CrNiMo6+QT", diameter="Ø 300 - 450", length="2300 - 7300", as_forge_rate_inr_per_kg=None),
         ]
         shell_rows = [

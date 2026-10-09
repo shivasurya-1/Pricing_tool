@@ -71,8 +71,25 @@ class LogisticsPackingRateSerializer(CostRateTableSerializer):
 class ShaftForgingBandSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShaftForgingBand
-        fields = ["id", "material", "diameter", "length", "sourcing", "as_forge_rate_inr_per_kg", "order", "updated_at"]
+        fields = [
+            "id", "material", "diameter", "length", "as_forge_rate_inr_per_kg",
+            "rate_dia_410_lg_3900_inr_per_kg", "rate_dia_420_800_lg_2000_inr_per_kg", "order", "updated_at",
+        ]
         read_only_fields = ["id", "updated_at"]
+
+    OPTIONAL_RATE_FIELDS = (
+        "as_forge_rate_inr_per_kg", "rate_dia_410_lg_3900_inr_per_kg", "rate_dia_420_800_lg_2000_inr_per_kg",
+    )
+
+    def to_internal_value(self, data):
+        # The rate inputs are optional: an empty/whitespace value from the form means
+        # "no rate" (null) instead of failing number validation.
+        if hasattr(data, "items"):
+            data = {
+                key: None if key in self.OPTIONAL_RATE_FIELDS and isinstance(value, str) and not value.strip() else value
+                for key, value in data.items()
+            }
+        return super().to_internal_value(data)
 
 
 class ShellForgingBandSerializer(serializers.ModelSerializer):

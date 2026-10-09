@@ -10,8 +10,12 @@ from .models import (
     InHouseHourRate,
     LagDataEntry,
     LcdDataEntry,
+    LogisticsPackingRate,
+    MachiningLabourRate,
     MaterialRate,
     OrganizationSettings,
+    ShaftForgingBand,
+    ShellForgingBand,
     SleeveCatalogEntry,
 )
 
@@ -88,8 +92,11 @@ class ReferenceApiTests(TestCase):
 
     FORGING_ENDPOINTS = {
         "shaft-bands": (
-            {"material": "42CrMo4+QT", "diameter": "Ø 200 - 880", "length": "2300 - 7300", "sourcing": "Inhouse", "as_forge_rate_inr_per_kg": 210},
-            {"as_forge_rate_inr_per_kg": None},
+            {
+                "material": "42CrMo4+QT", "diameter": "Ø 200 - 880", "length": "2300 - 7300", "as_forge_rate_inr_per_kg": "Rs 175 - 225",
+                "rate_dia_410_lg_3900_inr_per_kg": 220, "rate_dia_420_800_lg_2000_inr_per_kg": 230,
+            },
+            {"as_forge_rate_inr_per_kg": "210", "rate_dia_410_lg_3900_inr_per_kg": 225},
         ),
         "shell-bands": (
             {
@@ -127,6 +134,23 @@ class ReferenceApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("diameter_body", response.data)
         self.assertIn("face_width_body", response.data)
+
+    def test_shaft_band_optional_rates_accept_empty_strings(self):
+        response = self.admin_client.post(
+            "/api/reference/raw-forging/shaft-bands/",
+            {
+                "material": "C45", "diameter": "Ø 80 - 180", "length": "2000 - 3000", "as_forge_rate_inr_per_kg": "",
+                "rate_dia_410_lg_3900_inr_per_kg": "", "rate_dia_420_800_lg_2000_inr_per_kg": " ",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        for field in ("as_forge_rate_inr_per_kg", "rate_dia_410_lg_3900_inr_per_kg", "rate_dia_420_800_lg_2000_inr_per_kg"):
+            self.assertIsNone(response.data[field])
+        response = self.admin_client.post(
+            "/api/reference/raw-forging/shaft-bands/", {"material": "C45", "diameter": "Ø 80", "length": "2000"}, format="json"
+        )
+        self.assertEqual(response.status_code, 201, response.data)
 
     def test_old_raw_forging_rates_url_is_gone(self):
         self.assertEqual(self.admin_client.get("/api/reference/raw-forging-rates/").status_code, 404)
@@ -266,86 +290,146 @@ class SeedReferenceDataTests(TestCase):
 class ReferenceDropdownApiTests(TestCase):
     FIELDS_URL = "/api/reference/catalogs/dropdown-fields/"
     VALUES_URL = "/api/reference/catalogs/dropdown-values/"
-    EXPECTED_FIELDS = [
-        {"table": "bearings", "label": "Bearing Data", "field": "designation"},
-        {"table": "sleeves", "label": "Sleeve Data", "field": "sleeve_code"},
-        {"table": "lag-data", "label": "Lag Data", "field": "lagging_type"},
-        {"table": "lcd-data", "label": "LCD Data", "field": "model_size"},
-        {"table": "housings", "label": "Housing Data", "field": "housing_designation"},
-    ]
 
     def setUp(self):
         sales = User.objects.create_user("ddsales", password="salespass123", role="Sales")
         self.client = APIClient()
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=sales).key}")
 
-        self.bearing = BearingCatalogEntry.objects.create(designation="22220 E", bore_mm=100, price_inr=1, price_eur=1, delivery_days=1)
+        self.bearing = BearingCatalogEntry.objects.create(designation="22220 E", bore_mm=100, price_inr=30000, price_eur=320, delivery_days=1)
         self.sleeve = SleeveCatalogEntry.objects.create(for_bearing="22220 E", sleeve_code="H 320", price_eur=1, price_inr=1)
         self.lag = LagDataEntry.objects.create(lagging_type="Rubber vulc. 12mm", thickness_mm=12, price_inr_per_m2=1, delivery_days=1)
         self.lcd = LcdDataEntry.objects.create(model_size="NMTG N7036-100 x 150", negotiated_rate_inr=1)
         self.housing = HousingCatalogEntry.objects.create(for_bearing="22220 E", housing_designation="SNL 520", price_inr=1, delivery_days=1)
+        self.shaft = ShaftForgingBand.objects.create(material="42CrMo4+QT", diameter="Ø 200 - 880", length="2300 - 7300")
+        self.shell = ShellForgingBand.objects.create(diameter_body="300 - <=500", face_width_body="800-1200", plate_rate_inr_per_kg=95.5)
+        GlobalParameter.objects.create(key="ddParam", parameter="GST", value=18)
+        MaterialRate.objects.create(key="ddMat", material="S355", inr_per_kg=80)
+        MachiningLabourRate.objects.create(key="ddOp", operation="Turning", inr_per_hour=900)
+        LogisticsPackingRate.objects.create(key="ddPack", item="Crate", rate=5000)
 
-    def values(self, table, field):
-        return self.client.get(self.VALUES_URL, {"table": table, "field": field})
+    def values(self, table, label_field, value_field=None):
+        params = {"table": table, "label_field": label_field}
+        if value_field is not None:
+            params["value_field"] = value_field
+        return self.client.get(self.VALUES_URL, params)
 
-    def test_lists_all_dropdown_fields(self):
+    def fields(self):
         response = self.client.get(self.FIELDS_URL)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), self.EXPECTED_FIELDS)
+        return response.json()
 
-    def test_values_for_each_supported_table(self):
-        expected = {
-            "bearings": (self.bearing.id, "22220 E"),
-            "sleeves": (self.sleeve.id, "H 320"),
-            "lag-data": (self.lag.id, "Rubber vulc. 12mm"),
-            "lcd-data": (self.lcd.id, "NMTG N7036-100 x 150"),
-            "housings": (self.housing.id, "SNL 520"),
-        }
-        for entry in self.EXPECTED_FIELDS:
-            with self.subTest(table=entry["table"]):
-                response = self.values(entry["table"], entry["field"])
-                self.assertEqual(response.status_code, 200)
-                row_id, value = expected[entry["table"]]
-                self.assertEqual(response.json(), [{"id": row_id, "value": value}])
+    def test_fields_grouped_by_reference_field(self):
+        data = self.fields()
+        self.assertEqual(
+            [(group["referenceField"], [table["table"] for table in group["tables"]]) for group in data],
+            [
+                ("bearing-data", ["bearings"]),
+                ("sleeve-data", ["sleeves"]),
+                ("housing-data", ["housings"]),
+                ("lag-data", ["lag-data"]),
+                ("lcd-data", ["lcd-data"]),
+                ("raw-forging-prices", ["shaft-bands", "shell-bands"]),
+                ("cost-rate-tables", ["global-parameters", "material-rates", "machining-labour-rates", "logistics-packing-rates"]),
+            ],
+        )
+        self.assertEqual(
+            data[0],
+            {
+                "referenceField": "bearing-data",
+                "label": "Bearing Data",
+                "tables": [
+                    {
+                        "table": "bearings",
+                        "label": "Bearings",
+                        "labelField": {"field": "designation", "label": "Designation"},
+                        "valueFields": [{"field": "price_inr", "label": "INR/piece"}, {"field": "price_eur", "label": "EUR/piece"}],
+                    }
+                ],
+            },
+        )
+
+    def test_every_declared_label_and_value_field_is_queryable(self):
+        for group in self.fields():
+            for table in group["tables"]:
+                label_field = table["labelField"]["field"]
+                for value_field in [None] + [column["field"] for column in table["valueFields"]]:
+                    with self.subTest(table=table["table"], value_field=value_field):
+                        response = self.values(table["table"], label_field, value_field)
+                        self.assertEqual(response.status_code, 200)
+                        rows = response.json()
+                        self.assertEqual(len(rows), 1)
+                        self.assertEqual(set(rows[0]), {"id", "label", "value"})
+
+    def test_value_defaults_to_label(self):
+        response = self.values("bearings", "designation")
+        self.assertEqual(response.json(), [{"id": self.bearing.id, "label": "22220 E", "value": "22220 E"}])
+
+    def test_value_comes_from_same_row(self):
+        other = BearingCatalogEntry.objects.create(designation="22232 CCK/W33", bore_mm=160, price_inr=45000, price_eur=480, delivery_days=1)
+        response = self.values("bearings", "designation", "price_inr")
+        self.assertEqual(
+            response.json(),
+            [
+                {"id": self.bearing.id, "label": "22220 E", "value": 30000.0},
+                {"id": other.id, "label": "22232 CCK/W33", "value": 45000.0},
+            ],
+        )
+
+    def test_blank_value_is_null_and_blank_label_is_excluded(self):
+        ShellForgingBand.objects.create(diameter_body="", face_width_body="1200-1600")
+        response = self.values("shaft-bands", "material", "as_forge_rate_inr_per_kg")
+        self.assertEqual(response.json(), [{"id": self.shaft.id, "label": "42CrMo4+QT", "value": None}])
+        response = self.values("shell-bands", "diameter_body", "plate_rate_inr_per_kg")
+        self.assertEqual(response.json(), [{"id": self.shell.id, "label": "300 - <=500", "value": 95.5}])
+
+    def test_one_entry_per_record(self):
+        dup = SleeveCatalogEntry.objects.create(for_bearing="22222 E", sleeve_code="H 320", price_eur=2, price_inr=2)
+        response = self.values("sleeves", "sleeve_code", "price_inr")
+        self.assertEqual(
+            response.json(),
+            [{"id": self.sleeve.id, "label": "H 320", "value": 1.0}, {"id": dup.id, "label": "H 320", "value": 2.0}],
+        )
+
+    def test_empty_table_returns_empty_list(self):
+        HousingCatalogEntry.objects.all().delete()
+        response = self.values("housings", "housing_designation")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
 
     def test_invalid_table(self):
         response = self.values("customers", "designation")
         self.assertEqual(response.status_code, 400)
         self.assertIn("detail", response.json())
 
-    def test_invalid_field(self):
-        for field in ("price_inr", "sleeve_data", "", "id"):
-            with self.subTest(field=field):
-                response = self.values("sleeves", field)
+    def test_invalid_label_field(self):
+        for label_field in ("price_inr", "for_bearing", "", "id"):
+            with self.subTest(label_field=label_field):
+                response = self.values("sleeves", label_field)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("detail", response.json())
+
+    def test_invalid_value_field(self):
+        for value_field in ("for_bearing", "id", "designation", "bore_mm"):
+            with self.subTest(value_field=value_field):
+                response = self.values("bearings", "designation", value_field)
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("detail", response.json())
 
     def test_field_from_another_table_is_rejected(self):
-        response = self.values("bearings", "sleeve_code")
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.values("bearings", "sleeve_code").status_code, 400)
+        self.assertEqual(self.values("housings", "housing_designation", "price_eur").status_code, 400)
 
     def test_missing_params(self):
         self.assertEqual(self.client.get(self.VALUES_URL).status_code, 400)
-
-    def test_empty_values_excluded_and_empty_table_returns_empty_list(self):
-        SleeveCatalogEntry.objects.create(sleeve_code="", price_eur=1, price_inr=1)
-        self.assertEqual(self.values("sleeves", "sleeve_code").json(), [{"id": self.sleeve.id, "value": "H 320"}])
-
-        HousingCatalogEntry.objects.all().delete()
-        response = self.values("housings", "housing_designation")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), [])
-
-    def test_duplicate_values_collapse_to_lowest_id(self):
-        SleeveCatalogEntry.objects.create(for_bearing="22222 E", sleeve_code="H 320", price_eur=2, price_inr=2)
-        other = SleeveCatalogEntry.objects.create(sleeve_code="H 318", price_eur=1, price_inr=1)
-        response = self.values("sleeves", "sleeve_code")
-        self.assertEqual(response.json(), [{"id": other.id, "value": "H 318"}, {"id": self.sleeve.id, "value": "H 320"}])
+        self.assertEqual(self.client.get(self.VALUES_URL, {"table": "bearings"}).status_code, 400)
 
     def test_requires_authentication(self):
         anonymous = APIClient()
         self.assertIn(anonymous.get(self.FIELDS_URL).status_code, (401, 403))
-        self.assertIn(anonymous.get(self.VALUES_URL, {"table": "bearings", "field": "designation"}).status_code, (401, 403))
+        self.assertIn(
+            anonymous.get(self.VALUES_URL, {"table": "bearings", "label_field": "designation"}).status_code, (401, 403)
+        )
 
     def test_existing_catalog_crud_still_reachable(self):
         for path in ("bearings", "sleeves", "lag-data", "lcd-data", "housings"):

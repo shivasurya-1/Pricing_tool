@@ -90,10 +90,13 @@ class ShaftForgingBand(ReferenceOwnedModel):
     material = models.CharField(max_length=100, help_text="e.g. '42CrMo4+QT'")
     diameter = models.CharField(max_length=100, help_text="e.g. 'Ø 200 - 880'")
     length = models.CharField(max_length=100, help_text="e.g. '2300 - 7300'")
-    sourcing = models.CharField(max_length=12, choices=FORGING_SOURCING_CHOICES, blank=True)
-    as_forge_rate_inr_per_kg = models.FloatField(
-        null=True, blank=True, help_text="Blank means 'As per RFQ'."
+    # Free text so a range can be entered, e.g. 'Rs 175 - 225'. Null (not '') stays the
+    # "no rate" value so the API keeps returning null for a blank cell.
+    as_forge_rate_inr_per_kg = models.CharField(
+        max_length=100, null=True, blank=True, help_text="e.g. 'Rs 175 - 225'. Blank means 'As per RFQ'."
     )
+    rate_dia_410_lg_3900_inr_per_kg = models.FloatField(null=True, blank=True, help_text="Ø 410, lg 3900 (₹/kg)")
+    rate_dia_420_800_lg_2000_inr_per_kg = models.FloatField(null=True, blank=True, help_text="Ø 420-800, lg 2000 (₹/kg)")
     order = models.PositiveIntegerField(default=0)
 
     class Meta:
