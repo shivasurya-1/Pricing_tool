@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Plus, RotateCcw, Save, Search, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { Card, CardHeader } from '@/components/ui/Card'
@@ -201,7 +201,10 @@ function EditableRow<T extends { id: number }>({
   const editableColumns = columns.filter((c) => c.editable)
   const rawValue = (c: ReferenceColumn<T>) => {
     const v = (row as Record<string, unknown>)[c.key]
-    return c.type === 'number' ? Number(v ?? 0) : String(v ?? '')
+    // Keep a genuinely empty number as '' (not 0) so the field can actually be
+    // cleared while editing instead of snapping back to a hardcoded zero.
+    if (c.type === 'number') return v === null || v === undefined || v === '' ? '' : Number(v)
+    return String(v ?? '')
   }
   const [draft, setDraft] = useState<Record<string, string | number>>(() =>
     Object.fromEntries(editableColumns.map((c) => [c.key, rawValue(c)])),
@@ -210,6 +213,17 @@ function EditableRow<T extends { id: number }>({
   const original = Object.fromEntries(editableColumns.map((c) => [c.key, rawValue(c)]))
   const editableKeys = editableColumns.map((c) => c.key)
   const dirty = editableKeys.some((k) => draft[k] !== original[k])
+
+  // `draft`'s lazy initializer above only ever runs once, at mount — without this,
+  // a successful save leaves the Save/Reset buttons showing forever (draft never
+  // catches up to the freshly-saved row). `row` only gets a new object reference
+  // when *this* row's data actually changes (the store replaces just the one
+  // updated row, not the whole array), so this only resyncs when it should —
+  // right after this row saves, not while editing some other row.
+  useEffect(() => {
+    setDraft(Object.fromEntries(editableColumns.map((c) => [c.key, rawValue(c)])))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [row])
 
   const handleSave = async () => {
     if (!onUpdate) return
@@ -244,8 +258,15 @@ function EditableRow<T extends { id: number }>({
           ) : c.editable ? (
             <input
               type={c.type === 'number' ? 'number' : 'text'}
-              value={draft[c.key] ?? (c.type === 'number' ? 0 : '')}
-              onChange={(e) => setDraft((prev) => ({ ...prev, [c.key]: c.type === 'number' ? Number(e.target.value) : e.target.value }))}
+              value={draft[c.key] ?? ''}
+              onChange={(e) =>
+                setDraft((prev) => ({
+                  ...prev,
+                  // '' stays '' while clearing the field — only coerce to a number once
+                  // something's actually typed, otherwise backspacing snaps back to 0.
+                  [c.key]: c.type === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value,
+                }))
+              }
               className={clsx(
                 'rounded-md border border-[var(--color-border)] px-2 py-1 text-sm outline-none focus:border-[var(--color-blue)]',
                 c.type === 'number' ? 'w-28' : 'w-full min-w-[140px]',

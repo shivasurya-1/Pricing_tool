@@ -61,8 +61,12 @@ export interface ShaftBandDto {
   material: string
   diameter: string
   length: string
-  sourcing: string
-  as_forge_rate_inr_per_kg: number | null
+  // Text, not number — given as a range (e.g. "175 - 225"), not a single rate.
+  as_forge_rate_inr_per_kg: string | null
+  // Two extra, diameter+length-specific rate overrides from the client sheet's own
+  // "Shaft with Full Machined Scope" table.
+  rate_dia_410_lg_3900_inr_per_kg: number | null
+  rate_dia_420_800_lg_2000_inr_per_kg: number | null
   order: number
   updated_at: string
 }

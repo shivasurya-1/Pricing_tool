@@ -9,13 +9,31 @@ const shaftColumns: ReferenceColumn<ShaftBandDto>[] = [
   { key: 'material', header: 'Material', type: 'text', required: true, editable: true },
   { key: 'diameter', header: 'Diameter', type: 'text', required: true, editable: true },
   { key: 'length', header: 'Length', type: 'text', required: true, editable: true },
-  { key: 'sourcing', header: 'Sourcing', type: 'select', options: ['Outsourced', 'Inhouse'], editable: true },
   {
     key: 'as_forge_rate_inr_per_kg',
     header: 'As-forge Rate (₹/kg)',
+    // Free text, not a number — given as a range (e.g. "175 - 225"), not a single rate.
+    type: 'text',
+    editable: true,
+    format: (r) => (r.as_forge_rate_inr_per_kg != null && r.as_forge_rate_inr_per_kg !== '' ? r.as_forge_rate_inr_per_kg : '—'),
+  },
+  // The client sheet's own "Shaft with Full Machined Scope" table has a second,
+  // special-case rate block keyed by one exact diameter+length combo each — not a
+  // general size band like the columns above, so it's two extra optional rate
+  // columns rather than folding into Diameter/Length. Leave blank for "?"/"Need Basis".
+  {
+    key: 'rate_dia_410_lg_3900_inr_per_kg',
+    header: 'Ø 410, lg 3900 (₹/kg)',
     type: 'number',
     editable: true,
-    format: (r) => (r.as_forge_rate_inr_per_kg != null ? formatCurrency(r.as_forge_rate_inr_per_kg) : '—'),
+    format: (r) => (r.rate_dia_410_lg_3900_inr_per_kg != null ? formatCurrency(r.rate_dia_410_lg_3900_inr_per_kg) : '—'),
+  },
+  {
+    key: 'rate_dia_420_800_lg_2000_inr_per_kg',
+    header: 'Ø 420-800, lg 2000 (₹/kg)',
+    type: 'number',
+    editable: true,
+    format: (r) => (r.rate_dia_420_800_lg_2000_inr_per_kg != null ? formatCurrency(r.rate_dia_420_800_lg_2000_inr_per_kg) : '—'),
   },
 ]
 
@@ -77,9 +95,16 @@ export function RawForgingPricesPage() {
               material: String(v.material ?? ''),
               diameter: String(v.diameter ?? ''),
               length: String(v.length ?? ''),
-              sourcing: String(v.sourcing ?? ''),
               as_forge_rate_inr_per_kg:
-                v.as_forge_rate_inr_per_kg !== undefined && v.as_forge_rate_inr_per_kg !== '' ? Number(v.as_forge_rate_inr_per_kg) : null,
+                v.as_forge_rate_inr_per_kg !== undefined && v.as_forge_rate_inr_per_kg !== '' ? String(v.as_forge_rate_inr_per_kg) : null,
+              rate_dia_410_lg_3900_inr_per_kg:
+                v.rate_dia_410_lg_3900_inr_per_kg !== undefined && v.rate_dia_410_lg_3900_inr_per_kg !== ''
+                  ? Number(v.rate_dia_410_lg_3900_inr_per_kg)
+                  : null,
+              rate_dia_420_800_lg_2000_inr_per_kg:
+                v.rate_dia_420_800_lg_2000_inr_per_kg !== undefined && v.rate_dia_420_800_lg_2000_inr_per_kg !== ''
+                  ? Number(v.rate_dia_420_800_lg_2000_inr_per_kg)
+                  : null,
               order: shaftBands.length,
             })
           }
