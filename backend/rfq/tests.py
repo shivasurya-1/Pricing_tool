@@ -600,3 +600,91 @@ class RFQItemFieldOverrideTests(TestCase):
         self.assertEqual(sales.patch(url, changed, format="json").status_code, 403)
         item.refresh_from_db()
         self.assertEqual(item.field_overrides["bearing1Designation"]["fieldType"], "select")
+
+
+class RFQMultiPulleyTests(TestCase):
+    """Adding, duplicating and removing pulleys (items) on a saved RFQ."""
+
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-mp", code="CUST-MP", name="Multi Pulley Co")
+        self.product = Product.objects.create(id="prod-mp", code="PROD-MP", name="Drum Drive Pulley", unit="Nos", base_price=500)
+        self.other = Product.objects.create(id="prod-mp2", code="PROD-MP2", name="Bend Pulley", unit="Nos", base_price=300)
+        self.sales = client_as("Sales")
+        self.operations = client_as("Operations")
+        response = self.sales.post(
+            "/api/rfq/rfqs/",
+            {
+                "customerId": self.customer.id, "actorName": "Test Sales",
+                "items": [{"productId": self.product.id, "quantity": 2, "targetPrice": 100, "technicalData": {"pulleyTag": "pulley_1", "qty": 2}}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.rfq_id = response.data["id"]
+        self.url = f"/api/rfq/rfqs/{self.rfq_id}/items/"
+
+    def test_create_with_several_pulleys(self):
+        response = self.sales.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "items": [{"productId": self.product.id}, {"productId": self.other.id}, {"productId": self.product.id}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual([it["itemNo"] for it in response.data["items"]], [1, 2, 3])
+
+    def test_add_pulley_to_saved_rfq(self):
+        response = self.sales.post(self.url, {"productId": self.other.id, "quantity": 3, "actorName": "Test Sales"}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        items = response.data["items"]
+        self.assertEqual(len(items), 2)
+        added = items[1]
+        self.assertEqual(added["itemNo"], 2)
+        self.assertEqual(added["productName"], "Bend Pulley")
+        self.assertEqual(added["targetPrice"], 300)  # defaults to the product's base price
+        self.assertEqual(added["technicalData"]["pulleyTag"], "pulley_2")
+        rfq = RFQ.objects.get(id=self.rfq_id)
+        self.assertEqual(rfq.value, 100 * 2 + 300 * 3)
+        self.assertIn("Added pulley #2", rfq.audit_events.order_by("-id").first().action)
+
+    def test_duplicate_pulley(self):
+        source_id = RFQ.objects.get(id=self.rfq_id).items.get().id
+        response = self.sales.post(f"{self.url}{source_id}/duplicate/", {}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        copy = response.data["items"][1]
+        self.assertEqual(copy["itemNo"], 2)
+        self.assertEqual(copy["technicalData"]["qty"], 2)
+        self.assertEqual(copy["technicalData"]["pulleyTag"], "pulley_2")
+        self.assertNotEqual(copy["id"], source_id)
+
+    def test_remove_pulley_renumbers_and_keeps_tags_unique(self):
+        self.sales.post(self.url, {"productId": self.other.id}, format="json")
+        response = self.sales.post(self.url, {"productId": self.other.id}, format="json")
+        first, second, third = response.data["items"]
+        response = self.sales.delete(f"{self.url}{second['id']}/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([it["itemNo"] for it in response.data["items"]], [1, 2])
+        # The next added pulley must not reuse the remaining "pulley_3".
+        response = self.sales.post(self.url, {"productId": self.other.id}, format="json")
+        tags = [it["technicalData"]["pulleyTag"] for it in response.data["items"]]
+        self.assertEqual(len(tags), len(set(tags)))
+
+    def test_cannot_remove_the_last_pulley(self):
+        item_id = RFQ.objects.get(id=self.rfq_id).items.get().id
+        response = self.sales.delete(f"{self.url}{item_id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(RFQ.objects.get(id=self.rfq_id).items.count(), 1)
+
+    def test_only_the_stage_owner_can_change_pulleys(self):
+        response = self.operations.post(self.url, {"productId": self.other.id}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(RFQ.objects.get(id=self.rfq_id).items.count(), 1)
+
+    def test_pulleys_locked_once_quotation_generated(self):
+        RFQ.objects.filter(id=self.rfq_id).update(stage="Quotation Generated")
+        response = self.sales.post(self.url, {"productId": self.other.id}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Quotation Generated", str(response.data))
+
+    def test_quantity_must_be_positive(self):
+        response = self.sales.post(self.url, {"productId": self.other.id, "quantity": 0}, format="json")
+        self.assertEqual(response.status_code, 400)

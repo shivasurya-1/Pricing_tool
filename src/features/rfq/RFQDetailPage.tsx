@@ -21,6 +21,7 @@ import { canRoleActOnStage, STAGE_ORDER } from '@/lib/workflow'
 import { actionRouteForRfq } from '@/lib/routes'
 import { summarizeCostBreakdown, marginStatus, marginStatusColor } from '@/lib/pricing'
 import { PulleySourcingSummary } from '@/components/pulley/PulleySourcingSummary'
+import { RfqItemsPanel } from './RfqItemsPanel'
 import { downloadFile, ApiError } from '@/lib/apiClient'
 import clsx from 'clsx'
 
@@ -186,36 +187,7 @@ export function RFQDetailPage() {
             </div>
           )}
 
-          {tab === 'Items' && (
-            <table className="w-full min-w-[800px] border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-[var(--color-border)] text-left text-xs font-semibold uppercase text-[var(--color-ink-faint)]">
-                  <th className="px-2 py-2">#</th>
-                  <th className="px-2 py-2">Product</th>
-                  <th className="px-2 py-2">Description</th>
-                  <th className="px-2 py-2">Qty</th>
-                  <th className="px-2 py-2">Unit</th>
-                  <th className="px-2 py-2">Specification</th>
-                  <th className="px-2 py-2 text-right">Target Price</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rfq.items.map((item) => (
-                  <tr key={item.id} className="border-b border-[var(--color-border)]">
-                    <td className="px-2 py-2.5 text-[var(--color-ink-faint)]">{item.itemNo}</td>
-                    <td className="px-2 py-2.5 font-medium">{item.productName}</td>
-                    <td className="px-2 py-2.5 text-[var(--color-ink-soft)]">{item.description}</td>
-                    <td className="px-2 py-2.5">
-                      {item.quantity} {item.unit}
-                    </td>
-                    <td className="px-2 py-2.5">{item.unit}</td>
-                    <td className="px-2 py-2.5 text-[var(--color-ink-soft)]">{item.specification}</td>
-                    <td className="px-2 py-2.5 text-right">{formatCurrency(item.targetPrice, rfq.currency)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {tab === 'Items' && <RfqItemsPanel rfq={rfq} />}
 
           {tab === 'Technical' && (
             <div className="space-y-5">

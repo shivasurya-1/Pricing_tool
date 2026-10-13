@@ -39,6 +39,14 @@ function Field({ label, children, required }: { label: string; children: ReactNo
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-2 text-sm outline-none focus:border-[var(--color-blue)]'
 
+/** First free "pulley_N" among the items — same rule as the backend's next_pulley_tag. */
+function nextPulleyTag(items: { technicalData?: Record<string, unknown> }[]): string {
+  const used = new Set(items.map((it) => String(it.technicalData?.pulleyTag ?? '')))
+  let n = items.length + 1
+  while (used.has(`pulley_${n}`)) n++
+  return `pulley_${n}`
+}
+
 export function RFQCreatePage() {
   const navigate = useNavigate()
   const customers = useDataStore((s) => s.customers)
@@ -130,7 +138,7 @@ export function RFQCreatePage() {
       requiredDelivery: requiredDeliveryDate || new Date().toISOString().slice(0, 10),
       targetPrice: p.basePrice,
       remarks: '',
-      technicalData: applyFixedValues({ pulleyTag: `pulley_${items.length + 1}`, qty: 1 }, techDataSections),
+      technicalData: applyFixedValues({ pulleyTag: nextPulleyTag(items), qty: 1 }, techDataSections),
     }
     setItems((prev) => [...prev, newItem])
     openTechDataDrawer(items.length)
@@ -139,7 +147,12 @@ export function RFQCreatePage() {
   }
 
   const removeItem = (index: number) => setItems((prev) => prev.filter((_, i) => i !== index))
-  const duplicateItem = (index: number) => setItems((prev) => [...prev.slice(0, index + 1), { ...prev[index] }, ...prev.slice(index + 1)])
+  // The copy gets its own pulley tag — two pulleys on one RFQ never share a tag.
+  const duplicateItem = (index: number) =>
+    setItems((prev) => {
+      const copy = { ...prev[index], technicalData: { ...prev[index].technicalData, pulleyTag: nextPulleyTag(prev) } }
+      return [...prev.slice(0, index + 1), copy, ...prev.slice(index + 1)]
+    })
 
   const updateTechDataField = (index: number, fieldKey: string, value: string | number) => {
     setItems((prev) =>

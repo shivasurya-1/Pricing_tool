@@ -7,6 +7,7 @@ import type {
   InHouseCapability,
   OperationsReview,
   Product,
+  PulleyTechDataValues,
   Quotation,
   QuotationStatus,
   RFQ,
@@ -28,6 +29,15 @@ import { useUiStore } from '@/store/uiStore'
  * response. `users`, `inHouseCapabilities` have no backend model (out of scope for this
  * migration) and stay as static prototype data, same as before.
  */
+
+/** One pulley added to a saved RFQ (POST /rfq/rfqs/{id}/items/). The backend fills
+ * product name/unit/base price and the next free pulleyTag when they're omitted. */
+export interface NewRfqItemInput {
+  productId: string
+  quantity?: number
+  targetPrice?: number
+  technicalData?: PulleyTechDataValues
+}
 
 export interface NewRFQInput {
   customerId: string
@@ -85,6 +95,12 @@ interface DataState {
   approveOperations: (id: string, actorName: string) => Promise<void>
 
   updateItemTechData: (id: string, itemId: string, fieldKey: string, value: string | number) => Promise<void>
+  /** Saves a pulley's whole Technical Data Sheet at once (already computed client-side). */
+  saveItemTechData: (id: string, itemId: string, technicalData: PulleyTechDataValues) => Promise<void>
+  /** Pulleys on a saved RFQ — allowed until a quotation is generated. Each resolves to the updated RFQ. */
+  addRfqItem: (id: string, input: NewRfqItemInput, actorName: string) => Promise<RFQ>
+  duplicateRfqItem: (id: string, itemId: string, actorName: string) => Promise<RFQ>
+  removeRfqItem: (id: string, itemId: string, actorName: string) => Promise<RFQ>
   confirmItemSourcing: (id: string, itemId: string, confirmed: boolean) => Promise<void>
   assignProcessVendor: (id: string, itemId: string, processKey: string, vendorId: string, vendorName: string) => Promise<void>
   saveSourcingComment: (id: string, comment: string) => Promise<void>
@@ -221,6 +237,33 @@ export const useDataStore = create<DataState>()((set, get) => ({
       const technicalData = applyFieldChange(current?.technicalData ?? {}, fieldKey, value, autoOverrideKeys)
       const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-tech-data/`, { itemId, technicalData })
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  saveItemTechData: (id, itemId, technicalData) =>
+    withErrorToast(async () => {
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-tech-data/`, { itemId, technicalData })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  addRfqItem: (id, input, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/items/`, { ...input, actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+      return rfq
+    }),
+
+  duplicateRfqItem: (id, itemId, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/items/${itemId}/duplicate/`, { actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+      return rfq
+    }),
+
+  removeRfqItem: (id, itemId, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.delete<RFQ>(`/rfq/rfqs/${id}/items/${itemId}/?actorName=${encodeURIComponent(actorName)}`)
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+      return rfq
     }),
 
   confirmItemSourcing: (id, itemId, confirmed) =>

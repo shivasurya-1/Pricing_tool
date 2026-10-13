@@ -72,6 +72,37 @@ def append_notification(*, message, kind, target_role=None, rfq=None, quotation=
     return notif
 
 
+# Stages in which pulleys may still be added/duplicated/removed on a saved RFQ — every
+# stage before a quotation exists (see RFQViewSet._require_items_editable).
+ITEM_EDITABLE_STAGES = ("Draft", "Operations Review", "Sourcing", "Controlling", "Approval Pending", "Approved")
+
+
+def next_item_no(rfq: RFQ) -> int:
+    last = rfq.items.order_by("-item_no").values_list("item_no", flat=True).first()
+    return (last or 0) + 1
+
+
+def next_pulley_tag(rfq: RFQ) -> str:
+    """First free "pulley_N" among this RFQ's pulleys (tags stay unique after a removal)."""
+    used = {str((it.technical_data or {}).get("pulleyTag", "")) for it in rfq.items.all()}
+    n = rfq.items.count() + 1
+    while f"pulley_{n}" in used:
+        n += 1
+    return f"pulley_{n}"
+
+
+def recompute_rfq_value(rfq: RFQ) -> None:
+    """RFQ value = sum of Controlling's final prices once a cost breakdown exists,
+    otherwise sum of target price x quantity (the same two sources create() and
+    save_cost_breakdown() use). Caller saves (touch)."""
+    items = list(rfq.items.select_related("cost_breakdown"))
+    lines = [getattr(it, "cost_breakdown", None) for it in items]
+    if any(line is not None for line in lines):
+        rfq.value = sum(float(line.final_price or 0) for line in lines if line is not None)
+    else:
+        rfq.value = sum(float(it.target_price or 0) * float(it.quantity or 0) for it in items)
+
+
 def touch(rfq: RFQ) -> None:
     """Bumps updated_at and persists the RFQ. Callers mutate other fields (stage,
     status, value, ...) on the in-memory instance first, so this must be a full
@@ -440,6 +471,112 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         item.save(update_fields=["process_vendors"])
         touch(rfq)
         return Response(self.get_serializer(rfq).data)
+
+    # ---- pulleys (items) on a saved RFQ ---------------------------------------------
+    def _require_items_editable(self, request, rfq: RFQ) -> str:
+        """Pulleys can be added/duplicated/removed until a quotation is generated (after
+        that the quotation would no longer match its RFQ), by whoever owns the current
+        stage — same role rule as editing a pulley's technical data. Returns actorName."""
+        actor_name, role = self._actor(request)
+        # A DELETE carries no body, so its actorName comes as a query parameter.
+        actor_name = actor_name or request.query_params.get("actorName", "")
+        if rfq.stage not in ITEM_EDITABLE_STAGES:
+            raise ValidationError({"detail": f"Pulleys can't be changed once the RFQ is at '{rfq.stage}'."})
+        try:
+            require_role_can_act(role, rfq.stage)
+        except WorkflowError as exc:
+            self._handle_workflow_error(exc)
+        return actor_name
+
+    def _fresh(self, rfq: RFQ):
+        """The RFQ re-read after its pulleys changed — get_object()'s prefetched items
+        would otherwise still list the pulleys as they were at the start of the request."""
+        return self.get_serializer(self.get_queryset().get(pk=rfq.pk)).data
+
+    @action(detail=True, methods=["post"], url_path="items")
+    def add_item(self, request, pk=None):
+        """Body: {productId, quantity?, targetPrice?, unit?, description?, specification?,
+        requiredDelivery?, remarks?, technicalData?, fieldOverrides?} — adds one pulley to
+        a saved RFQ as the next item number. A missing pulleyTag gets the next free
+        "pulley_N"."""
+        rfq = self.get_object()
+        actor_name = self._require_items_editable(request, rfq)
+        data = request.data
+        product = get_object_or_404(Product, pk=data.get("productId"))
+        quantity = require_positive(data.get("quantity", 1), "quantity")
+        target_price = require_non_negative(data.get("targetPrice", product.base_price), "targetPrice")
+        field_overrides = validate_field_overrides(data.get("fieldOverrides"), request.user, "fieldOverrides")
+
+        technical_data = dict(data.get("technicalData") or {})
+        if not str(technical_data.get("pulleyTag") or "").strip():
+            technical_data["pulleyTag"] = next_pulley_tag(rfq)
+        technical_data.setdefault("qty", quantity)
+
+        with transaction.atomic():
+            item = RFQItem.objects.create(
+                rfq=rfq, item_no=next_item_no(rfq), product=product, product_code=product.code,
+                product_name=data.get("productName") or product.name, description=data.get("description", product.description),
+                quantity=quantity, unit=data.get("unit", product.unit), specification=data.get("specification", ""),
+                required_delivery=data.get("requiredDelivery") or rfq.required_delivery_date, target_price=target_price,
+                remarks=data.get("remarks", ""), technical_data=technical_data, field_overrides=field_overrides,
+            )
+            recompute_rfq_value(rfq)
+            touch(rfq)
+            append_audit(
+                rfq, user=actor_name, role=request.user.role, module="RFQ", record=rfq.rfq_number,
+                action_text=f"Added pulley #{item.item_no} — {item.product_name} ({technical_data['pulleyTag']})",
+            )
+        return Response(self._fresh(rfq), status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path=r"items/(?P<item_id>[^/]+)/duplicate")
+    def duplicate_item(self, request, pk=None, item_id=None):
+        """Copies a pulley — product, quantity, technical data, field overrides and process
+        vendors — as the next item number with the next free pulley tag. Sourcing
+        confirmation and the Controlling cost breakdown aren't copied: they belong to
+        the review of that specific item."""
+        rfq = self.get_object()
+        actor_name = self._require_items_editable(request, rfq)
+        source = get_object_or_404(RFQItem, pk=item_id, rfq=rfq)
+        technical_data = dict(source.technical_data or {})
+        technical_data["pulleyTag"] = next_pulley_tag(rfq)
+
+        with transaction.atomic():
+            item = RFQItem.objects.create(
+                rfq=rfq, item_no=next_item_no(rfq), product=source.product, product_code=source.product_code,
+                product_name=source.product_name, description=source.description, quantity=source.quantity, unit=source.unit,
+                specification=source.specification, required_delivery=source.required_delivery, target_price=source.target_price,
+                remarks=source.remarks, technical_data=technical_data, field_overrides=source.field_overrides,
+                process_vendors=source.process_vendors,
+            )
+            recompute_rfq_value(rfq)
+            touch(rfq)
+            append_audit(
+                rfq, user=actor_name, role=request.user.role, module="RFQ", record=rfq.rfq_number,
+                action_text=f"Duplicated pulley #{source.item_no} as #{item.item_no} ({technical_data['pulleyTag']})",
+            )
+        return Response(self._fresh(rfq), status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["delete"], url_path=r"items/(?P<item_id>[^/]+)")
+    def remove_item(self, request, pk=None, item_id=None):
+        """Removes a pulley (and its cost breakdown line) and renumbers the rest 1..n.
+        An RFQ always keeps at least one pulley."""
+        rfq = self.get_object()
+        actor_name = self._require_items_editable(request, rfq)
+        item = get_object_or_404(RFQItem, pk=item_id, rfq=rfq)
+        if rfq.items.count() <= 1:
+            raise ValidationError({"detail": "An RFQ needs at least one pulley — add another before removing this one."})
+
+        with transaction.atomic():
+            label = f"#{item.item_no} — {item.product_name} ({(item.technical_data or {}).get('pulleyTag', '')})"
+            item.delete()
+            for n, remaining in enumerate(rfq.items.order_by("item_no"), start=1):
+                if remaining.item_no != n:
+                    remaining.item_no = n
+                    remaining.save(update_fields=["item_no"])
+            recompute_rfq_value(rfq)
+            touch(rfq)
+            append_audit(rfq, user=actor_name, role=request.user.role, module="RFQ", record=rfq.rfq_number, action_text=f"Removed pulley {label}")
+        return Response(self._fresh(rfq))
 
     # ---- attachments --------------------------------------------------------------
     @action(detail=True, methods=["post"], url_path="attachments")
