@@ -13,6 +13,7 @@ sides — see the "Safety" section of the backend build plan.
 """
 
 import math
+import re
 
 from simpleeval import EvalWithCompoundTypes, InvalidExpression, NameNotDefined, safe_power
 
@@ -44,6 +45,32 @@ ALLOWED_NAMES = {
 
 class FormulaError(Exception):
     pass
+
+
+# A variable name: not preceded by a word char or '.', so the "e3" in "1e3" or the
+# "5" in "1.5" never match. '.' is allowed inside a name for legacy keys like "sectionA.a1".
+_IDENTIFIER_RE = re.compile(r"(?<![\w.])[A-Za-z_][\w.]*")
+
+
+def copy_source(expression: str) -> str | None:
+    """If `expression` is nothing but a single variable name (e.g. "bearing1Designation"),
+    return that name: such a "copy" formula takes the source field's value as-is —
+    text, number or selected option — instead of evaluating arithmetic. Otherwise None."""
+    expr = (expression or "").strip()
+    if _IDENTIFIER_RE.fullmatch(expr) and expr not in ALLOWED_FUNCTIONS and expr not in ALLOWED_NAMES:
+        return expr
+    return None
+
+
+def extract_variables(expression: str) -> list[str]:
+    """Variable names `expression` references, in first-seen order — every identifier
+    except whitelisted function names and constants."""
+    names: list[str] = []
+    for name in _IDENTIFIER_RE.findall(expression or ""):
+        name = name.rstrip(".")
+        if name and name not in ALLOWED_FUNCTIONS and name not in ALLOWED_NAMES and name not in names:
+            names.append(name)
+    return names
 
 
 MAX_MISSING_NAME_RETRIES = 25

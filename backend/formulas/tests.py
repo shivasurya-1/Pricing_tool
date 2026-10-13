@@ -252,8 +252,170 @@ class TechDataFieldDefinitionApiTests(TestCase):
         }
         response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
         self.assertEqual(response.status_code, 400)
-        self.assertIn("input_variables", response.data)
+        self.assertIn("expression", response.data)
         self.assertFalse(TechDataFieldDefinition.objects.filter(key="badField").exists())
+
+    def test_input_variables_are_derived_from_the_expression(self):
+        TechDataFieldDefinition.objects.create(key="hubWidth", label="Hub Width", section="2. PULLEY BODY DIMENSIONS", field_type="number")
+        payload = {
+            "key": "hubThing", "label": "Hub Thing", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "number",
+            "is_auto": True, "expression": "shellOD * hubWidth + round(shellOD)", "input_variables": ["shellOD"],
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["input_variables"], ["shellOD", "hubWidth"])
+
+    def test_text_auto_field_can_only_copy(self):
+        payload = {
+            "key": "calcField", "label": "Calc", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "text",
+            "is_auto": True, "expression": "shellOD * 2",
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("is_auto", response.data)
+
+    def test_auto_field_can_copy_a_text_designation(self):
+        TechDataFieldDefinition.objects.create(
+            key="bearing1Designation", label="Bearing 1", section="2. PULLEY BODY DIMENSIONS",
+            field_type="select", options=["22218 EK", "22220 EK"],
+        )
+        for field_type in ("text", "select", "number"):
+            payload = {
+                "key": f"copy{field_type}", "label": "Copy", "section": "2. PULLEY BODY DIMENSIONS", "field_type": field_type,
+                "is_auto": True, "expression": " bearing1Designation ",
+            }
+            response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertEqual(response.data["copy_from"], "bearing1Designation")
+            self.assertEqual(response.data["input_variables"], ["bearing1Designation"])
+
+    def test_cost_rate_keys_are_valid_formula_variables(self):
+        from reference.models import GlobalParameter, MachiningLabourRate
+
+        GlobalParameter.objects.create(key="gstRate", parameter="GST Rate", value=0.18, unit="%")
+        MachiningLabourRate.objects.create(key="latheTurning", operation="Lathe turning", inr_per_hour=711.27)
+
+        payload = {
+            "key": "withGst", "label": "With GST", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "number",
+            "is_auto": True, "expression": "shellOD * (1 + gstRate) + latheTurning",
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["input_variables"], ["shellOD", "gstRate", "latheTurning"])
+
+        response = self.admin_client.post(
+            "/api/formulas/",
+            {"key": "priceWithGst", "label": "Price incl. GST", "section": "2. PULLEY BODY DIMENSIONS",
+             "expression": "shellOD * (1 + gstRate)", "input_variables": ["shellOD", "gstRate"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_variables_endpoint_lists_everything_insertable(self):
+        from reference.models import GlobalParameter, LogisticsPackingRate
+
+        GlobalParameter.objects.create(key="gstRate", parameter="GST Rate", value=0.18, unit="%")
+        LogisticsPackingRate.objects.create(key="packingWoodCratePer100kg", item="Wood crate", rate=650, unit="INR/100kg")
+
+        response = self.sales_client.get("/api/formulas/variables/")
+        self.assertEqual(response.status_code, 200)
+        cost_rates = {r["key"]: r for r in response.data["cost_rates"]}
+        self.assertEqual(cost_rates["gstRate"]["table"], "global_parameters")
+        self.assertEqual(cost_rates["gstRate"]["value"], 0.18)
+        self.assertEqual(cost_rates["packingWoodCratePer100kg"]["table_label"], "Logistics & Packing Rates")
+        self.assertIn("shellOD", {f["key"] for f in response.data["fields"]})
+        self.assertIn("c1RateInrPerHour", response.data["labour_rate_lookups"])
+        self.assertIn("bearing1Price", {p["key"] for p in response.data["catalog_prices"]})
+        # An Auto field's formula is listed once, as a field — not again under formulas.
+        self.assertNotIn("shellPlateWeight", {f["key"] for f in response.data["formulas"]})
+
+    def _bearing_catalog_field(self):
+        from reference.models import BearingCatalogEntry
+
+        BearingCatalogEntry.objects.all().delete()
+        BearingCatalogEntry.objects.create(designation="22218 EK", bore_mm=90, price_inr=12000, price_eur=110, delivery_days=10)
+        BearingCatalogEntry.objects.create(designation="21316 EK", bore_mm=80, price_inr=9000, price_eur=85, delivery_days=10)
+        return TechDataFieldDefinition.objects.create(
+            key="bearing1Designation", label="Bearing 1 Designation", section="2. PULLEY BODY DIMENSIONS",
+            field_type="select", options=["22218 EK"], options_source="bearings::designation::::22218%20EK",
+        )
+
+    def test_catalog_linked_select_lists_the_catalog_live(self):
+        from reference.models import BearingCatalogEntry
+
+        self._bearing_catalog_field()
+        BearingCatalogEntry.objects.create(designation="NEW 999", bore_mm=200, price_inr=50000, price_eur=450, delivery_days=30)
+
+        response = self.sales_client.get("/api/formulas/tech-data-fields/bearing1Designation/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["options"], ["21316 EK", "22218 EK", "NEW 999"])
+        self.assertEqual(response.data["catalog"], {"table": "bearings", "table_label": "Bearings", "price_field": "price_inr"})
+        self.assertEqual(response.data["option_prices"]["NEW 999"], 50000)
+
+        plain = self.sales_client.get(f"/api/formulas/tech-data-fields/{self.core_field.key}/")
+        self.assertIsNone(plain.data["catalog"])
+
+    def test_dropdown_options_endpoint(self):
+        self._bearing_catalog_field()
+        response = self.sales_client.get("/api/formulas/tech-data-fields/dropdown-options/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.data), ["bearing1Designation"])
+        entry = response.data["bearing1Designation"]
+        self.assertEqual(entry["table"], "bearings")
+        self.assertIn({"label": "21316 EK", "price": 9000}, entry["options"])
+
+    def test_fixed_value_is_checked_against_the_live_catalog(self):
+        self._bearing_catalog_field()
+        url = "/api/formulas/tech-data-fields/bearing1Designation/"
+        # In the catalog but not in the stale saved copy of options -> accepted.
+        self.assertEqual(self.admin_client.patch(url, {"fixed_value": "21316 EK"}, format="json").status_code, 200)
+        response = self.admin_client.patch(url, {"fixed_value": "NOT A BEARING"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("fixed_value", response.data)
+
+    def test_calculated_auto_field_has_no_copy_from(self):
+        response = self.admin_client.get(f"/api/formulas/tech-data-fields/{self.auto_field.key}/")
+        self.assertIsNone(response.data["copy_from"])
+
+    def test_auto_field_cannot_reference_a_text_designation(self):
+        TechDataFieldDefinition.objects.create(
+            key="bearing1Designation", label="Bearing 1", section="2. PULLEY BODY DIMENSIONS",
+            field_type="select", options=["22218 EK", "22220 EK"],
+        )
+        payload = {
+            "key": "total", "label": "Total", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "number",
+            "is_auto": True, "expression": "2 * bearing1Designation",
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("bearing1Price", str(response.data["expression"]))
+
+    def test_auto_field_can_reference_catalog_prices(self):
+        payload = {
+            "key": "total", "label": "Total", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "number",
+            "is_auto": True, "expression": "2 * (bearing1Price + bearing2Price + sleevePrice + housingPrice)",
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_auto_field_cannot_reference_itself(self):
+        response = self.admin_client.patch(
+            f"/api/formulas/tech-data-fields/{self.auto_field.key}/",
+            {"is_auto": True, "expression": "shellPlateWeight * 2"}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("expression", response.data)
+
+    def test_switching_text_field_to_auto_is_rejected(self):
+        TechDataFieldDefinition.objects.create(key="note", label="Note", section="2. PULLEY BODY DIMENSIONS", field_type="text")
+        response = self.admin_client.patch("/api/formulas/tech-data-fields/note/", {"is_auto": True, "expression": "shellOD + 1"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("is_auto", response.data)
+        # ...but switching type to Number in the same save works.
+        response = self.admin_client.patch(
+            "/api/formulas/tech-data-fields/note/", {"is_auto": True, "expression": "shellOD + 1", "field_type": "number"}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
 
     def test_create_auto_field_rejects_invalid_expression(self):
         payload = {
@@ -332,6 +494,79 @@ class TechDataFieldDefinitionApiTests(TestCase):
         self.core_field.refresh_from_db()
         self.assertEqual(self.core_field.label, "New Label")
         self.assertEqual(self.core_field.order, 5)
+
+    def _custom_field(self, **kwargs):
+        return TechDataFieldDefinition.objects.create(
+            key="customField", label="Custom", section="2. PULLEY BODY DIMENSIONS", field_type="number", **kwargs
+        )
+
+    def test_manual_field_can_be_switched_to_auto(self):
+        self._custom_field(fixed_value="3")
+        response = self.admin_client.patch(
+            "/api/formulas/tech-data-fields/customField/",
+            {"is_auto": True, "expression": "shellOD * 3", "input_variables": ["shellOD"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["is_auto"])
+        self.assertEqual(response.data["expression"], "shellOD * 3")
+        self.assertEqual(response.data["fixed_value"], "")
+        self.assertTrue(FormulaDefinition.objects.filter(key="customField").exists())
+
+    def test_switching_to_auto_requires_a_valid_expression(self):
+        self._custom_field()
+        url = "/api/formulas/tech-data-fields/customField/"
+        self.assertEqual(self.admin_client.patch(url, {"is_auto": True}, format="json").status_code, 400)
+        response = self.admin_client.patch(url, {"is_auto": True, "expression": "shellOD +", "input_variables": ["shellOD"]}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(FormulaDefinition.objects.filter(key="customField").exists())
+
+    def test_auto_field_can_be_switched_to_manual(self):
+        response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.auto_field.key}/", {"is_auto": False}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.data["is_auto"])
+        self.assertFalse(FormulaDefinition.objects.filter(key="shellPlateWeight").exists())
+
+    def test_auto_field_expression_edit_is_versioned(self):
+        response = self.admin_client.patch(
+            f"/api/formulas/tech-data-fields/{self.auto_field.key}/",
+            {"is_auto": True, "expression": "shellOD * 4", "input_variables": ["shellOD"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["expression"], "shellOD * 4")
+        self.assertEqual(self.auto_field.formula.versions.count(), 1)
+
+    def test_key_rename_cascades_to_formulas(self):
+        self._custom_field()
+        FormulaDefinition.objects.create(
+            key="usesCustom", label="Uses Custom", section=TECH_DATA_AUTO_SECTION_LABEL,
+            expression="customField + 1", input_variables=["customField"],
+        )
+        response = self.admin_client.patch("/api/formulas/tech-data-fields/customField/", {"key": "renamedField"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["key"], "renamedField")
+        other = FormulaDefinition.objects.get(key="usesCustom")
+        self.assertEqual(other.expression, "renamedField + 1")
+        self.assertEqual(other.input_variables, ["renamedField"])
+
+    def test_auto_field_key_rename_renames_its_formula(self):
+        self._custom_field(
+            formula=FormulaDefinition.objects.create(
+                key="customField", label="Custom", section=TECH_DATA_AUTO_SECTION_LABEL,
+                expression="shellOD * 2", input_variables=["shellOD"],
+            )
+        )
+        response = self.admin_client.patch("/api/formulas/tech-data-fields/customField/", {"key": "renamedField"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["formula_key"], "renamedField")
+
+    def test_core_field_key_and_duplicate_keys_are_rejected(self):
+        response = self.admin_client.patch(f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"key": "other"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self._custom_field()
+        response = self.admin_client.patch("/api/formulas/tech-data-fields/customField/", {"key": "shellOD"}, format="json")
+        self.assertEqual(response.status_code, 400)
 
     def test_core_field_cannot_be_deleted_by_non_admin(self):
         self.controlling = User.objects.create_user("controlling3", password="controllingpass123", role="Controlling")

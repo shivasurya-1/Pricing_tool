@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from .catalog_options import catalog_link_info, catalog_options
+from .evaluator import copy_source
 from .models import TECH_DATA_AUTO_SECTION_LABEL, FormulaDefinition, FormulaVersion, Section, SectionTab, TechDataFieldDefinition
 
 
@@ -116,27 +118,63 @@ class TechDataFieldDefinitionSerializer(SheetMixin, serializers.ModelSerializer)
     expression = serializers.CharField(source="formula.expression", read_only=True, default=None)
     input_variables = serializers.JSONField(source="formula.input_variables", read_only=True, default=list)
     output_unit = serializers.CharField(source="formula.output_unit", read_only=True, default="")
+    # Set when an Auto field's formula is just one key: the client copies that field's
+    # value as-is (text, number or selected option) instead of evaluating arithmetic.
+    copy_from = serializers.SerializerMethodField()
 
     class Meta:
         model = TechDataFieldDefinition
         fields = [
             "id", "key", "label", "section", "sheet", "unit", "field_type", "options", "options_source", "fixed_value",
-            "is_auto", "is_catalog_derived", "is_read_only", "formula_key", "expression",
+            "is_auto", "is_catalog_derived", "is_read_only", "formula_key", "expression", "copy_from",
             "input_variables", "output_unit", "order", "is_core", "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "key", "is_auto", "is_catalog_derived", "is_read_only", "formula_key",
+            "id", "is_auto", "is_catalog_derived", "is_read_only", "formula_key",
             "expression", "input_variables", "output_unit", "is_core", "created_at", "updated_at",
         ]
-        # `field_type` is also effectively immutable (enforced in the view rather than
-        # here, since a core field's own PATCH still needs to reject it while a create
-        # payload needs to set it) — see TechDataFieldDefinitionViewSet.
+        # `key` is writable on PATCH (renaming is cascaded to formulas, and blocked for
+        # core fields, in TechDataFieldDefinitionViewSet.perform_update). `field_type`
+        # rules and the Manual/Auto switch (see TechDataFieldModeSerializer) are also
+        # enforced in the view.
+
+    def get_copy_from(self, obj) -> str | None:
+        return copy_source(obj.formula.expression) if obj.formula_id else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # A select linked to a reference catalog lists that catalog's rows live (see
+        # catalog_options.py) instead of the copy saved when it was linked; `catalog`
+        # says which table, and option_prices maps each option to its catalog price.
+        options = None
+        if instance.field_type == "select":
+            options = catalog_options(instance.options_source, cache=self.context.setdefault("_catalog_options", {}))
+        if options is None:
+            data["catalog"] = None
+            data["option_prices"] = None
+        else:
+            data["options"] = [o["label"] for o in options]
+            data["catalog"] = catalog_link_info(instance.options_source)
+            data["option_prices"] = {o["label"]: o["price"] for o in options}
+        return data
 
     def validate_section(self, value):
         # An edit that leaves a legacy (unregistered) section unchanged stays allowed.
         if self.instance is not None and value.strip() == self.instance.section:
             return self.instance.section
         return validate_registered_section(value)
+
+
+class TechDataFieldModeSerializer(serializers.Serializer):
+    """The Manual/Auto part of a tech-data field PATCH. Kept separate from
+    TechDataFieldDefinitionSerializer because `is_auto` is a model property (derived
+    from `formula`) and `expression` etc. live on the linked FormulaDefinition — the
+    view applies these itself rather than letting ModelSerializer.update() setattr them."""
+
+    is_auto = serializers.BooleanField(required=False)
+    expression = serializers.CharField(required=False, allow_blank=True)
+    input_variables = serializers.ListField(child=serializers.CharField(), required=False)
+    output_unit = serializers.CharField(max_length=20, required=False, allow_blank=True)
 
 
 class TechDataFieldCreateSerializer(serializers.Serializer):
