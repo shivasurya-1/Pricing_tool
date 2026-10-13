@@ -33,7 +33,8 @@ export function PulleyTechDataForm({
           </p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {section.fields.map((field) => {
-              const isOverridden = !!fieldOverrides?.[field.key]
+              const isTypeOverridden = !!fieldOverrides?.[field.key]
+              const isAutoOverridden = !!fieldOverrides?.[field.key]?.autoOverridden
               const isEditing = editingKey === field.key
               return (
                 <div key={field.key} className={clsx(isEditing && 'sm:col-span-2')}>
@@ -42,18 +43,20 @@ export function PulleyTechDataForm({
                       {field.label}
                       {field.unit && <span className="ml-1 text-[var(--color-ink-faint)]">({field.unit})</span>}
                       {field.auto && (
-                        <Badge tone="blue" className="ml-1.5">
-                          Auto
-                        </Badge>
-                      )}
-                      {!field.auto && field.fixedValue !== undefined && (
-                        <span title="Set on the Formulas page">
-                          <Badge tone="blue" className="ml-1.5">
-                            Fixed
+                        <span title={isAutoOverridden ? 'Manually overridden for this RFQ — recomputed value is no longer applied' : 'Computed automatically'}>
+                          <Badge tone={isAutoOverridden ? 'amber' : 'blue'} className="ml-1.5">
+                            {isAutoOverridden ? 'Auto · overridden' : 'Auto'}
                           </Badge>
                         </span>
                       )}
-                      {isOverridden && (
+                      {!field.auto && field.fixedValue !== undefined && (
+                        <span title={values[field.key] !== undefined && values[field.key] !== '' && String(values[field.key]) !== field.fixedValue ? 'Overridden for this RFQ — default is set on the Formulas page' : 'Default set on the Formulas page — editable for this RFQ'}>
+                          <Badge tone="blue" className="ml-1.5">
+                            {values[field.key] !== undefined && values[field.key] !== '' && String(values[field.key]) !== field.fixedValue ? 'Fixed · overridden' : 'Fixed'}
+                          </Badge>
+                        </span>
+                      )}
+                      {!field.auto && isTypeOverridden && (
                         <span title="Type changed for this RFQ only">
                           <Badge tone="amber" className="ml-1.5">
                             {field.type} · this RFQ
@@ -70,11 +73,24 @@ export function PulleyTechDataForm({
                         Change type
                       </button>
                     )}
+                    {onFieldOverrideChange && field.auto && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          isAutoOverridden
+                            ? onFieldOverrideChange(field.key, null)
+                            : onFieldOverrideChange(field.key, { fieldType: field.type, options: field.options ?? [], autoOverridden: true })
+                        }
+                        className="shrink-0 text-xs text-[var(--color-blue)] hover:underline"
+                      >
+                        {isAutoOverridden ? 'Reset to computed' : 'Override for this RFQ'}
+                      </button>
+                    )}
                   </div>
                   {isEditing && onFieldOverrideChange ? (
                     <FieldTypeEditor
                       field={field}
-                      isOverridden={isOverridden}
+                      isOverridden={isTypeOverridden}
                       onCancel={() => setEditingKey(null)}
                       onApply={(override) => {
                         onFieldOverrideChange(field.key, override)
@@ -82,7 +98,12 @@ export function PulleyTechDataForm({
                       }}
                     />
                   ) : (
-                    <FieldInput field={field} value={values[field.key]} onChange={(v) => onChange(field.key, v)} />
+                    <FieldInput
+                      field={field}
+                      value={values[field.key]}
+                      onChange={(v) => onChange(field.key, v)}
+                      autoOverridden={isAutoOverridden}
+                    />
                   )}
                 </div>
               )
@@ -166,13 +187,22 @@ function FieldInput({
   field,
   value,
   onChange,
+  autoOverridden,
 }: {
   field: TechDataField
   value: string | number | undefined
   onChange: (value: string | number) => void
+  /** This Auto field has been manually overridden for this RFQ item (see
+   * TechDataFieldOverride.autoOverridden) — recomputation is suspended, so it's
+   * editable like a Manual field instead of the usual computed read-only display. */
+  autoOverridden?: boolean
 }) {
-  if (field.auto || field.fixedValue !== undefined) {
-    const shown = field.auto ? value : (value ?? field.fixedValue)
+  // An Auto field is normally always computed, never editable — unless overridden
+  // for this RFQ. A Fixed field is only a *default*: it pre-fills when this item has
+  // no value of its own yet, but stays editable so one pulley can differ from the
+  // default without touching Formulas.
+  if (field.auto && !autoOverridden) {
+    const shown = value
     return (
       <input
         value={shown === undefined || shown === '' ? '—' : String(shown)}
@@ -182,32 +212,74 @@ function FieldInput({
     )
   }
 
+  const hasFixedDefault = field.fixedValue !== undefined
+  const effectiveValue = hasFixedDefault && (value === undefined || value === '') ? field.fixedValue : value
+  const isOverridingFixed = hasFixedDefault && value !== undefined && value !== '' && String(value) !== field.fixedValue
+
   if (field.type === 'select') {
     const options = field.options ?? getOptionsForField(field.key)
     return (
-      <select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} className={inputClass}>
-        <option value="">Select...</option>
-        {options.map((opt) => (
-          <option key={opt} value={opt}>
-            {opt}
-          </option>
-        ))}
-      </select>
+      <div className="flex gap-1.5">
+        <select value={String(effectiveValue ?? '')} onChange={(e) => onChange(e.target.value)} className={inputClass}>
+          <option value="">Select...</option>
+          {options.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+        {isOverridingFixed && (
+          <button
+            type="button"
+            onClick={() => onChange(field.fixedValue ?? '')}
+            title="Reset to the default set on the Formulas page"
+            className="shrink-0 rounded-md border border-[var(--color-border)] px-2 text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-blue)]"
+          >
+            Reset
+          </button>
+        )}
+      </div>
     )
   }
 
   if (field.type === 'number') {
     return (
-      <input
-        type="number"
-        value={value === undefined ? '' : value}
-        onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
-        className={inputClass}
-      />
+      <div className="flex gap-1.5">
+        <input
+          type="number"
+          value={effectiveValue === undefined ? '' : effectiveValue}
+          onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+          className={inputClass}
+        />
+        {isOverridingFixed && (
+          <button
+            type="button"
+            onClick={() => onChange(field.fixedValue ?? '')}
+            title="Reset to the default set on the Formulas page"
+            className="shrink-0 rounded-md border border-[var(--color-border)] px-2 text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-blue)]"
+          >
+            Reset
+          </button>
+        )}
+      </div>
     )
   }
 
-  return <input type="text" value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} className={inputClass} />
+  return (
+    <div className="flex gap-1.5">
+      <input type="text" value={String(effectiveValue ?? '')} onChange={(e) => onChange(e.target.value)} className={inputClass} />
+      {isOverridingFixed && (
+        <button
+          type="button"
+          onClick={() => onChange(field.fixedValue ?? '')}
+          title="Reset to the default set on the Formulas page"
+          className="shrink-0 rounded-md border border-[var(--color-border)] px-2 text-xs text-[var(--color-ink-faint)] hover:text-[var(--color-blue)]"
+        >
+          Reset
+        </button>
+      )}
+    </div>
+  )
 }
 
 export function isTechDataFilled(values: PulleyTechDataValues | undefined): boolean {

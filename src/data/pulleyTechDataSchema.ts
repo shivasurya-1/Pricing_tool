@@ -22,6 +22,13 @@ export interface TechDataField {
   auto?: boolean
   /** Set on the Formulas page — filled in automatically and shown read-only, no input. */
   fixedValue?: string
+  /** option -> its price on the linked reference catalog, when this select's options
+   * come from a catalog (set server-side) — preferred over the hardcoded
+   * lookupCatalogPrice() fallback. */
+  catalogPrices?: Record<string, number | null>
+  /** This Auto field just copies another field's raw value instead of calculating —
+   * the source field's key. */
+  copyFrom?: string
 }
 
 export interface TechDataSection {
@@ -203,6 +210,13 @@ export function getFieldLabel(fieldKey: string): string {
   return STATIC_FIELD_LABEL_MAP[fieldKey] ?? fieldKey
 }
 
+/** Fields that are always backed by a reference catalog in the OLD static fallback
+ * (see getOptionsForField) — forced to Select there regardless of a stale stored
+ * `field_type`, since a catalog-driven field being anything else is simply wrong data.
+ * Once the backend reports `catalog` directly (below), that's authoritative instead —
+ * this only still matters for fields the backend hasn't tagged with `catalog` yet. */
+const CATALOG_DRIVEN_FIELD_KEYS = new Set(['bearing1Designation', 'bearing2Designation', 'sleeveCode', 'housingDesignation', 'laggingType', 'lockingDeviceType'])
+
 /** Builds the same TechDataSection[] shape as the static TECH_DATA_SECTIONS, from the
  * backend's field list — grouped by section, ordered by each field's `order` within it.
  * Section display order falls out naturally: every section title here is prefixed
@@ -210,14 +224,24 @@ export function getFieldLabel(fieldKey: string): string {
 function buildTechDataSectionsFromDto(fields: TechDataFieldDto[]): TechDataSection[] {
   const bySection = new Map<string, { order: number; field: TechDataField }[]>()
   for (const f of fields) {
+    // The backend telling us this select is catalog-linked (`catalog` set) is
+    // authoritative; the old key-based list is only a fallback for fields it hasn't
+    // tagged that way yet.
+    const isCatalogDriven = f.catalog != null || CATALOG_DRIVEN_FIELD_KEYS.has(f.key)
+    const type = isCatalogDriven ? 'select' : f.field_type
     const field: TechDataField = {
       key: f.key,
       label: f.label,
       unit: f.unit || undefined,
-      type: f.field_type,
-      options: f.field_type === 'select' && f.options.length > 0 ? f.options : undefined,
+      type,
+      // A catalog-linked select's `options` is the live catalog list — always carry
+      // it through (even if momentarily empty), so the dropdown reflects "no rows
+      // yet" rather than silently falling back to stale static demo data.
+      options: type === 'select' && (isCatalogDriven || f.options.length > 0) ? f.options : undefined,
       auto: f.is_read_only,
       fixedValue: f.fixed_value || undefined,
+      catalogPrices: f.option_prices ?? undefined,
+      copyFrom: f.copy_from ?? undefined,
     }
     if (!bySection.has(f.section)) bySection.set(f.section, [])
     bySection.get(f.section)!.push({ order: f.order, field })
@@ -253,7 +277,12 @@ export function applyFieldOverrides(sections: TechDataSection[], overrides?: Tec
       const o = overrides[field.key]
       if (!o || field.auto) return field
       // A per-RFQ type change also unlocks a fixed value, so the field is editable on that RFQ.
-      return { ...field, type: o.fieldType, options: o.fieldType === 'select' ? o.options : undefined, fixedValue: undefined }
+      // A catalog-linked field keeps the LIVE list (and its prices) when the override
+      // keeps it as Select — `o.options` is a one-time snapshot taken when the override
+      // was saved, so using it here would freeze the dropdown at whatever the catalog
+      // looked like back then instead of reflecting rows added/removed since.
+      const options = o.fieldType !== 'select' ? undefined : field.catalogPrices ? field.options : o.options
+      return { ...field, type: o.fieldType, options, fixedValue: undefined }
     }),
   }))
 }
@@ -353,4 +382,12 @@ export const PRICE_FIELD_SOURCE: Record<string, string> = {
   housingPrice: 'housingDesignation',
   lockingDevicePrice: 'lockingDeviceType',
   laggingRate: 'laggingType',
+}
+
+/** The reverse of PRICE_FIELD_SOURCE (designation key -> price key it fills), plus
+ * `adapterSleeveCode` as an alias for `sleeveCode` — an admin may have renamed the
+ * sleeve designation field on their sheet, and either key should still price it. */
+export const DESIGNATION_TO_PRICE_FIELD: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(PRICE_FIELD_SOURCE).map(([priceKey, designationKey]) => [designationKey, priceKey])),
+  adapterSleeveCode: 'sleevePrice',
 }

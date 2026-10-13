@@ -14,10 +14,19 @@
  */
 
 import type { PulleyTechDataValues } from '@/types'
-import { PRICE_FIELD_SOURCE, lookupCatalogPrice, IN_HOUSE_OPERATIONS, type TechDataSection } from '@/data/pulleyTechDataSchema'
+import { DESIGNATION_TO_PRICE_FIELD, lookupCatalogPrice, IN_HOUSE_OPERATIONS, type TechDataSection } from '@/data/pulleyTechDataSchema'
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore } from '@/store/formulaStore'
 import { evaluateFormula } from '@/lib/formulaEval'
+
+/** Prices a just-picked designation: the field's own live option_prices (from the
+ * backend's catalog link) wins when present, falling back to lookupCatalogPrice()
+ * only when the field isn't catalog-linked server-side yet (e.g. backend unreachable). */
+function resolveDesignationPrice(designationKey: string, priceKey: string, designationValue: string): number | null {
+  const field = useFormulaStore.getState().techDataFields[designationKey]
+  if (field?.option_prices) return field.option_prices[designationValue] ?? null
+  return lookupCatalogPrice(priceKey, designationValue)
+}
 
 export type PulleyModelValues = PulleyTechDataValues
 
@@ -48,7 +57,9 @@ export function toNumericVars(values: PulleyTechDataValues): Record<string, numb
  */
 function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataValues {
   const { techDataFields, costRates } = useFormulaStore.getState()
-  const vars = toNumericVars(values)
+  // Every Cost Rate Tables key is now insertable directly into an Auto field's
+  // expression — spread first so a sheet field sharing the same key still wins.
+  const vars: Record<string, number> = { ...costRates, ...toNumericVars(values) }
   const out: PulleyTechDataValues = {}
 
   for (const op of IN_HOUSE_OPERATIONS) {
@@ -59,10 +70,25 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataV
   if (autoFields.length === 0) throw new Error('No Auto fields loaded from the backend')
   const autoKeys = new Set(autoFields.map((f) => f.key))
 
+  // A formula that reads a catalog price variable (e.g. bearing2Price) effectively also
+  // depends on that price's designation field (bearing2Designation) whenever the
+  // designation itself is an Auto (copy) field — otherwise a calc like the bearings
+  // total could run before the designation it was copied from has been priced. Derived
+  // from DESIGNATION_TO_PRICE_FIELD rather than PRICE_FIELD_SOURCE directly so a
+  // renamed designation key (e.g. adapterSleeveCode) is still found.
+  const priceKeyToDesignationKey = new Map(Object.entries(DESIGNATION_TO_PRICE_FIELD).map(([d, p]) => [p, d]))
+  const designationKeyFor = (priceKey: string): string | undefined => priceKeyToDesignationKey.get(priceKey)
+
   const dependsOn = new Map<string, Set<string>>()
   const dependents = new Map<string, Set<string>>()
   for (const f of autoFields) {
-    const deps = new Set((f.input_variables ?? []).filter((v) => autoKeys.has(v) && v !== f.key))
+    const deps = new Set<string>()
+    for (const v of f.input_variables ?? []) {
+      if (v === f.key) continue
+      if (autoKeys.has(v)) deps.add(v)
+      const designationKey = designationKeyFor(v)
+      if (designationKey && autoKeys.has(designationKey) && designationKey !== f.key) deps.add(designationKey)
+    }
     dependsOn.set(f.key, deps)
     for (const d of deps) {
       if (!dependents.has(d)) dependents.set(d, new Set())
@@ -88,6 +114,29 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataV
   const byKey = new Map(autoFields.map((f) => [f.key, f]))
   for (const key of order) {
     const f = byKey.get(key)!
+
+    if (f.copy_from) {
+      // Copy the source's raw value as-is (text, number or selected option) — no
+      // calculation, no rounding. The source may itself be an Auto field already
+      // resolved earlier in `order`, or a plain Manual field sitting in `values`.
+      const copied = autoKeys.has(f.copy_from) ? (out[f.copy_from] ?? '') : (values[f.copy_from] ?? '')
+      out[key] = copied
+      const n = typeof copied === 'number' ? copied : Number(copied)
+      if (copied !== '' && !Number.isNaN(n)) vars[key] = n
+
+      // A copied designation (e.g. bearing2Designation) re-triggers its catalog price
+      // lookup, same as a manual edit would via applyFieldChange.
+      const priceKey = DESIGNATION_TO_PRICE_FIELD[key]
+      if (priceKey) {
+        const priced = resolveDesignationPrice(key, priceKey, String(copied))
+        if (priced !== null) {
+          vars[priceKey] = priced
+          out[priceKey] = priced
+        }
+      }
+      continue
+    }
+
     const result = evaluateFormula(f.expression as string, vars)
     vars[key] = result
     out[key] = round2(result)
@@ -164,18 +213,31 @@ export function computeAutoFields(values: PulleyTechDataValues): PulleyTechDataV
   return computeAutoFieldsStatic(values)
 }
 
-/** Applies one field edit, then re-runs catalog price lookups and geometry auto-calcs. Shared by every screen that edits a pulley's technical data. */
-export function applyFieldChange(values: PulleyTechDataValues, fieldKey: string, rawValue: string | number): PulleyTechDataValues {
+/** Applies one field edit, then re-runs catalog price lookups and geometry auto-calcs.
+ * Shared by every screen that edits a pulley's technical data.
+ *
+ * `autoOverrideKeys` lists Auto fields this item has been manually overridden on (see
+ * TechDataFieldOverride.autoOverridden) — without this, every edit anywhere on the form
+ * would silently recompute and clobber a value the user typed in for one of them. */
+export function applyFieldChange(
+  values: PulleyTechDataValues,
+  fieldKey: string,
+  rawValue: string | number,
+  autoOverrideKeys?: Set<string>,
+): PulleyTechDataValues {
   let next: PulleyTechDataValues = { ...values, [fieldKey]: rawValue }
 
-  for (const [priceKey, sourceKey] of Object.entries(PRICE_FIELD_SOURCE)) {
-    if (fieldKey === sourceKey) {
-      const looked = lookupCatalogPrice(priceKey, String(rawValue))
-      if (looked !== null) next[priceKey] = looked
-    }
+  const priceKey = DESIGNATION_TO_PRICE_FIELD[fieldKey]
+  if (priceKey) {
+    const priced = resolveDesignationPrice(fieldKey, priceKey, String(rawValue))
+    if (priced !== null) next[priceKey] = priced
   }
 
-  next = { ...next, ...computeAutoFields(next) }
+  const computed = computeAutoFields(next)
+  if (autoOverrideKeys?.size) {
+    for (const key of autoOverrideKeys) delete computed[key]
+  }
+  next = { ...next, ...computed }
   return next
 }
 

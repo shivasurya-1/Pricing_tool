@@ -59,6 +59,10 @@ export function buildPricingVariables(values: PulleyTechDataValues, costRates: R
   const qty = num(values.qty) || 1
   const shaftMaterial = String(values.shaftMaterial ?? '')
   return {
+    // Every Cost Rate Tables key is now insertable directly into a pricing formula —
+    // spread first so the hand-picked entries below (often renamed, e.g.
+    // paintingSurfacePrepInrPerM2 from the key paintingSurfacePrep) still win.
+    ...costRates,
     ...toNumericVars(values),
     qty,
     shellRatePerKg: num(values.shellRatePerKg) || r.rawForgingRates.shellPlateInrPerKg,

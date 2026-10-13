@@ -113,11 +113,15 @@ export interface RateCard {
 /** A pulley Technical Data Sheet capture — one entry per parameter, keyed by field id (see pulleyTechDataSchema). */
 export type PulleyTechDataValues = Record<string, string | number | undefined>
 
-/** A per-RFQ-item change to one Technical Data Sheet field's type, overriding the
- * global field definition for that item only. Keyed by field key. */
+/** A per-RFQ-item change to one Technical Data Sheet field, overriding the global
+ * field definition for that item only. Keyed by field key. */
 export interface TechDataFieldOverride {
   fieldType: 'text' | 'number' | 'select'
   options: string[]
+  /** An Auto field is normally recomputed (and overwritten) on every edit — setting
+   * this stops that recompute from clobbering a value the user typed in by hand for
+   * this field, on this item only. Irrelevant for a Manual field. */
+  autoOverridden?: boolean
 }
 export type TechDataFieldOverrides = Record<string, TechDataFieldOverride>
 

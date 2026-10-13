@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Copy, Paperclip, X, FileSpreadsheet } from 'lucide-react'
 import { useDataStore } from '@/store/dataStore'
 import { useAuthStore } from '@/store/authStore'
+import { useFormulaStore } from '@/store/formulaStore'
 import { useUiStore } from '@/store/uiStore'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardHeader } from '@/components/ui/Card'
@@ -104,6 +105,14 @@ export function RFQCreatePage() {
   const [pendingProductId, setPendingProductId] = useState('')
   const [techDataDrawerIndex, setTechDataDrawerIndex] = useState<number | null>(null)
 
+  // Catalog rows (bearings, sleeves, housings, etc.) may have changed since this page
+  // first loaded — refresh the field/option list whenever the Technical Data Sheet
+  // drawer opens, so the dropdowns never show stale options.
+  const openTechDataDrawer = (index: number) => {
+    setTechDataDrawerIndex(index)
+    void useFormulaStore.getState().loadTechDataFields()
+  }
+
   const confirmAddPulley = () => {
     const p = products.find((x) => x.id === pendingProductId)
     if (!p) {
@@ -124,7 +133,7 @@ export function RFQCreatePage() {
       technicalData: applyFixedValues({ pulleyTag: `pulley_${items.length + 1}`, qty: 1 }, techDataSections),
     }
     setItems((prev) => [...prev, newItem])
-    setTechDataDrawerIndex(items.length)
+    openTechDataDrawer(items.length)
     setProductPickerOpen(false)
     setPendingProductId('')
   }
@@ -136,7 +145,12 @@ export function RFQCreatePage() {
     setItems((prev) =>
       prev.map((it, i) => {
         if (i !== index) return it
-        const technicalData = applyFieldChange(it.technicalData ?? {}, fieldKey, value)
+        const autoOverrideKeys = new Set(
+          Object.entries(it.fieldOverrides ?? {})
+            .filter(([, o]) => o.autoOverridden)
+            .map(([key]) => key),
+        )
+        const technicalData = applyFieldChange(it.technicalData ?? {}, fieldKey, value, autoOverrideKeys)
         const patch: Partial<RFQItem> = { technicalData, specification: summarizeTechData(technicalData) }
         if (fieldKey === 'qty') patch.quantity = Number(value) || it.quantity
         return { ...it, ...patch }
@@ -403,7 +417,7 @@ export function RFQCreatePage() {
                           size="sm"
                           variant={isTechDataFilled(item.technicalData) ? 'secondary' : 'primary'}
                           icon={<FileSpreadsheet size={13} />}
-                          onClick={() => setTechDataDrawerIndex(i)}
+                          onClick={() => openTechDataDrawer(i)}
                         >
                           {isTechDataFilled(item.technicalData) ? 'Edit' : 'Fill from Customer'}
                         </Button>

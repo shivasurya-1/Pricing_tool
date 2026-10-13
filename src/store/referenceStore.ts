@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { api } from '@/lib/apiClient'
+import { useFormulaStore } from '@/store/formulaStore'
 
 /**
  * Catalogs (bearings/sleeves/housings/lagging/locking-devices), Raw Forging Prices,
@@ -178,66 +179,81 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
   createBearing: async (input) => {
     const created = await api.post<BearingCatalogDto>('/reference/catalogs/bearings/', input)
     set((s) => ({ bearings: [...s.bearings, created] }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   updateBearing: async (id, patch) => {
     const updated = await api.patch<BearingCatalogDto>(`/reference/catalogs/bearings/${id}/`, patch)
     set((s) => ({ bearings: s.bearings.map((b) => (b.id === id ? updated : b)) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   deleteBearing: async (id) => {
     await api.delete(`/reference/catalogs/bearings/${id}/`)
     set((s) => ({ bearings: s.bearings.filter((b) => b.id !== id) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
 
   createSleeve: async (input) => {
     const created = await api.post<SleeveCatalogDto>('/reference/catalogs/sleeves/', input)
     set((s) => ({ sleeves: [...s.sleeves, created] }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   updateSleeve: async (id, patch) => {
     const updated = await api.patch<SleeveCatalogDto>(`/reference/catalogs/sleeves/${id}/`, patch)
     set((s) => ({ sleeves: s.sleeves.map((x) => (x.id === id ? updated : x)) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   deleteSleeve: async (id) => {
     await api.delete(`/reference/catalogs/sleeves/${id}/`)
     set((s) => ({ sleeves: s.sleeves.filter((x) => x.id !== id) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
 
   createHousing: async (input) => {
     const created = await api.post<HousingCatalogDto>('/reference/catalogs/housings/', input)
     set((s) => ({ housings: [...s.housings, created] }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   updateHousing: async (id, patch) => {
     const updated = await api.patch<HousingCatalogDto>(`/reference/catalogs/housings/${id}/`, patch)
     set((s) => ({ housings: s.housings.map((x) => (x.id === id ? updated : x)) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   deleteHousing: async (id) => {
     await api.delete(`/reference/catalogs/housings/${id}/`)
     set((s) => ({ housings: s.housings.filter((x) => x.id !== id) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
 
   createLagging: async (input) => {
     const created = await api.post<LaggingCatalogDto>('/reference/cost-rates/lagging-rates/', input)
     set((s) => ({ lagging: [...s.lagging, created] }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   updateLagging: async (id, patch) => {
     const updated = await api.patch<LaggingCatalogDto>(`/reference/cost-rates/lagging-rates/${id}/`, patch)
     set((s) => ({ lagging: s.lagging.map((x) => (x.id === id ? updated : x)) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   deleteLagging: async (id) => {
     await api.delete(`/reference/cost-rates/lagging-rates/${id}/`)
     set((s) => ({ lagging: s.lagging.filter((x) => x.id !== id) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
 
   createLockingDevice: async (input) => {
     const created = await api.post<LockingDeviceCatalogDto>('/reference/catalogs/lcd-data/', input)
     set((s) => ({ lockingDevices: [...s.lockingDevices, created] }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   updateLockingDevice: async (id, patch) => {
     const updated = await api.patch<LockingDeviceCatalogDto>(`/reference/catalogs/lcd-data/${id}/`, patch)
     set((s) => ({ lockingDevices: s.lockingDevices.map((x) => (x.id === id ? updated : x)) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
   deleteLockingDevice: async (id) => {
     await api.delete(`/reference/catalogs/lcd-data/${id}/`)
     set((s) => ({ lockingDevices: s.lockingDevices.filter((x) => x.id !== id) }))
+    await useFormulaStore.getState().loadTechDataFields()
   },
 
   createShaftBand: async (input) => {

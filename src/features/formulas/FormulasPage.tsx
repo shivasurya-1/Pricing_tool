@@ -49,6 +49,24 @@ function slugifyToCamelCase(label: string): string {
     .join('')
 }
 
+/** An Auto expression that's just one other field's key (e.g. "bearing1Designation",
+ * whitespace allowed around it) copies that field's raw value instead of calculating —
+ * matches the backend's own copy_from detection. Returns null for anything else,
+ * including a single key combined with an operator (e.g. "shellOD * 2"). */
+function detectCopySourceKey(expression: string, knownKeys: string[]): string | null {
+  const trimmed = expression.trim()
+  if (!trimmed || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) return null
+  return knownKeys.includes(trimmed) ? trimmed : null
+}
+
+/** Text/Select Auto fields may only copy another field (a calculated expression on a
+ * Text/Select field makes no sense — there's nothing to compute into a designation
+ * string); Number allows either a copy or a real calculation. */
+function isAutoTypeExpressionValid(fieldType: 'text' | 'number' | 'select', expression: string, knownKeys: string[]): boolean {
+  if (fieldType === 'number') return true
+  return detectCopySourceKey(expression, knownKeys) !== null
+}
+
 export function FormulasPage() {
   const rfqs = useDataStore((s) => s.rfqs)
   const role = useAuthStore((s) => s.role)
@@ -89,7 +107,10 @@ export function FormulasPage() {
   const item = items.find((it) => it.id === itemId) ?? items[0]
 
   const sampleVars = useMemo(() => {
-    if (!item?.technicalData) return {}
+    // Cost-rate keys should show their real values in every preview even with no RFQ
+    // selected yet — only the RFQ-derived numbers (totals, technicalData fields) need
+    // an actual sample item.
+    if (!item?.technicalData) return { ...costRates }
     const pricing = computePulleyPricing(item.technicalData)
     return {
       ...toNumericVars(item.technicalData),
@@ -361,16 +382,8 @@ export function FormulasPage() {
         onClose={() => setEditTarget(null)}
         onSave={async (patch) => {
           if (!editTarget) return
-          const { expression, ...fieldPatch } = patch
           try {
-            await updateTechDataField(editTarget.key, fieldPatch)
-            // Only an already-Auto field has a FormulaDefinition to update — a field
-            // just toggled Manual->Auto in this form has nowhere to save its expression
-            // yet, since is_auto itself can't persist until the backend allows it (see
-            // updateTechDataField's patch type). Skip rather than hit a 404.
-            if (editTarget.formula_key && expression !== undefined && expression !== editTarget.expression) {
-              await updateFormula(editTarget.formula_key, expression)
-            }
+            await updateTechDataField(editTarget.key, patch)
             pushToast(`'${patch.label ?? editTarget.label}' updated.`, 'success')
             setEditTarget(null)
           } catch (err) {
@@ -473,6 +486,7 @@ export function FormulasPage() {
 }
 
 function TechDataSheetStructureView({ sections, bySection }: { sections: string[]; bySection: Record<string, TechDataFieldDto[]> }) {
+  const techDataFields = useFormulaStore((s) => s.techDataFields)
   return (
     <Card className="mb-5">
       <CardHeader title="Technical Data Sheet — Structure" description="Every section and field on the sheet, read-only — not tied to any one RFQ." />
@@ -493,7 +507,9 @@ function TechDataSheetStructureView({ sections, bySection }: { sections: string[
                     </span>
                     <span className="shrink-0">
                       {f.is_auto ? (
-                        <Badge tone="blue">Auto{f.expression ? `: ${f.expression}` : ''}</Badge>
+                        <Badge tone="blue">
+                          {f.copy_from ? `Copies: ${techDataFields[f.copy_from]?.label ?? f.copy_from}` : `Auto${f.expression ? `: ${f.expression}` : ''}`}
+                        </Badge>
                       ) : f.is_catalog_derived ? (
                         <Badge tone="purple">Catalog</Badge>
                       ) : (
@@ -727,6 +743,7 @@ function AddFormulaModal({
 }) {
   const formulas = useFormulaStore((s) => s.formulas)
   const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const formulaVariables = useFormulaStore((s) => s.formulaVariables)
   const [label, setLabel] = useState('')
   const [key, setKey] = useState('')
   const [keyEdited, setKeyEdited] = useState(false)
@@ -756,6 +773,18 @@ function AddFormulaModal({
     () => [...new Set([...Object.keys(formulas), ...Object.keys(techDataFields)])].filter((k) => k !== key).sort(),
     [formulas, techDataFields, key],
   )
+  const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
+  const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
+  // Grouped by table_label ("Cost Rates: Global Parameters" etc.), insertion order
+  // preserved so tables appear in the same order the backend lists them in.
+  const costRateGroups = useMemo(() => {
+    const byLabel = new Map<string, typeof formulaVariables.cost_rates>()
+    for (const r of formulaVariables.cost_rates) {
+      if (!byLabel.has(r.table_label)) byLabel.set(r.table_label, [])
+      byLabel.get(r.table_label)!.push(r)
+    }
+    return [...byLabel.entries()]
+  }, [formulaVariables])
 
   const insertToken = (token: string) => {
     const el = expressionRef.current
@@ -772,7 +801,10 @@ function AddFormulaModal({
     })
   }
 
-  const knownKeys = useMemo(() => [...insertableKeys, ...INJECTED_RATE_VARIABLES], [insertableKeys])
+  const knownKeys = useMemo(
+    () => [...insertableKeys, ...labourRateLookupKeys, ...costRateKeys, ...formulaVariables.catalog_prices.map((p) => p.key)],
+    [insertableKeys, labourRateLookupKeys, costRateKeys, formulaVariables],
+  )
   const detectedVariables = useMemo(
     () => knownKeys.filter((k) => k !== key && new RegExp(`\\b${k}\\b`).test(expression)),
     [expression, knownKeys, key],
@@ -869,8 +901,27 @@ function AddFormulaModal({
                     {k}
                   </option>
                 ))}
+                {costRateGroups.map(([tableLabel, rates]) => (
+                  <optgroup key={tableLabel} label={`Cost Rates: ${tableLabel}`}>
+                    {rates.map((r) => (
+                      <option key={r.key} value={r.key}>
+                        {r.label} ({r.key}) = {r.value}
+                        {r.unit ? ` ${r.unit}` : ''}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+                {formulaVariables.catalog_prices.length > 0 && (
+                  <optgroup label="Catalog prices">
+                    {formulaVariables.catalog_prices.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.key}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
                 <optgroup label="Labour rate lookups">
-                  {INJECTED_RATE_VARIABLES.map((v) => (
+                  {labourRateLookupKeys.map((v) => (
                     <option key={v} value={v}>
                       {v}
                     </option>
@@ -1036,6 +1087,7 @@ function AddTechDataFieldModal({
   }) => Promise<void>
 }) {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const formulaVariables = useFormulaStore((s) => s.formulaVariables)
   const [label, setLabel] = useState('')
   const [key, setKey] = useState('')
   const [keyEdited, setKeyEdited] = useState(false)
@@ -1080,6 +1132,16 @@ function AddTechDataFieldModal({
         .sort((a, b) => a.label.localeCompare(b.label)),
     [techDataFields, key],
   )
+  const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
+  const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
+  const costRateGroups = useMemo(() => {
+    const byLabel = new Map<string, typeof formulaVariables.cost_rates>()
+    for (const r of formulaVariables.cost_rates) {
+      if (!byLabel.has(r.table_label)) byLabel.set(r.table_label, [])
+      byLabel.get(r.table_label)!.push(r)
+    }
+    return [...byLabel.entries()]
+  }, [formulaVariables])
 
   const insertToken = (token: string) => {
     const el = expressionRef.current
@@ -1100,14 +1162,19 @@ function AddTechDataFieldModal({
   // every known field key, plus the injected rate-lookup variables) rather than typed
   // separately — one fewer place to make a typo, and it can never drift out of sync
   // with what the expression actually references.
-  const knownKeys = useMemo(() => [...Object.keys(techDataFields), ...INJECTED_RATE_VARIABLES], [techDataFields])
+  const knownKeys = useMemo(
+    () => [...Object.keys(techDataFields), ...labourRateLookupKeys, ...costRateKeys, ...formulaVariables.catalog_prices.map((p) => p.key)],
+    [techDataFields, labourRateLookupKeys, costRateKeys, formulaVariables],
+  )
   const detectedVariables = useMemo(
     () => knownKeys.filter((k) => k !== key && new RegExp(`\\b${k}\\b`).test(expression)),
     [expression, knownKeys, key],
   )
+  const copySourceKey = useMemo(() => detectCopySourceKey(expression, knownKeys), [expression, knownKeys])
 
   const preview = (() => {
     if (!isAuto || !expression.trim()) return null
+    if (copySourceKey) return { value: sampleVars[copySourceKey] ?? null, error: null as string | null }
     try {
       const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
       return { value: evaluateFormula(expression, vars), error: null as string | null }
@@ -1115,6 +1182,11 @@ function AddTechDataFieldModal({
       return { value: null as number | null, error: err instanceof FormulaError ? err.message : 'Invalid expression' }
     }
   })()
+
+  const autoTypeError =
+    isAuto && expression.trim() && fieldType !== 'number' && !isAutoTypeExpressionValid(fieldType, expression, knownKeys)
+      ? "A Text/Select Auto field can only copy another field: enter just that field's key"
+      : null
 
   const parsedOptions = optionsText.split(',').map((o) => o.trim()).filter(Boolean)
   const trimmedFixed = fixedValue.trim()
@@ -1133,6 +1205,7 @@ function AddTechDataFieldModal({
     section &&
     (fieldType !== 'select' || isAuto || optionsText.trim()) &&
     !fixedValueError &&
+    !autoTypeError &&
     (!isAuto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
@@ -1305,8 +1378,27 @@ function AddTechDataFieldModal({
                       {f.label} ({f.key})
                     </option>
                   ))}
+                  {costRateGroups.map(([tableLabel, rates]) => (
+                    <optgroup key={tableLabel} label={`Cost Rates: ${tableLabel}`}>
+                      {rates.map((r) => (
+                        <option key={r.key} value={r.key}>
+                          {r.label} ({r.key}) = {r.value}
+                          {r.unit ? ` ${r.unit}` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  {formulaVariables.catalog_prices.length > 0 && (
+                    <optgroup label="Catalog prices">
+                      {formulaVariables.catalog_prices.map((p) => (
+                        <option key={p.key} value={p.key}>
+                          {p.key}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                   <optgroup label="Labour rate lookups">
-                    {INJECTED_RATE_VARIABLES.map((v) => (
+                    {labourRateLookupKeys.map((v) => (
                       <option key={v} value={v}>
                         {v}
                       </option>
@@ -1353,10 +1445,15 @@ function AddTechDataFieldModal({
                 )}
               </p>
             </div>
+            {autoTypeError && <p className="text-xs text-[var(--color-red)]">{autoTypeError}</p>}
             {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
             {preview && preview.value !== null && (
               <p className="text-xs text-[var(--color-ink-faint)]">
-                Preview: <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span> (against the RFQ selected above, unfilled variables read as 0)
+                {copySourceKey ? 'Copies: ' : 'Preview: '}
+                <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span>{' '}
+                {copySourceKey
+                  ? `(this RFQ's own ${copySourceKey} value)`
+                  : '(against the RFQ selected above, unfilled variables read as 0)'}
               </p>
             )}
           </div>
@@ -1380,6 +1477,7 @@ function EditTechDataFieldModal({
   isAdmin: boolean
   onClose: () => void
   onSave: (patch: {
+    key?: string
     label: string
     section: string
     unit: string
@@ -1389,9 +1487,12 @@ function EditTechDataFieldModal({
     fixed_value: string
     is_auto?: boolean
     expression?: string
+    input_variables?: string[]
   }) => Promise<void>
 }) {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const formulaVariables = useFormulaStore((s) => s.formulaVariables)
+  const [keyValue, setKeyValue] = useState('')
   const [label, setLabel] = useState('')
   const [fixedValue, setFixedValue] = useState('')
   const [optionsSource, setOptionsSource] = useState('')
@@ -1409,6 +1510,7 @@ function EditTechDataFieldModal({
   const [openedKey, setOpenedKey] = useState<string | null>(null)
   if (field && field.key !== openedKey) {
     setOpenedKey(field.key)
+    setKeyValue(field.key)
     setLabel(field.label)
     setSection(field.section)
     setUnit(field.unit)
@@ -1429,6 +1531,16 @@ function EditTechDataFieldModal({
         .sort((a, b) => a.label.localeCompare(b.label)),
     [techDataFields, field?.key],
   )
+  const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
+  const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
+  const costRateGroups = useMemo(() => {
+    const byLabel = new Map<string, typeof formulaVariables.cost_rates>()
+    for (const r of formulaVariables.cost_rates) {
+      if (!byLabel.has(r.table_label)) byLabel.set(r.table_label, [])
+      byLabel.get(r.table_label)!.push(r)
+    }
+    return [...byLabel.entries()]
+  }, [formulaVariables])
 
   const insertToken = (token: string) => {
     const el = expressionRef.current
@@ -1445,34 +1557,63 @@ function EditTechDataFieldModal({
     })
   }
 
-  const knownKeys = useMemo(() => [...Object.keys(techDataFields), ...INJECTED_RATE_VARIABLES], [techDataFields])
+  const knownKeys = useMemo(
+    () => [...Object.keys(techDataFields), ...labourRateLookupKeys, ...costRateKeys, ...formulaVariables.catalog_prices.map((p) => p.key)],
+    [techDataFields, labourRateLookupKeys, costRateKeys, formulaVariables],
+  )
   const detectedVariables = useMemo(
     () => knownKeys.filter((k) => k !== field?.key && new RegExp(`\\b${k}\\b`).test(expression)),
     [expression, knownKeys, field?.key],
   )
+  const copySourceKey = useMemo(() => detectCopySourceKey(expression, knownKeys), [expression, knownKeys])
+  const copySourceField = copySourceKey ? techDataFields[copySourceKey] : undefined
 
   if (!field) return null
 
   // Mirrors TechDataFieldDefinitionViewSet.perform_update: Auto/catalog-derived fields
-  // keep their type; a core field's type is Admin-only.
-  const typeLockReason = field.is_auto
-    ? "Type can't be changed on an Auto field"
-    : field.is_catalog_derived
-      ? "Type can't be changed on a catalog-derived field"
-      : field.is_core && !isAdmin
-        ? 'Only an Admin can change the type of a core field'
-        : null
+  // keep their type; a core field's type is Admin-only. Only locked while the field
+  // *stays* Auto — a field being switched Auto -> Manual can also change its type.
+  const typeLockReason =
+    field.is_auto && isAuto
+      ? "Type can't be changed on an Auto field"
+      : field.is_catalog_derived
+        ? "Type can't be changed on a catalog-derived field"
+        : field.is_core && !isAdmin
+          ? 'Only an Admin can change the type of a core field'
+          : null
   const isManualSelect = fieldType === 'select' && !isAuto && !field.is_catalog_derived
+
+  const trimmedKey = keyValue.trim()
+  const keyChanged = trimmedKey !== field.key
+  const keyFormatValid = /^[A-Za-z0-9_-]+$/.test(trimmedKey)
+  const keyTaken = keyChanged && Object.keys(techDataFields).includes(trimmedKey)
+  const keyError = !trimmedKey
+    ? 'Key is required.'
+    : !keyFormatValid
+      ? 'Only letters, numbers, _ or - are allowed.'
+      : keyTaken
+        ? `'${trimmedKey}' is already used by another field.`
+        : null
 
   const preview = (() => {
     if (!isAuto || !expression.trim()) return null
+    if (copySourceKey) {
+      // A copy formula shows the source field's own sample value, not a calculation —
+      // there's nothing to evaluate.
+      return { value: sampleVars[copySourceKey] ?? null, error: null as string | null, isCopy: true }
+    }
     try {
       const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
-      return { value: evaluateFormula(expression, vars), error: null as string | null }
+      return { value: evaluateFormula(expression, vars), error: null as string | null, isCopy: false }
     } catch (err) {
-      return { value: null as number | null, error: err instanceof FormulaError ? err.message : 'Invalid expression' }
+      return { value: null as number | null, error: err instanceof FormulaError ? err.message : 'Invalid expression', isCopy: false }
     }
   })()
+
+  const autoTypeError =
+    isAuto && expression.trim() && !isAutoTypeExpressionValid(fieldType, expression, knownKeys) && fieldType !== 'number'
+      ? "A Text/Select Auto field can only copy another field: enter just that field's key"
+      : null
 
   const parsedOptions = optionsText.split(',').map((o) => o.trim()).filter(Boolean)
   // Same checks as perform_update's fixed_value validation.
@@ -1487,22 +1628,27 @@ function EditTechDataFieldModal({
   const canSave =
     label.trim() &&
     section &&
+    !keyError &&
     (!isManualSelect || parsedOptions.length > 0) &&
     !fixedValueError &&
+    !autoTypeError &&
     (!isAuto || (expression.trim() && !preview?.error))
 
   const handleSave = async () => {
     setSaving(true)
+    const isAutoChanged = isAuto !== field.is_auto
+    const expressionChanged = isAuto && (isAutoChanged || expression !== (field.expression ?? ''))
     await onSave({
+      ...(keyChanged && !field.is_core ? { key: trimmedKey } : {}),
       label: label.trim(),
       section,
       unit,
       field_type: fieldType,
       options: isManualSelect ? parsedOptions : fieldType === 'select' ? field.options : [],
       options_source: fieldType === 'select' ? optionsSource : '',
-      fixed_value: field.is_read_only ? '' : trimmedFixed,
-      is_auto: isAuto,
-      expression: isAuto ? expression : undefined,
+      fixed_value: isAuto ? '' : field.is_read_only ? '' : trimmedFixed,
+      ...(isAutoChanged ? { is_auto: isAuto } : {}),
+      ...(expressionChanged ? { expression, input_variables: detectedVariables } : {}),
     })
     setSaving(false)
   }
@@ -1511,7 +1657,7 @@ function EditTechDataFieldModal({
     <Modal
       open={!!field}
       onClose={onClose}
-      title={`Edit Field — ${field.key}`}
+      title={`Edit Field — ${field.label}`}
       width="max-w-xl"
       footer={
         <>
@@ -1532,11 +1678,28 @@ function EditTechDataFieldModal({
         <div>
           <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Key (variable name used in formulas)</label>
           <input
-            value={field.key}
-            disabled
-            title="Key can't be changed after creation"
-            className={clsx(inputClass, 'font-mono cursor-not-allowed bg-[var(--color-surface)] text-[var(--color-ink-faint)]')}
+            value={field.is_core ? field.key : keyValue}
+            onChange={(e) => setKeyValue(e.target.value)}
+            disabled={field.is_core}
+            title={field.is_core ? "A core field's key can't be changed" : undefined}
+            className={clsx(
+              inputClass,
+              'font-mono',
+              field.is_core && 'cursor-not-allowed bg-[var(--color-surface)] text-[var(--color-ink-faint)]',
+            )}
           />
+          {field.is_core ? (
+            <p className="mt-1 text-xs text-[var(--color-ink-faint)]">A core field's key can't be changed.</p>
+          ) : keyError ? (
+            <p className="mt-1 text-xs text-[var(--color-red)]">{keyError}</p>
+          ) : (
+            keyChanged && (
+              <p className="mt-1 text-xs text-[var(--color-amber)]">
+                Formulas using the old key will be updated. Values already entered on existing RFQs are stored under the old key and
+                won&rsquo;t carry over.
+              </p>
+            )
+          )}
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -1609,7 +1772,7 @@ function EditTechDataFieldModal({
           </>
         )}
 
-        {!field.is_read_only && (
+        {!field.is_read_only && !isAuto && (
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Fixed value</label>
             {fieldType === 'select' ? (
@@ -1642,23 +1805,26 @@ function EditTechDataFieldModal({
           </div>
         )}
 
-        <div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={isAuto}
-              onChange={(e) => setIsAuto(e.target.checked)}
-              className="rounded border-[var(--color-border)]"
-            />
-            Auto — computed from a formula, read-only on the sheet
-          </label>
-          {isAuto !== field.is_auto && (
-            <p className="mt-1 text-xs text-[var(--color-amber)]">
-              Switching Manual/Auto after creation isn&rsquo;t supported by the backend yet — this won&rsquo;t actually save until that's
-              added.
-            </p>
-          )}
-        </div>
+        {!field.is_catalog_derived && (
+          <div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={isAuto}
+                onChange={(e) => setIsAuto(e.target.checked)}
+                className="rounded border-[var(--color-border)]"
+              />
+              Auto — computed from a formula, read-only on the sheet
+            </label>
+            {isAuto !== field.is_auto && (
+              <p className="mt-1 text-xs text-[var(--color-amber)]">
+                {isAuto
+                  ? 'Switching to Auto: the value will be calculated from the formula.'
+                  : 'Switching to Manual: the formula will be deleted.'}
+              </p>
+            )}
+          </div>
+        )}
 
         {isAuto && (
           <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
@@ -1679,8 +1845,27 @@ function EditTechDataFieldModal({
                       {f.label} ({f.key})
                     </option>
                   ))}
+                  {costRateGroups.map(([tableLabel, rates]) => (
+                    <optgroup key={tableLabel} label={`Cost Rates: ${tableLabel}`}>
+                      {rates.map((r) => (
+                        <option key={r.key} value={r.key}>
+                          {r.label} ({r.key}) = {r.value}
+                          {r.unit ? ` ${r.unit}` : ''}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  {formulaVariables.catalog_prices.length > 0 && (
+                    <optgroup label="Catalog prices">
+                      {formulaVariables.catalog_prices.map((p) => (
+                        <option key={p.key} value={p.key}>
+                          {p.key}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                   <optgroup label="Labour rate lookups">
-                    {INJECTED_RATE_VARIABLES.map((v) => (
+                    {labourRateLookupKeys.map((v) => (
                       <option key={v} value={v}>
                         {v}
                       </option>
@@ -1726,10 +1911,15 @@ function EditTechDataFieldModal({
                 )}
               </p>
             </div>
+            {autoTypeError && <p className="text-xs text-[var(--color-red)]">{autoTypeError}</p>}
             {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
             {preview && preview.value !== null && (
               <p className="text-xs text-[var(--color-ink-faint)]">
-                Preview: <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span> (against the RFQ selected above, unfilled variables read as 0)
+                {preview.isCopy ? 'Copies: ' : 'Preview: '}
+                <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span>{' '}
+                {preview.isCopy
+                  ? `(this RFQ's own ${copySourceField?.label ?? copySourceKey} value)`
+                  : '(against the RFQ selected above, unfilled variables read as 0)'}
               </p>
             )}
           </div>

@@ -213,7 +213,12 @@ export const useDataStore = create<DataState>()((set, get) => ({
   updateItemTechData: (id, itemId, fieldKey, value) =>
     withErrorToast(async () => {
       const current = get().rfqs.find((r) => r.id === id)?.items.find((it) => it.id === itemId)
-      const technicalData = applyFieldChange(current?.technicalData ?? {}, fieldKey, value)
+      const autoOverrideKeys = new Set(
+        Object.entries(current?.fieldOverrides ?? {})
+          .filter(([, o]) => o.autoOverridden)
+          .map(([key]) => key),
+      )
+      const technicalData = applyFieldChange(current?.technicalData ?? {}, fieldKey, value, autoOverrideKeys)
       const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-tech-data/`, { itemId, technicalData })
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
     }),

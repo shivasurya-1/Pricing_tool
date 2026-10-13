@@ -74,9 +74,18 @@ export interface TechDataFieldDto {
   sheet?: SheetTab
   unit: string
   field_type: 'text' | 'number' | 'select'
+  /** The live catalog list for a catalog-linked select (kept current server-side) —
+   * render dropdowns from this, not the hardcoded getOptionsForField() switch. */
   options: string[]
   /** Reference catalog ("table::field") the options were imported from. */
   options_source: string
+  /** Set (non-null) when this select's options are a live reference catalog rather
+   * than a fixed admin-typed list — price_field is the column on that catalog whose
+   * value option_prices below resolves from. */
+  catalog: { table: string; table_label: string; price_field: string } | null
+  /** option -> its price on the linked catalog, when `catalog` is set; null otherwise.
+   * Preferred over lookupCatalogPrice(), which stays only as an offline fallback. */
+  option_prices: Record<string, number | null> | null
   /** Filled in automatically and shown read-only on every RFQ's sheet when set. */
   fixed_value: string
   is_auto: boolean
@@ -85,6 +94,10 @@ export interface TechDataFieldDto {
   formula_key: string | null
   expression: string | null
   input_variables: string[]
+  /** Set when this Auto field's expression is just one other field's key — its value is
+   * copied as-is (text, number or selected option) instead of calculated. The source
+   * field's key, or null for a normal calculated Auto field / a Manual field. */
+  copy_from: string | null
   output_unit: string
   order: number
   is_core: boolean
@@ -142,6 +155,14 @@ export interface NewTechDataFieldInput {
   output_unit?: string
 }
 
+export interface FormulaVariablesDto {
+  fields: { key: string; label: string; section: string; field_type: 'text' | 'number' | 'select'; is_auto: boolean }[]
+  formulas: { key: string; label: string; section: string; output_unit: string }[]
+  cost_rates: { key: string; label: string; value: number; unit: string; table: string; table_label: string }[]
+  labour_rate_lookups: string[]
+  catalog_prices: { key: string; source_field: string }[]
+}
+
 export interface FormulaPreviewResult {
   current: { result: number | null; error: string | null }
   candidate: { result: number | null; error: string | null }
@@ -184,8 +205,17 @@ interface FormulaState {
   logisticsRates: LogisticsRateDto[]
   techDataFields: Record<string, TechDataFieldDto>
   sections: SectionDto[]
+  /** Every variable insertable into a formula/expression — fields, other formulas,
+   * cost-rate table rows, labour-rate lookups and catalog prices — for the "Insert a
+   * field" pickers. Kept current by reloading after any cost-rate or field mutation. */
+  formulaVariables: FormulaVariablesDto
 
   loadAll: () => Promise<void>
+  loadFormulaVariables: () => Promise<void>
+  /** Just tech-data-fields + its option_prices/options — lighter than loadAll(), for
+   * refreshing catalog dropdown options/prices (e.g. when the Technical Data Sheet
+   * drawer opens) without redoing the whole formulas/cost-rates/sections fetch. */
+  loadTechDataFields: () => Promise<void>
   updateFormula: (key: string, expression: string) => Promise<void>
   createFormula: (input: NewFormulaInput) => Promise<void>
   deleteFormula: (key: string) => Promise<void>
@@ -201,10 +231,9 @@ interface FormulaState {
   createTechDataField: (input: NewTechDataFieldInput) => Promise<TechDataFieldDto>
   updateTechDataField: (
     key: string,
-    // `is_auto` is read-only server-side today (see backend/formulas/serializers.py's
-    // TechDataFieldDefinitionSerializer) — included here so the Edit form can send it
-    // once the backend accepts it; until then the backend just ignores it.
-    patch: Partial<Pick<TechDataFieldDto, 'label' | 'section' | 'unit' | 'field_type' | 'options' | 'options_source' | 'fixed_value' | 'is_auto' | 'order'>>,
+    patch: Partial<
+      Pick<TechDataFieldDto, 'key' | 'label' | 'section' | 'unit' | 'field_type' | 'options' | 'options_source' | 'fixed_value' | 'is_auto' | 'order' | 'expression' | 'input_variables' | 'output_unit'>
+    >,
   ) => Promise<void>
   deleteTechDataField: (key: string) => Promise<void>
 
@@ -250,6 +279,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
   logisticsRates: [],
   techDataFields: {},
   sections: [],
+  formulaVariables: { fields: [], formulas: [], cost_rates: [], labour_rate_lookups: [], catalog_prices: [] },
 
   loadAll: async () => {
     if (get().loading) return
@@ -276,10 +306,33 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
         loaded: true,
         loading: false,
       })
+      await get().loadFormulaVariables()
     } catch {
       // Backend not running/deployed — leave `loaded: false` so calc modules use
       // their static fallback. Not a user-facing error in this phase.
       set({ loading: false })
+    }
+  },
+
+  loadFormulaVariables: async () => {
+    try {
+      const formulaVariables = await api.get<FormulaVariablesDto>('/formulas/variables/')
+      set({ formulaVariables })
+    } catch {
+      // Non-fatal — the "Insert a field" pickers just stay on whatever they last had
+      // (or empty, before the first successful load); formula saving still works.
+    }
+  },
+
+  loadTechDataFields: async () => {
+    // Not gated by `loading`/`loaded` like loadAll() — this is meant to be called
+    // opportunistically (e.g. every time the Technical Data Sheet drawer opens) without
+    // disturbing in-flight state elsewhere, and silently does nothing if it fails.
+    try {
+      const fieldList = await api.get<TechDataFieldDto[]>('/formulas/tech-data-fields/')
+      set({ techDataFields: Object.fromEntries(fieldList.map((f) => [f.key, f])) })
+    } catch {
+      // Backend unreachable — keep whatever options/prices were already loaded.
     }
   },
 
@@ -336,12 +389,22 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
   createTechDataField: async (input) => {
     const created = await api.post<TechDataFieldDto>('/formulas/tech-data-fields/', input)
     set((s) => ({ techDataFields: { ...s.techDataFields, [created.key]: created } }))
+    await get().loadFormulaVariables()
     return created
   },
 
   updateTechDataField: async (key, patch) => {
     const updated = await api.patch<TechDataFieldDto>(`/formulas/tech-data-fields/${key}/`, patch)
-    set((s) => ({ techDataFields: { ...s.techDataFields, [key]: updated } }))
+    // A key rename, Manual<->Auto switch, or expression edit changes formulas server-side
+    // (created/renamed/deleted, in both expression text and input_variables) and may
+    // leave this field under a different key — reload everything instead of patching
+    // local state, which would otherwise go stale or keep a now-wrong key.
+    if (patch.key !== undefined || patch.is_auto !== undefined || patch.expression !== undefined) {
+      await get().loadAll()
+    } else {
+      set((s) => ({ techDataFields: { ...s.techDataFields, [key]: updated } }))
+      await get().loadFormulaVariables()
+    }
   },
 
   deleteTechDataField: async (key) => {
@@ -351,6 +414,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       delete next[key]
       return { techDataFields: next }
     })
+    await get().loadFormulaVariables()
   },
 
   createGlobalParameter: async (input) => {
@@ -359,6 +423,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const globalParameters = [...s.globalParameters, created]
       return { globalParameters, costRates: buildCostRates(globalParameters, s.materialRates, s.labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   updateGlobalParameter: async (id, patch) => {
     const updated = await api.patch<GlobalParameterDto>(`/reference/cost-rates/global-parameters/${id}/`, patch)
@@ -366,6 +431,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const globalParameters = s.globalParameters.map((r) => (r.id === id ? updated : r))
       return { globalParameters, costRates: buildCostRates(globalParameters, s.materialRates, s.labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   deleteGlobalParameter: async (id) => {
     await api.delete(`/reference/cost-rates/global-parameters/${id}/`)
@@ -373,6 +439,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const globalParameters = s.globalParameters.filter((r) => r.id !== id)
       return { globalParameters, costRates: buildCostRates(globalParameters, s.materialRates, s.labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
 
   createMaterialRate: async (input) => {
@@ -381,6 +448,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const materialRates = [...s.materialRates, created]
       return { materialRates, costRates: buildCostRates(s.globalParameters, materialRates, s.labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   updateMaterialRate: async (id, patch) => {
     const updated = await api.patch<MaterialRateDto>(`/reference/cost-rates/material-rates/${id}/`, patch)
@@ -388,6 +456,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const materialRates = s.materialRates.map((r) => (r.id === id ? updated : r))
       return { materialRates, costRates: buildCostRates(s.globalParameters, materialRates, s.labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   deleteMaterialRate: async (id) => {
     await api.delete(`/reference/cost-rates/material-rates/${id}/`)
@@ -395,6 +464,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const materialRates = s.materialRates.filter((r) => r.id !== id)
       return { materialRates, costRates: buildCostRates(s.globalParameters, materialRates, s.labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
 
   createLabourRate: async (input) => {
@@ -403,6 +473,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const labourRates = [...s.labourRates, created]
       return { labourRates, costRates: buildCostRates(s.globalParameters, s.materialRates, labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   updateLabourRate: async (id, patch) => {
     const updated = await api.patch<LabourRateDto>(`/reference/cost-rates/machining-labour-rates/${id}/`, patch)
@@ -410,6 +481,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const labourRates = s.labourRates.map((r) => (r.id === id ? updated : r))
       return { labourRates, costRates: buildCostRates(s.globalParameters, s.materialRates, labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   deleteLabourRate: async (id) => {
     await api.delete(`/reference/cost-rates/machining-labour-rates/${id}/`)
@@ -417,6 +489,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const labourRates = s.labourRates.filter((r) => r.id !== id)
       return { labourRates, costRates: buildCostRates(s.globalParameters, s.materialRates, labourRates, s.logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
 
   createLogisticsRate: async (input) => {
@@ -425,6 +498,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const logisticsRates = [...s.logisticsRates, created]
       return { logisticsRates, costRates: buildCostRates(s.globalParameters, s.materialRates, s.labourRates, logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   updateLogisticsRate: async (id, patch) => {
     const updated = await api.patch<LogisticsRateDto>(`/reference/cost-rates/logistics-packing-rates/${id}/`, patch)
@@ -432,6 +506,7 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const logisticsRates = s.logisticsRates.map((r) => (r.id === id ? updated : r))
       return { logisticsRates, costRates: buildCostRates(s.globalParameters, s.materialRates, s.labourRates, logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
   deleteLogisticsRate: async (id) => {
     await api.delete(`/reference/cost-rates/logistics-packing-rates/${id}/`)
@@ -439,5 +514,6 @@ export const useFormulaStore = create<FormulaState>((set, get) => ({
       const logisticsRates = s.logisticsRates.filter((r) => r.id !== id)
       return { logisticsRates, costRates: buildCostRates(s.globalParameters, s.materialRates, s.labourRates, logisticsRates) }
     })
+    await get().loadFormulaVariables()
   },
 }))

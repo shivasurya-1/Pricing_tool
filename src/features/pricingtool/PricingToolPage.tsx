@@ -17,13 +17,39 @@ import type { RFQItem } from '@/types'
 
 const inputClass = 'w-full min-w-[120px] rounded-md border border-[var(--color-border)] px-2 py-1 text-right text-sm outline-none focus:border-[var(--color-blue)]'
 
-const SECTION_LABELS: { key: 'sectionA' | 'sectionB' | 'sectionC' | 'sectionD' | 'sectionE'; title: string; totalKey: 'totalA' | 'totalB' | 'totalC' | 'totalD' | 'totalE' }[] = [
-  { key: 'sectionA', title: 'SECTION A — RAW MATERIALS COST', totalKey: 'totalA' },
-  { key: 'sectionB', title: 'SECTION B — ANCILLARY PARTS', totalKey: 'totalB' },
-  { key: 'sectionC', title: 'SECTION C — IN-HOUSE PROCESSING COST', totalKey: 'totalC' },
-  { key: 'sectionD', title: 'SECTION D — OUTSOURCED PROCESSING COST', totalKey: 'totalD' },
-  { key: 'sectionE', title: 'SECTION E — PACKING & SHIPMENT COST', totalKey: 'totalE' },
+// Exact section accent colors from the client's own Pricing Tool reference artifact
+// (one hex per section, 1-8 and A-F) — applied as inline color so they match that
+// reference precisely rather than being bent to fit the app's existing color tokens.
+// A purely visual per-section distinction; nothing about rows, totals, data flow or
+// calculations changes.
+const CUSTOM_SECTION_COLORS = ['#475569', '#1D4ED8', '#0F766E', '#15803D', '#B45309', '#C2410C', '#7E22CE', '#BE185D']
+
+function hexToRgb(hex: string): string {
+  const n = parseInt(hex.slice(1), 16)
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`
+}
+
+function sectionColorStyle(hex: string) {
+  const rgb = hexToRgb(hex)
+  return {
+    band: { backgroundColor: `rgba(${rgb}, 0.1)`, color: hex, borderColor: `rgba(${rgb}, 0.35)` },
+    total: { backgroundColor: `rgba(${rgb}, 0.16)`, borderColor: hex },
+  }
+}
+
+const SECTION_LABELS: {
+  key: 'sectionA' | 'sectionB' | 'sectionC' | 'sectionD' | 'sectionE'
+  title: string
+  totalKey: 'totalA' | 'totalB' | 'totalC' | 'totalD' | 'totalE'
+  color: string
+}[] = [
+  { key: 'sectionA', title: 'SECTION A — RAW MATERIALS COST', totalKey: 'totalA', color: '#B7791F' },
+  { key: 'sectionB', title: 'SECTION B — ANCILLARY PARTS', totalKey: 'totalB', color: '#B83280' },
+  { key: 'sectionC', title: 'SECTION C — IN-HOUSE PROCESSING COST', totalKey: 'totalC', color: '#2F855A' },
+  { key: 'sectionD', title: 'SECTION D — OUTSOURCED PROCESSING COST', totalKey: 'totalD', color: '#6B46C1' },
+  { key: 'sectionE', title: 'SECTION E — PACKING & SHIPMENT COST', totalKey: 'totalE', color: '#0E7490' },
 ]
+const SECTION_F_COLOR = '#1E3A8A'
 
 export function PricingToolPage() {
   const navigate = useNavigate()
@@ -131,12 +157,15 @@ export function PricingToolPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {SECTION_LABELS.map((section) => (
+                  {SECTION_LABELS.map((section) => {
+                    const c = sectionColorStyle(section.color)
+                    return (
                     <Fragment key={section.key}>
                       <tr>
                         <td
                           colSpan={results.length + 1}
-                          className="sticky left-0 border-b border-t border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-blue)]"
+                          className="sticky left-0 border-b border-t px-3 py-2 text-xs font-semibold uppercase tracking-wide"
+                          style={c.band}
                         >
                           {section.title}
                         </td>
@@ -156,25 +185,28 @@ export function PricingToolPage() {
                           })}
                         </tr>
                       ))}
-                      <tr className="border-b-2 border-[var(--color-border)] bg-[var(--color-surface)] font-semibold">
-                        <td className="sticky left-0 z-10 border-r border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
+                      <tr className="border-b-2 font-semibold" style={{ borderTopColor: c.total.borderColor, borderBottomColor: c.total.borderColor }}>
+                        <td className="sticky left-0 z-10 border-r px-3 py-2" style={{ borderColor: c.total.borderColor, backgroundColor: c.total.backgroundColor }}>
                           Total {section.title.split('—')[0].trim()}
                         </td>
                         {results.map(({ item, pricing }) => (
-                          <td key={item.id} className="px-3 py-2 text-right">
+                          <td key={item.id} className="px-3 py-2 text-right" style={{ backgroundColor: c.total.backgroundColor }}>
                             {formatCurrency(pricing[section.totalKey])}
                           </td>
                         ))}
                       </tr>
                     </Fragment>
-                  ))}
+                  )})}
 
-                  {pricingFieldSections.map((section) => (
+                  {pricingFieldSections.map((section, sectionIdx) => {
+                    const c = sectionColorStyle(CUSTOM_SECTION_COLORS[sectionIdx % CUSTOM_SECTION_COLORS.length])
+                    return (
                     <Fragment key={`custom-${section.title}`}>
                       <tr>
                         <td
                           colSpan={results.length + 1}
-                          className="sticky left-0 border-b border-t border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-blue)]"
+                          className="sticky left-0 border-b border-t px-3 py-2 text-xs font-semibold uppercase tracking-wide"
+                          style={c.band}
                         >
                           {section.title}
                         </td>
@@ -197,12 +229,13 @@ export function PricingToolPage() {
                         </tr>
                       ))}
                     </Fragment>
-                  ))}
+                  )})}
 
                   <tr>
                     <td
                       colSpan={results.length + 1}
-                      className="sticky left-0 border-b border-t border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--color-blue)]"
+                      className="sticky left-0 border-b border-t px-3 py-2 text-xs font-semibold uppercase tracking-wide"
+                      style={sectionColorStyle(SECTION_F_COLOR).band}
                     >
                       Section F — Cost Summary &amp; Pricing
                     </td>
