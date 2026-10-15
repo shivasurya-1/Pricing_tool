@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import clsx from 'clsx'
 import type { PulleyTechDataValues, TechDataFieldOverride, TechDataFieldOverrides } from '@/types'
-import { useTechDataSections, getOptionsForField, type FieldType, type TechDataField } from '@/data/pulleyTechDataSchema'
+import { catalogDisplayValue, useTechDataSections, getOptionsForField, type FieldType, type TechDataField } from '@/data/pulleyTechDataSchema'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ReferenceCatalogPicker } from '@/components/reference/ReferenceCatalogPicker'
@@ -224,7 +224,7 @@ function FieldInput({
           <option value="">Select...</option>
           {options.map((opt) => (
             <option key={opt} value={opt}>
-              {opt}
+              {catalogDisplayValue(field.catalogPrices, opt)}
             </option>
           ))}
         </select>

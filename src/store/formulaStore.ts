@@ -88,6 +88,8 @@ export interface TechDataFieldDto {
   option_prices: Record<string, number | null> | null
   /** Filled in automatically and shown read-only on every RFQ's sheet when set. */
   fixed_value: string
+  /** What the fixed value stands for in a calculation (a catalog select's row price), or null. */
+  fixed_numeric_value?: number | null
   is_auto: boolean
   is_catalog_derived: boolean
   is_read_only: boolean

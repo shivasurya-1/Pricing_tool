@@ -8,6 +8,8 @@ one-off copy taken when the catalog was picked, so new or edited catalog rows ne
 reached the dropdown — reading the catalog live here fixes that.
 """
 
+from urllib.parse import unquote
+
 from django.db.models import Q
 
 from reference.views import REFERENCE_DROPDOWN_FIELDS
@@ -63,6 +65,43 @@ def catalog_options(options_source: str, cache: dict | None = None) -> list[dict
     if cache is not None:
         cache[cache_key] = options
     return options
+
+
+def picked_catalog_label(options_source: str) -> str:
+    """The row label last picked in the Formulas page's catalog picker — the
+    URL-encoded 4th part of "table::label_field::value_field::picked_label"."""
+    parts = (options_source or "").split("::")
+    return unquote(parts[3]) if len(parts) > 3 else ""
+
+
+def catalog_labels_for_value(options: list[dict], value: str) -> list[str]:
+    """Labels of every catalog row whose price equals `value` — lets a fixed value saved
+    as the picked row's price (the Formulas page's catalog picker resolves a pick to its
+    value column) be traced back to the row's label."""
+    try:
+        wanted = float(value)
+    except (TypeError, ValueError):
+        return []
+    labels = []
+    for option in options:
+        try:
+            if option["price"] is not None and float(option["price"]) == wanted:
+                labels.append(option["label"])
+        except (TypeError, ValueError):
+            continue
+    return labels
+
+
+def catalog_option_value(options: list[dict] | None, label: str) -> float | None:
+    """The numeric value a catalog-linked select contributes to a calculation: the
+    picked row's price (value column), or None if the label isn't in the catalog."""
+    for option in options or []:
+        if option["label"] == label:
+            try:
+                return float(option["price"]) if option["price"] is not None else None
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def catalog_link_info(options_source: str) -> dict | None:

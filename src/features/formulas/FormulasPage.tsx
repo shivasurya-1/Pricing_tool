@@ -15,7 +15,8 @@ import { useDataStore } from '@/store/dataStore'
 import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type SheetTab, type TechDataFieldDto } from '@/store/formulaStore'
 import { useUiStore } from '@/store/uiStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
-import { toNumericVars } from '@/lib/pulleyTechDataCalc'
+import { catalogDisplayValue } from '@/data/pulleyTechDataSchema'
+import { computeAutoFields, fieldNumericVars, toNumericVars } from '@/lib/pulleyTechDataCalc'
 import { computePulleyPricing, buildPricingVariables } from '@/lib/pulleyPricingCalc'
 import { evaluateFormula, FormulaError } from '@/lib/formulaEval'
 import { formatCurrency } from '@/lib/format'
@@ -110,10 +111,14 @@ export function FormulasPage() {
     // Cost-rate keys should show their real values in every preview even with no RFQ
     // selected yet — only the RFQ-derived numbers (totals, technicalData fields) need
     // an actual sample item.
-    if (!item?.technicalData) return { ...costRates }
+    // Fixed values and every Auto field's result are included too, so a formula built on
+    // them (e.g. a fixed rate x an Auto weight) previews its real number, not 0.
+    const values = item?.technicalData ?? {}
+    const baseVars = { ...costRates, ...fieldNumericVars(values), ...toNumericVars(computeAutoFields(values)) }
+    if (!item?.technicalData) return baseVars
     const pricing = computePulleyPricing(item.technicalData)
     return {
-      ...toNumericVars(item.technicalData),
+      ...baseVars,
       ...buildPricingVariables(item.technicalData, costRates),
       totalA: pricing.totalA,
       totalB: pricing.totalB,
@@ -125,7 +130,7 @@ export function FormulasPage() {
       listPrice: pricing.listPrice,
       netOemPrice: pricing.netOemPrice,
     }
-  }, [item, costRates, formulas])
+  }, [item, costRates, formulas, techDataFields])
 
   const sectionOrder = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s.order])), [sections])
   const sectionLabels = useMemo(() => [...sections].sort((a, b) => a.order - b.order).map((s) => s.label), [sections])
@@ -1022,7 +1027,7 @@ function TechDataFieldSectionCard({
                   ) : f.is_catalog_derived ? (
                     <Badge tone="purple">Catalog</Badge>
                   ) : f.fixed_value ? (
-                    <Badge tone="amber">Fixed: {f.fixed_value}</Badge>
+                    <span title={f.fixed_value}><Badge tone="amber">Fixed: {f.fixed_numeric_value ?? f.fixed_value}</Badge></span>
                   ) : (
                     <Badge tone="neutral">Manual</Badge>
                   )}
@@ -1781,7 +1786,7 @@ function EditTechDataFieldModal({
                 {trimmedFixed && !parsedOptions.includes(trimmedFixed) && <option value={trimmedFixed}>{trimmedFixed}</option>}
                 {parsedOptions.map((o) => (
                   <option key={o} value={o}>
-                    {o}
+                    {catalogDisplayValue(field.option_prices, o)}
                   </option>
                 ))}
               </select>

@@ -10,7 +10,7 @@ import { useReferenceStore } from '@/store/referenceStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { computePulleyPricing, type CostLine, type PulleyPricingResult } from '@/lib/pulleyPricingCalc'
 import { computeAutoFields } from '@/lib/pulleyTechDataCalc'
-import { PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
+import { catalogDisplayValue, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
 import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
 import './PricingToolSheet.css'
 
@@ -110,8 +110,8 @@ function isTotalRow(field: TechDataField): boolean {
  */
 function fieldValue(field: TechDataField, col: Column, rfq: RFQ): string | number | undefined {
   const raw = field.auto ? (col.autoValues[field.key] ?? col.values[field.key]) : col.values[field.key]
-  if (raw !== undefined && raw !== null && raw !== '') return raw
-  if (field.fixedValue) return field.fixedValue
+  if (raw !== undefined && raw !== null && raw !== '') return catalogDisplayValue(field.catalogPrices, raw)
+  if (field.fixedValue) return catalogDisplayValue(field.catalogPrices, field.fixedValue)
   const id = `${field.key} ${field.label}`
   if (/pulley\s*tag|tag\s*\/\s*name|pulleytag/i.test(id)) return col.values.pulleyTag
   if (/number\s*of\s*pulleys|\bqty\b|quantity/i.test(id)) return col.values.qty ?? col.item.quantity
@@ -372,7 +372,12 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
                 row(
                   field.label,
                   columns.map((c) =>
-                    fmtValue(field.fixed_value || (field.is_read_only ? (c.autoValues[field.key] ?? c.values[field.key]) : c.values[field.key])),
+                    fmtValue(
+                      catalogDisplayValue(
+                        field.option_prices,
+                        field.fixed_value || (field.is_read_only ? (c.autoValues[field.key] ?? c.values[field.key]) : c.values[field.key]),
+                      ),
+                    ),
                   ),
                   { unit: field.unit },
                 ),

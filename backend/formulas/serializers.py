@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .catalog_options import catalog_link_info, catalog_options
+from .catalog_options import catalog_link_info, catalog_option_value, catalog_options
 from .evaluator import copy_source
 from .models import TECH_DATA_AUTO_SECTION_LABEL, FormulaDefinition, FormulaVersion, Section, SectionTab, TechDataFieldDefinition
 
@@ -156,7 +156,21 @@ class TechDataFieldDefinitionSerializer(SheetMixin, serializers.ModelSerializer)
             data["options"] = [o["label"] for o in options]
             data["catalog"] = catalog_link_info(instance.options_source)
             data["option_prices"] = {o["label"]: o["price"] for o in options}
+        data["fixed_numeric_value"] = self._fixed_numeric_value(instance, options)
         return data
+
+    @staticmethod
+    def _fixed_numeric_value(instance, options) -> float | None:
+        """What the fixed value stands for when its key is used in a calculation: a
+        catalog-linked select's picked row value (price), else the value itself if numeric."""
+        if not instance.fixed_value:
+            return None
+        if options is not None:
+            return catalog_option_value(options, instance.fixed_value)
+        try:
+            return float(instance.fixed_value)
+        except ValueError:
+            return None
 
     def validate_section(self, value):
         # An edit that leaves a legacy (unregistered) section unchanged stays allowed.

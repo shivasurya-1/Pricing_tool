@@ -9,7 +9,13 @@ from rest_framework.response import Response
 from accounts.permissions import CanEditReferenceData, IsAdminRole
 from reference.models import GlobalParameter, LogisticsPackingRate, MachiningLabourRate, MaterialRate
 
-from .catalog_options import catalog_link_info, catalog_options
+from .catalog_options import (
+    catalog_labels_for_value,
+    catalog_link_info,
+    catalog_option_value,
+    catalog_options,
+    picked_catalog_label,
+)
 from .evaluator import FormulaError, copy_source, evaluate_formula, extract_variables
 from .models import (
     TECH_DATA_AUTO_SECTION_KEY,
@@ -104,7 +110,9 @@ def resolve_expression_variables(expression: str, self_key: str | None = None) -
     Rejects what would otherwise silently evaluate to 0 (both evaluators read an
     unknown or non-numeric variable as 0): unknown names (typos), the formula's own key,
     and — in arithmetic — select fields whose options aren't numbers (e.g. a bearing
-    designation code; reference its catalog price variable instead). A copy formula
+    designation code; reference its catalog price variable instead). A catalog-linked
+    select is allowed: in a calculation it stands for the picked row's value column
+    (its `option_prices` entry), not its label. A copy formula
     (just one key, see evaluator.copy_source) may reference any field type, since its
     value is copied as-is rather than calculated."""
     names = extract_variables(expression)
@@ -118,6 +126,8 @@ def resolve_expression_variables(expression: str, self_key: str | None = None) -
 
     non_numeric = []
     for field in TechDataFieldDefinition.objects.filter(key__in=names, field_type="select", formula__isnull=True):
+        if catalog_link_info(field.options_source) is not None:
+            continue
         if not field.options or not all(_is_number(o) for o in field.options):
             non_numeric.append(field.key)
     if non_numeric:
@@ -465,8 +475,25 @@ class TechDataFieldDefinitionViewSet(
             else:
                 final_options = extra.get("options", serializer.validated_data.get("options", field.options))
             if requested_type == "select" and fixed_value not in final_options:
-                where = " (it's no longer in the linked catalog)" if live_options is not None else ""
-                raise ValidationError({"fixed_value": f"'{fixed_value}' isn't one of this field's options{where}."})
+                # The catalog picker resolves a pick to the row's value column (e.g. its
+                # price), so map a value back to its row's label — the label is what the
+                # dropdown shows and what the sheet stores.
+                matches = catalog_labels_for_value(live_options, fixed_value) if live_options is not None else []
+                # Several rows can share one value (e.g. two shell bands at 110/kg); the
+                # picker also records the row actually picked as options_source's last part.
+                picked_label = picked_catalog_label(options_source)
+                if picked_label in matches:
+                    matches = [picked_label]
+                if len(matches) == 1:
+                    fixed_value = matches[0]
+                elif len(matches) > 1:
+                    raise ValidationError({
+                        "fixed_value": f"'{fixed_value}' is the value of several catalog rows ({', '.join(matches)}) — "
+                        "pick the row itself instead."
+                    })
+                else:
+                    where = " (it's no longer in the linked catalog)" if live_options is not None else ""
+                    raise ValidationError({"fixed_value": f"'{fixed_value}' isn't one of this field's options{where}."})
             if requested_type == "number":
                 try:
                     float(fixed_value)
@@ -532,6 +559,7 @@ class TechDataFieldDefinitionViewSet(
                 **catalog_link_info(field.options_source),
                 "label": field.label,
                 "fixed_value": field.fixed_value,
+                "fixed_numeric_value": catalog_option_value(options, field.fixed_value) if field.fixed_value else None,
                 "options": options,
             }
         return Response(result)

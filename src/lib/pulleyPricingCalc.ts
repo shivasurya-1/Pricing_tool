@@ -18,6 +18,7 @@ import type { PulleyTechDataValues } from '@/types'
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
 import { useFormulaStore } from '@/store/formulaStore'
+import { computeAutoFields, fieldNumericVars } from '@/lib/pulleyTechDataCalc'
 import { evaluateFormula } from '@/lib/formulaEval'
 
 const num = (v: string | number | undefined): number => (typeof v === 'number' ? v : Number(v) || 0)
@@ -63,7 +64,12 @@ export function buildPricingVariables(values: PulleyTechDataValues, costRates: R
     // spread first so the hand-picked entries below (often renamed, e.g.
     // paintingSurfacePrepInrPerM2 from the key paintingSurfacePrep) still win.
     ...costRates,
-    ...toNumericVars(values),
+    // Auto field results not saved on this item yet (e.g. a Pricing Tool field added
+    // after the RFQ was filled in), then the item's own values — which keep any manual
+    // override — with fixed values filling empty fields and catalog selects read as
+    // their row's price.
+    ...toNumericVars(computeAutoFields(values)),
+    ...fieldNumericVars(values),
     qty,
     shellRatePerKg: num(values.shellRatePerKg) || r.rawForgingRates.shellPlateInrPerKg,
     endDiscRatePerKg: num(values.endDiskRatePerKg) || r.rawForgingRates.endDiscInrPerKg,

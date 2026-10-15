@@ -43,6 +43,25 @@ export function toNumericVars(values: PulleyTechDataValues): Record<string, numb
   return out
 }
 
+/** toNumericVars() plus what the Formulas page set up: a field left empty on this item
+ * reads as its fixed value, and a catalog-linked select reads as its picked row's price
+ * (option_prices) rather than its label — otherwise both would evaluate as 0. */
+export function fieldNumericVars(values: PulleyTechDataValues): Record<string, number> {
+  const out = toNumericVars(values)
+  for (const f of Object.values(useFormulaStore.getState().techDataFields)) {
+    if (f.is_auto) continue
+    const raw = values[f.key]
+    if (raw === undefined || raw === null || raw === '') {
+      if (f.fixed_numeric_value != null) out[f.key] = f.fixed_numeric_value
+      else if (f.fixed_value && !Number.isNaN(Number(f.fixed_value))) out[f.key] = Number(f.fixed_value)
+    } else if (f.option_prices) {
+      const price = f.option_prices[String(raw)]
+      if (price != null) out[f.key] = Number(price)
+    }
+  }
+  return out
+}
+
 /**
  * Evaluates every Auto Technical Data Sheet field (the ~21 known ones plus any custom
  * field added later via the Formulas page's "Add Field" flow) in dependency order,
@@ -59,7 +78,7 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataV
   const { techDataFields, costRates } = useFormulaStore.getState()
   // Every Cost Rate Tables key is now insertable directly into an Auto field's
   // expression — spread first so a sheet field sharing the same key still wins.
-  const vars: Record<string, number> = { ...costRates, ...toNumericVars(values) }
+  const vars: Record<string, number> = { ...costRates, ...fieldNumericVars(values) }
   const out: PulleyTechDataValues = {}
 
   for (const op of IN_HOUSE_OPERATIONS) {

@@ -373,6 +373,42 @@ class TechDataFieldDefinitionApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("fixed_value", response.data)
 
+    def test_fixed_value_sent_as_the_picked_rows_value_is_saved_as_its_label(self):
+        field = self._bearing_catalog_field()
+        field.options_source = "bearings::designation::price_eur::22218%20EK"
+        field.save()
+        url = "/api/formulas/tech-data-fields/bearing1Designation/"
+        response = self.admin_client.patch(url, {"fixed_value": "110"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["fixed_value"], "22218 EK")
+        self.assertEqual(response.data["fixed_numeric_value"], 110.0)
+
+    def test_fixed_value_matching_several_catalog_rows_is_rejected(self):
+        from reference.models import BearingCatalogEntry
+
+        self._bearing_catalog_field()
+        BearingCatalogEntry.objects.create(designation="TWIN 1", bore_mm=90, price_inr=12000, price_eur=110, delivery_days=10)
+        url = "/api/formulas/tech-data-fields/bearing1Designation/"
+        response = self.admin_client.patch(url, {"fixed_value": "12000", "options_source": "bearings::designation"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("several catalog rows", str(response.data["fixed_value"]))
+
+        # ...unless the picker also says which row was picked.
+        response = self.admin_client.patch(
+            url, {"fixed_value": "12000", "options_source": "bearings::designation::price_inr::TWIN%201"}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["fixed_value"], "TWIN 1")
+
+    def test_auto_field_can_calculate_with_a_catalog_linked_select(self):
+        self._bearing_catalog_field()
+        payload = {
+            "key": "total", "label": "Total", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "number",
+            "is_auto": True, "expression": "2 * bearing1Designation",
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+
     def test_calculated_auto_field_has_no_copy_from(self):
         response = self.admin_client.get(f"/api/formulas/tech-data-fields/{self.auto_field.key}/")
         self.assertIsNone(response.data["copy_from"])

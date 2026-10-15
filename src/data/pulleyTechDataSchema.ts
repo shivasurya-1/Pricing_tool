@@ -391,3 +391,11 @@ export const DESIGNATION_TO_PRICE_FIELD: Record<string, string> = {
   ...Object.fromEntries(Object.entries(PRICE_FIELD_SOURCE).map(([priceKey, designationKey]) => [designationKey, priceKey])),
   adapterSleeveCode: 'sleevePrice',
 }
+
+/** What a master-data (catalog-linked) select shows for a picked row: its value column
+ * (e.g. a shell band's 110 ₹/kg) rather than its name. The name stays the stored value,
+ * so the field keeps tracking catalog rate changes; anything else is shown as-is. */
+export function catalogDisplayValue<T>(prices: Record<string, number | null> | null | undefined, value: T): T | number {
+  const price = prices && (typeof value === 'string' || typeof value === 'number') ? prices[String(value)] : undefined
+  return price === undefined || price === null ? value : price
+}
