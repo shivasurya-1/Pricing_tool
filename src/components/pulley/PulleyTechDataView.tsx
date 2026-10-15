@@ -27,11 +27,15 @@ export function PulleyTechDataView({ values }: { values: PulleyTechDataValues | 
           <p className="mb-1.5 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-blue)]">
             {section.title}
           </p>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-3">
+          <div className="flex gap-4 px-0.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-ink-faint)]">
+            <span className="flex-1">Parameter</span>
+            <span className="w-40 text-right">Value</span>
+          </div>
+          <div>
             {section.fields.map((field) => (
-              <div key={field.key} className="flex justify-between gap-2 border-b border-dashed border-[var(--color-border)] py-1 text-sm">
-                <span className="text-[var(--color-ink-faint)]">{field.label}</span>
-                <span className="text-right font-medium text-[var(--color-ink)]">
+              <div key={field.key} className="flex gap-4 border-b border-dashed border-[var(--color-border)] py-1.5 text-sm">
+                <span className="flex-1 text-[var(--color-ink-faint)]">{field.label}</span>
+                <span className="w-40 text-right font-medium text-[var(--color-ink)]">
                   {values[field.key]}
                   {field.unit && <span className="ml-0.5 text-[var(--color-ink-faint)]">{field.unit}</span>}
                 </span>

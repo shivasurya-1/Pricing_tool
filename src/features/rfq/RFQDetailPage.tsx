@@ -11,9 +11,8 @@ import { Tabs } from '@/components/ui/Tabs'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { StatusBadge } from '@/components/StatusBadge'
 import { PriorityBadge } from '@/components/PriorityBadge'
-import { Badge } from '@/components/ui/Badge'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
-import { getFieldLabel } from '@/data/pulleyTechDataSchema'
+import { PulleyTechDataCompareView } from '@/components/pulley/PulleyTechDataCompareView'
 import { WorkflowTimeline } from '@/components/WorkflowTimeline'
 import { EmptyState } from '@/components/EmptyState'
 import { formatCurrency, formatDate, formatDateTime, formatFileSize } from '@/lib/format'
@@ -190,38 +189,20 @@ export function RFQDetailPage() {
           {tab === 'Items' && <RfqItemsPanel rfq={rfq} />}
 
           {tab === 'Technical' && (
-            <div className="space-y-5">
-              {rfq.items.map((item) => {
-                const product = products.find((p) => p.id === item.productId)
-                const captured = isTechDataFilled(item.technicalData)
-                const entries = captured
-                  ? Object.entries(item.technicalData ?? {})
-                      .filter(([, v]) => v !== undefined && v !== '')
-                      .map(([k, v]) => [getFieldLabel(k), v] as const)
-                  : Object.entries(product?.technicalData ?? {})
-                if (entries.length === 0) return null
-                return (
-                  <div key={item.id}>
-                    <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-[var(--color-ink)]">
-                      {item.productName}
-                      {captured ? (
-                        <Badge tone="green">From Customer Tech Data Sheet</Badge>
-                      ) : (
-                        <Badge tone="neutral">Product Master defaults</Badge>
-                      )}
-                    </p>
-                    <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-3">
-                      {entries.map(([k, v]) => (
-                        <div key={k} className="flex justify-between border-b border-dashed border-[var(--color-border)] py-1">
-                          <span className="text-[var(--color-ink-faint)]">{k}</span>
-                          <span className="font-medium text-[var(--color-ink)]">{v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+            <Card className="p-4">
+              <PulleyTechDataCompareView
+                columns={rfq.items.map((item) => {
+                  const product = products.find((p) => p.id === item.productId)
+                  const captured = isTechDataFilled(item.technicalData)
+                  return {
+                    key: item.id,
+                    label: item.productName,
+                    badge: captured ? 'From Customer Tech Data Sheet' : 'Product Master defaults',
+                    values: captured ? item.technicalData : product?.technicalData,
+                  }
+                })}
+              />
+            </Card>
           )}
 
           {tab === 'Sourcing' && (
