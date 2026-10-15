@@ -16,7 +16,6 @@ import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type Sheet
 import { useUiStore } from '@/store/uiStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { catalogDisplayValue, IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
-import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { computeAutoFields, fieldNumericVars, toNumericVars } from '@/lib/pulleyTechDataCalc'
 import { computePulleyPricing, buildPricingVariables } from '@/lib/pulleyPricingCalc'
 import { evaluateFormula, FormulaError } from '@/lib/formulaEval'
@@ -33,15 +32,15 @@ const INJECTED_RATE_VARIABLES = ['c1RateInrPerHour', 'c2RateInrPerHour', 'c3Rate
 
 const OPERATOR_TOKENS = ['+', '-', '*', '/', '(', ')']
 
-// Where each catalog price variable's number comes from, named as the menu pages name
-// it — the price of the row picked in its designation field on the RFQ.
-const CATALOG_PRICE_SOURCES: Record<string, string> = {
-  bearing1Price: 'Bearing & Sleeve Data → A. Spherical Roller Bearings, INR/piece',
-  bearing2Price: 'Bearing & Sleeve Data → A. Spherical Roller Bearings, INR/piece',
-  sleevePrice: 'Bearing & Sleeve Data → B. Adapter Sleeves, INR/piece',
-  housingPrice: 'Bearing & Sleeve Data → C. Bearing Housings, INR/piece',
-  laggingRate: 'Bearing & Sleeve Data → D. Lagging, INR/m²',
-  lockingDevicePrice: 'Bearing & Sleeve Data → E. Locking Devices, negotiated rate',
+// Display names for the catalog price variables — each is the price of the row picked
+// in its designation field on the RFQ, from that section of Bearing & Sleeve Data.
+const CATALOG_PRICE_LABELS: Record<string, string> = {
+  bearing1Price: 'Bearing 1 price — A. Spherical Roller Bearings',
+  bearing2Price: 'Bearing 2 price — A. Spherical Roller Bearings',
+  sleevePrice: 'Sleeve price — B. Adapter Sleeves',
+  housingPrice: 'Housing price — C. Bearing Housings',
+  laggingRate: 'Lagging rate — D. Lagging',
+  lockingDevicePrice: 'Locking device price — E. Locking Devices',
 }
 
 const SHEET_GROUP_LABELS: Record<SheetTab, string> = {
@@ -54,7 +53,6 @@ const SHEET_GROUP_LABELS: Record<SheetTab, string> = {
  * `formulas` is only passed by the Add Formula form (Section A-F formula keys). */
 function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[]; formulas?: FormulaDefinitionDto[] }) {
   const formulaVariables = useFormulaStore((s) => s.formulaVariables)
-  const costRates = useFormulaStore((s) => s.costRates)
 
   const fieldKeys = new Set(fields.map((f) => f.key))
   const fieldGroups = (['tech_sheet', 'pricing_tool'] as SheetTab[])
@@ -64,8 +62,6 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
     (tableLabel) => [tableLabel, formulaVariables.cost_rates.filter((r) => r.table_label === tableLabel)] as const,
   )
   const labourKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
-  const fieldNote = (f: TechDataFieldDto) =>
-    f.is_auto ? ' · Auto formula' : f.catalog ? ` · picked from ${f.catalog.table_label}` : f.fixed_value ? ' · fixed value' : ''
 
   return (
     <>
@@ -75,7 +71,7 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
             .filter((f) => !fieldKeys.has(f.key))
             .map((f) => (
               <option key={f.key} value={f.key}>
-                {f.label} ({f.key}) · {f.section}
+                {f.label} ({f.key})
               </option>
             ))}
         </optgroup>
@@ -84,7 +80,7 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
         <optgroup key={sheet} label={SHEET_GROUP_LABELS[sheet]}>
           {list.map((f) => (
             <option key={f.key} value={f.key}>
-              {f.label} ({f.key}){fieldNote(f)}
+              {f.label} ({f.key})
             </option>
           ))}
         </optgroup>
@@ -93,8 +89,7 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
         <optgroup key={tableLabel} label={`Cost Rate Tables → ${tableLabel}`}>
           {rates.map((r) => (
             <option key={r.key} value={r.key}>
-              {r.label} ({r.key}) = {r.value}
-              {r.unit ? ` ${r.unit}` : ''}
+              {r.label} ({r.key})
             </option>
           ))}
         </optgroup>
@@ -103,7 +98,7 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
         <optgroup label="Catalog prices — price of the row picked on the RFQ (Bearing & Sleeve Data)">
           {formulaVariables.catalog_prices.map((p) => (
             <option key={p.key} value={p.key}>
-              {p.key} → {CATALOG_PRICE_SOURCES[p.key] ?? 'catalog price'} (row picked in {p.source_field})
+              {CATALOG_PRICE_LABELS[p.key] ?? p.key} ({p.key})
             </option>
           ))}
         </optgroup>
@@ -118,11 +113,9 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
               </option>
             )
           }
-          const rate = costRates[op.rateKey]
           return (
             <option key={v} value={v}>
-              {v} → {op.label}: {op.rateKey}{' '}
-              {rate !== undefined ? `= ${rate} INR/h` : `(not in the table — built-in ${PULLEY_COST_RATES.labourRatesInrPerHour[op.rateKey]} INR/h)`}
+              {op.label} — {op.rateKey} ({v})
             </option>
           )
         })}
