@@ -15,7 +15,8 @@ import { useDataStore } from '@/store/dataStore'
 import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type SheetTab, type TechDataFieldDto } from '@/store/formulaStore'
 import { useUiStore } from '@/store/uiStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
-import { catalogDisplayValue } from '@/data/pulleyTechDataSchema'
+import { catalogDisplayValue, IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
+import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { computeAutoFields, fieldNumericVars, toNumericVars } from '@/lib/pulleyTechDataCalc'
 import { computePulleyPricing, buildPricingVariables } from '@/lib/pulleyPricingCalc'
 import { evaluateFormula, FormulaError } from '@/lib/formulaEval'
@@ -31,6 +32,104 @@ const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 p
 const INJECTED_RATE_VARIABLES = ['c1RateInrPerHour', 'c2RateInrPerHour', 'c3RateInrPerHour', 'c4RateInrPerHour', 'c5RateInrPerHour', 'c6RateInrPerHour', 'c7RateInrPerHour']
 
 const OPERATOR_TOKENS = ['+', '-', '*', '/', '(', ')']
+
+// Where each catalog price variable's number comes from, named as the menu pages name
+// it — the price of the row picked in its designation field on the RFQ.
+const CATALOG_PRICE_SOURCES: Record<string, string> = {
+  bearing1Price: 'Bearing & Sleeve Data → A. Spherical Roller Bearings, INR/piece',
+  bearing2Price: 'Bearing & Sleeve Data → A. Spherical Roller Bearings, INR/piece',
+  sleevePrice: 'Bearing & Sleeve Data → B. Adapter Sleeves, INR/piece',
+  housingPrice: 'Bearing & Sleeve Data → C. Bearing Housings, INR/piece',
+  laggingRate: 'Bearing & Sleeve Data → D. Lagging, INR/m²',
+  lockingDevicePrice: 'Bearing & Sleeve Data → E. Locking Devices, negotiated rate',
+}
+
+const SHEET_GROUP_LABELS: Record<SheetTab, string> = {
+  tech_sheet: 'Technical Data Sheet fields — entered on each RFQ',
+  pricing_tool: 'Pricing Tool fields',
+}
+
+/** The option groups of every "Insert a field/variable" picker, each labelled with the
+ * page and table its numbers come from, so a key like c1RateInrPerHour isn't a mystery.
+ * `formulas` is only passed by the Add Formula form (Section A-F formula keys). */
+function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[]; formulas?: FormulaDefinitionDto[] }) {
+  const formulaVariables = useFormulaStore((s) => s.formulaVariables)
+  const costRates = useFormulaStore((s) => s.costRates)
+
+  const fieldKeys = new Set(fields.map((f) => f.key))
+  const fieldGroups = (['tech_sheet', 'pricing_tool'] as SheetTab[])
+    .map((sheet) => [sheet, fields.filter((f) => (f.sheet ?? 'tech_sheet') === sheet)] as const)
+    .filter(([, list]) => list.length > 0)
+  const costRateGroups = [...new Set(formulaVariables.cost_rates.map((r) => r.table_label))].map(
+    (tableLabel) => [tableLabel, formulaVariables.cost_rates.filter((r) => r.table_label === tableLabel)] as const,
+  )
+  const labourKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
+  const fieldNote = (f: TechDataFieldDto) =>
+    f.is_auto ? ' · Auto formula' : f.catalog ? ` · picked from ${f.catalog.table_label}` : f.fixed_value ? ' · fixed value' : ''
+
+  return (
+    <>
+      {formulas && formulas.length > 0 && (
+        <optgroup label="Pricing formulas — Formulas page (Sections A–F)">
+          {formulas
+            .filter((f) => !fieldKeys.has(f.key))
+            .map((f) => (
+              <option key={f.key} value={f.key}>
+                {f.label} ({f.key}) · {f.section}
+              </option>
+            ))}
+        </optgroup>
+      )}
+      {fieldGroups.map(([sheet, list]) => (
+        <optgroup key={sheet} label={SHEET_GROUP_LABELS[sheet]}>
+          {list.map((f) => (
+            <option key={f.key} value={f.key}>
+              {f.label} ({f.key}){fieldNote(f)}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+      {costRateGroups.map(([tableLabel, rates]) => (
+        <optgroup key={tableLabel} label={`Cost Rate Tables → ${tableLabel}`}>
+          {rates.map((r) => (
+            <option key={r.key} value={r.key}>
+              {r.label} ({r.key}) = {r.value}
+              {r.unit ? ` ${r.unit}` : ''}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+      {formulaVariables.catalog_prices.length > 0 && (
+        <optgroup label="Catalog prices — price of the row picked on the RFQ (Bearing & Sleeve Data)">
+          {formulaVariables.catalog_prices.map((p) => (
+            <option key={p.key} value={p.key}>
+              {p.key} → {CATALOG_PRICE_SOURCES[p.key] ?? 'catalog price'} (row picked in {p.source_field})
+            </option>
+          ))}
+        </optgroup>
+      )}
+      <optgroup label="Labour rates per operation — Cost Rate Tables → Machining & Labour Rates">
+        {labourKeys.map((v) => {
+          const op = IN_HOUSE_OPERATIONS.find((o) => `${o.key}RateInrPerHour` === v)
+          if (!op) {
+            return (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            )
+          }
+          const rate = costRates[op.rateKey]
+          return (
+            <option key={v} value={v}>
+              {v} → {op.label}: {op.rateKey}{' '}
+              {rate !== undefined ? `= ${rate} INR/h` : `(not in the table — built-in ${PULLEY_COST_RATES.labourRatesInrPerHour[op.rateKey]} INR/h)`}
+            </option>
+          )
+        })}
+      </optgroup>
+    </>
+  )
+}
 
 // Matches backend/formulas/models.py's TECH_DATA_AUTO_SECTION_LABEL — the one
 // formula section that isn't a pricing stage, used to split the page into
@@ -780,16 +879,6 @@ function AddFormulaModal({
   )
   const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
   const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
-  // Grouped by table_label ("Cost Rates: Global Parameters" etc.), insertion order
-  // preserved so tables appear in the same order the backend lists them in.
-  const costRateGroups = useMemo(() => {
-    const byLabel = new Map<string, typeof formulaVariables.cost_rates>()
-    for (const r of formulaVariables.cost_rates) {
-      if (!byLabel.has(r.table_label)) byLabel.set(r.table_label, [])
-      byLabel.get(r.table_label)!.push(r)
-    }
-    return [...byLabel.entries()]
-  }, [formulaVariables])
 
   const insertToken = (token: string) => {
     const el = expressionRef.current
@@ -901,37 +990,7 @@ function AddFormulaModal({
                 className={inputClass}
               >
                 <option value="">Pick a formula or field to insert...</option>
-                {insertableKeys.map((k) => (
-                  <option key={k} value={k}>
-                    {k}
-                  </option>
-                ))}
-                {costRateGroups.map(([tableLabel, rates]) => (
-                  <optgroup key={tableLabel} label={`Cost Rates: ${tableLabel}`}>
-                    {rates.map((r) => (
-                      <option key={r.key} value={r.key}>
-                        {r.label} ({r.key}) = {r.value}
-                        {r.unit ? ` ${r.unit}` : ''}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-                {formulaVariables.catalog_prices.length > 0 && (
-                  <optgroup label="Catalog prices">
-                    {formulaVariables.catalog_prices.map((p) => (
-                      <option key={p.key} value={p.key}>
-                        {p.key}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                <optgroup label="Labour rate lookups">
-                  {labourRateLookupKeys.map((v) => (
-                    <option key={v} value={v}>
-                      {v}
-                    </option>
-                  ))}
-                </optgroup>
+                <InsertVariableOptions fields={Object.values(techDataFields).filter((f) => f.key !== key).sort((a, b) => a.label.localeCompare(b.label))} formulas={Object.values(formulas).filter((f) => f.key !== key).sort((a, b) => a.key.localeCompare(b.key))} />
               </select>
             </div>
             <div>
@@ -1139,14 +1198,6 @@ function AddTechDataFieldModal({
   )
   const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
   const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
-  const costRateGroups = useMemo(() => {
-    const byLabel = new Map<string, typeof formulaVariables.cost_rates>()
-    for (const r of formulaVariables.cost_rates) {
-      if (!byLabel.has(r.table_label)) byLabel.set(r.table_label, [])
-      byLabel.get(r.table_label)!.push(r)
-    }
-    return [...byLabel.entries()]
-  }, [formulaVariables])
 
   const insertToken = (token: string) => {
     const el = expressionRef.current
@@ -1378,37 +1429,7 @@ function AddTechDataFieldModal({
                   className={inputClass}
                 >
                   <option value="">Pick a field to insert...</option>
-                  {insertableFields.map((f) => (
-                    <option key={f.key} value={f.key}>
-                      {f.label} ({f.key})
-                    </option>
-                  ))}
-                  {costRateGroups.map(([tableLabel, rates]) => (
-                    <optgroup key={tableLabel} label={`Cost Rates: ${tableLabel}`}>
-                      {rates.map((r) => (
-                        <option key={r.key} value={r.key}>
-                          {r.label} ({r.key}) = {r.value}
-                          {r.unit ? ` ${r.unit}` : ''}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                  {formulaVariables.catalog_prices.length > 0 && (
-                    <optgroup label="Catalog prices">
-                      {formulaVariables.catalog_prices.map((p) => (
-                        <option key={p.key} value={p.key}>
-                          {p.key}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  <optgroup label="Labour rate lookups">
-                    {labourRateLookupKeys.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </optgroup>
+                  <InsertVariableOptions fields={insertableFields} />
                 </select>
               </div>
               <div>
@@ -1538,14 +1559,6 @@ function EditTechDataFieldModal({
   )
   const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
   const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
-  const costRateGroups = useMemo(() => {
-    const byLabel = new Map<string, typeof formulaVariables.cost_rates>()
-    for (const r of formulaVariables.cost_rates) {
-      if (!byLabel.has(r.table_label)) byLabel.set(r.table_label, [])
-      byLabel.get(r.table_label)!.push(r)
-    }
-    return [...byLabel.entries()]
-  }, [formulaVariables])
 
   const insertToken = (token: string) => {
     const el = expressionRef.current
@@ -1845,37 +1858,7 @@ function EditTechDataFieldModal({
                   className={inputClass}
                 >
                   <option value="">Pick a field to insert...</option>
-                  {insertableFields.map((f) => (
-                    <option key={f.key} value={f.key}>
-                      {f.label} ({f.key})
-                    </option>
-                  ))}
-                  {costRateGroups.map(([tableLabel, rates]) => (
-                    <optgroup key={tableLabel} label={`Cost Rates: ${tableLabel}`}>
-                      {rates.map((r) => (
-                        <option key={r.key} value={r.key}>
-                          {r.label} ({r.key}) = {r.value}
-                          {r.unit ? ` ${r.unit}` : ''}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                  {formulaVariables.catalog_prices.length > 0 && (
-                    <optgroup label="Catalog prices">
-                      {formulaVariables.catalog_prices.map((p) => (
-                        <option key={p.key} value={p.key}>
-                          {p.key}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  <optgroup label="Labour rate lookups">
-                    {labourRateLookupKeys.map((v) => (
-                      <option key={v} value={v}>
-                        {v}
-                      </option>
-                    ))}
-                  </optgroup>
+                  <InsertVariableOptions fields={insertableFields} />
                 </select>
               </div>
               <div>
