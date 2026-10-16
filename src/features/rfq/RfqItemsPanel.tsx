@@ -30,10 +30,13 @@ export function RfqItemsPanel({ rfq }: { rfq: RFQ }) {
   const duplicateRfqItem = useDataStore((s) => s.duplicateRfqItem)
   const removeRfqItem = useDataStore((s) => s.removeRfqItem)
   const saveItemTechData = useDataStore((s) => s.saveItemTechData)
+  const updateItemFieldOverride = useDataStore((s) => s.updateItemFieldOverride)
   const role = useAuthStore((s) => s.role)
   const userName = useAuthStore((s) => s.name)
   const pushToast = useUiStore((s) => s.pushToast)
   const techDataSections = useTechDataSections()
+  // Same rule as the backend's validate_field_overrides — Sales would get a 403.
+  const canChangeFieldOverrides = role === 'Controlling' || role === 'Admin'
 
   const editable = ITEM_EDITABLE_STAGES.includes(rfq.stage) && canRoleActOnStage(role, rfq.stage)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -236,6 +239,11 @@ export function RfqItemsPanel({ rfq }: { rfq: RFQ }) {
               values={draft}
               onChange={(key, value) => setDraft((prev) => applyFieldChange(prev, key, value))}
               fieldOverrides={drawerItem.fieldOverrides}
+              onFieldOverrideChange={
+                canChangeFieldOverrides
+                  ? (key, override) => updateItemFieldOverride(rfq.id, drawerItem.id, key, override).catch(() => undefined)
+                  : undefined
+              }
             />
             <div className="sticky bottom-0 mt-5 flex justify-end gap-2 border-t border-[var(--color-border)] bg-[var(--color-surface-alt)] pt-3">
               <Button variant="secondary" onClick={() => setDrawerItemId(null)}>

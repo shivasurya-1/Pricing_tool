@@ -54,22 +54,42 @@ export interface PulleyPricingResult {
 
 /** Builds the full variable bag Section A-F formulas evaluate against — exported so
  * the Formulas page's preview feature can show a real sample's numbers, not just an
- * empty form. */
-export function buildPricingVariables(values: PulleyTechDataValues, costRates: Record<string, number>): Record<string, number> {
+ * empty form.
+ *
+ * `autoOverrideKeys` lists Auto fields this item has been manually overridden on (see
+ * TechDataFieldOverride.autoOverridden) — pass the same set applyFieldChange uses. For
+ * any other Auto field, the freshly computed value always wins over whatever happens
+ * to be saved on the item (which can be blank/stale, e.g. an RFQ saved before that
+ * field had a value) — only an explicit per-RFQ override may keep the saved one.
+ * Manual fields are unaffected and keep today's behavior (saved value, else fixed
+ * value, else a catalog select's price). */
+export function buildPricingVariables(
+  values: PulleyTechDataValues,
+  costRates: Record<string, number>,
+  autoOverrideKeys?: Set<string>,
+): Record<string, number> {
   const r = PULLEY_COST_RATES
   const qty = num(values.qty) || 1
   const shaftMaterial = String(values.shaftMaterial ?? '')
+  const { techDataFields } = useFormulaStore.getState()
+  const computedAuto = toNumericVars(computeAutoFields(values))
+  // Only let a *non-overridden* Auto field's fresh computation win over the item's
+  // saved value below — an overridden Auto field, and every Manual field, keep
+  // fieldNumericVars()'s existing behavior untouched.
+  const nonOverriddenComputedAuto = Object.fromEntries(
+    Object.entries(computedAuto).filter(([k]) => techDataFields[k]?.is_auto && !autoOverrideKeys?.has(k)),
+  )
   return {
     // Every Cost Rate Tables key is now insertable directly into a pricing formula —
     // spread first so the hand-picked entries below (often renamed, e.g.
     // paintingSurfacePrepInrPerM2 from the key paintingSurfacePrep) still win.
     ...costRates,
-    // Auto field results not saved on this item yet (e.g. a Pricing Tool field added
-    // after the RFQ was filled in), then the item's own values — which keep any manual
-    // override — with fixed values filling empty fields and catalog selects read as
-    // their row's price.
-    ...toNumericVars(computeAutoFields(values)),
+    // The item's own values — manual fields, any per-RFQ overridden Auto field, fixed
+    // values filling empty fields, and catalog selects read as their row's price —
+    // then non-overridden Auto fields' freshly computed results win over whatever
+    // (possibly blank/stale) value happens to be saved for them on this item.
     ...fieldNumericVars(values),
+    ...nonOverriddenComputedAuto,
     qty,
     shellRatePerKg: num(values.shellRatePerKg) || r.rawForgingRates.shellPlateInrPerKg,
     endDiscRatePerKg: num(values.endDiskRatePerKg) || r.rawForgingRates.endDiscInrPerKg,

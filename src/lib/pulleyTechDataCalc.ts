@@ -19,12 +19,16 @@ import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore } from '@/store/formulaStore'
 import { evaluateFormula } from '@/lib/formulaEval'
 
-/** Prices a just-picked designation: the field's own live option_prices (from the
- * backend's catalog link) wins when present, falling back to lookupCatalogPrice()
- * only when the field isn't catalog-linked server-side yet (e.g. backend unreachable). */
+/** Prices a just-picked designation: `catalog_prices` (label -> its paired catalog
+ * price, always present for a catalog-linked select regardless of Price Field) wins
+ * when present. `option_prices` is NOT used here — it only holds this field's own
+ * resolved value when value_field is set (i.e. when this field's value IS a price,
+ * not a designation), so it's the wrong map for pricing a *paired* field like
+ * bearing1Price from bearing1Designation. Falls back to lookupCatalogPrice() only
+ * when the field isn't catalog-linked server-side yet (e.g. backend unreachable). */
 function resolveDesignationPrice(designationKey: string, priceKey: string, designationValue: string): number | null {
   const field = useFormulaStore.getState().techDataFields[designationKey]
-  if (field?.option_prices) return field.option_prices[designationValue] ?? null
+  if (field?.catalog_prices) return field.catalog_prices[designationValue] ?? null
   return lookupCatalogPrice(priceKey, designationValue)
 }
 
@@ -33,10 +37,15 @@ export type PulleyModelValues = PulleyTechDataValues
 const num = (v: string | number | undefined): number => (typeof v === 'number' ? v : Number(v) || 0)
 
 /** Exported so the Formulas page's preview feature can build the same variable bag
- * from a real sample item as computeAutoFieldsDynamic does. */
+ * from a real sample item as computeAutoFieldsDynamic does.
+ *
+ * A blank/whitespace-only string must be skipped, not coerced — Number('') is 0, so
+ * without this check an unset field would silently read as a real zero instead of
+ * "no value", e.g. overwriting a freshly computed Auto value with a stale blank one. */
 export function toNumericVars(values: PulleyTechDataValues): Record<string, number> {
   const out: Record<string, number> = {}
   for (const [k, v] of Object.entries(values)) {
+    if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) continue
     const n = typeof v === 'number' ? v : Number(v)
     if (!Number.isNaN(n)) out[k] = n
   }

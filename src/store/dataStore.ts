@@ -14,6 +14,7 @@ import type {
   RFQItem,
   Role,
   Stage,
+  TechDataFieldOverride,
   User,
   Vendor,
 } from '@/types'
@@ -97,6 +98,9 @@ interface DataState {
   updateItemTechData: (id: string, itemId: string, fieldKey: string, value: string | number) => Promise<void>
   /** Saves a pulley's whole Technical Data Sheet at once (already computed client-side). */
   saveItemTechData: (id: string, itemId: string, technicalData: PulleyTechDataValues) => Promise<void>
+  /** Sets or clears one field's per-RFQ override (type change, or an Auto field's
+   * `autoOverridden`) on a saved RFQ item — Controlling/Admin only (403 otherwise). */
+  updateItemFieldOverride: (id: string, itemId: string, fieldKey: string, override: TechDataFieldOverride | null) => Promise<void>
   /** Pulleys on a saved RFQ — allowed until a quotation is generated. Each resolves to the updated RFQ. */
   addRfqItem: (id: string, input: NewRfqItemInput, actorName: string) => Promise<RFQ>
   duplicateRfqItem: (id: string, itemId: string, actorName: string) => Promise<RFQ>
@@ -242,6 +246,16 @@ export const useDataStore = create<DataState>()((set, get) => ({
   saveItemTechData: (id, itemId, technicalData) =>
     withErrorToast(async () => {
       const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-tech-data/`, { itemId, technicalData })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  updateItemFieldOverride: (id, itemId, fieldKey, override) =>
+    withErrorToast(async () => {
+      const current = get().rfqs.find((r) => r.id === id)?.items.find((it) => it.id === itemId)
+      const fieldOverrides = { ...(current?.fieldOverrides ?? {}) }
+      if (override) fieldOverrides[fieldKey] = override
+      else delete fieldOverrides[fieldKey]
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-tech-data/`, { itemId, fieldOverrides })
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
     }),
 

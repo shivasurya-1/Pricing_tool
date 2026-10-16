@@ -81,11 +81,18 @@ export interface TechDataFieldDto {
   options_source: string
   /** Set (non-null) when this select's options are a live reference catalog rather
    * than a fixed admin-typed list — price_field is the column on that catalog whose
-   * value option_prices below resolves from. */
-  catalog: { table: string; table_label: string; price_field: string } | null
-  /** option -> its price on the linked catalog, when `catalog` is set; null otherwise.
-   * Preferred over lookupCatalogPrice(), which stays only as an offline fallback. */
+   * value option_prices below resolves from. value_field is null when this field's own
+   * value IS the catalog label (Price Field left on "<label> itself"), or the chosen
+   * price column's key otherwise. */
+  catalog: { table: string; table_label: string; price_field: string; value_field: string | null } | null
+  /** option -> this field's own resolved value, when `catalog` is set and value_field is
+   * non-null (i.e. this field's value is a price, not the label); null for a
+   * label-valued catalog field. Offline fallback: lookupCatalogPrice(). */
   option_prices: Record<string, number | null> | null
+  /** label -> its paired price on the linked catalog — ALWAYS present for a
+   * catalog-linked select regardless of value_field, unlike option_prices above. This
+   * is what prices a designation field's own paired price field (bearing1Price etc.). */
+  catalog_prices: Record<string, number | null> | null
   /** Filled in automatically and shown read-only on every RFQ's sheet when set. */
   fixed_value: string
   /** What the fixed value stands for in a calculation (a catalog select's row price), or null. */

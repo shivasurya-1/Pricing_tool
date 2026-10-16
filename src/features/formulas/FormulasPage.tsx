@@ -199,6 +199,19 @@ export function FormulasPage() {
   const [itemId, setItemId] = useState(items[0]?.id ?? '')
   const item = items.find((it) => it.id === itemId) ?? items[0]
 
+  // Auto fields this sample item has been manually overridden on (see
+  // TechDataFieldOverride.autoOverridden) — the same set applyFieldChange uses, so the
+  // preview never lets a fresh computation silently replace an intentional override.
+  const autoOverrideKeys = useMemo(
+    () =>
+      new Set(
+        Object.entries(item?.fieldOverrides ?? {})
+          .filter(([, o]) => o.autoOverridden)
+          .map(([key]) => key),
+      ),
+    [item],
+  )
+
   const sampleVars = useMemo(() => {
     // Cost-rate keys should show their real values in every preview even with no RFQ
     // selected yet — only the RFQ-derived numbers (totals, technicalData fields) need
@@ -211,7 +224,7 @@ export function FormulasPage() {
     const pricing = computePulleyPricing(item.technicalData)
     return {
       ...baseVars,
-      ...buildPricingVariables(item.technicalData, costRates),
+      ...buildPricingVariables(item.technicalData, costRates, autoOverrideKeys),
       totalA: pricing.totalA,
       totalB: pricing.totalB,
       totalC: pricing.totalC,
@@ -222,7 +235,23 @@ export function FormulasPage() {
       listPrice: pricing.listPrice,
       netOemPrice: pricing.netOemPrice,
     }
-  }, [item, costRates, formulas, techDataFields])
+  }, [item, costRates, formulas, techDataFields, autoOverrideKeys])
+
+  // sampleVars is numbers only (every value run through toNumericVars/fieldNumericVars),
+  // so a text/select copy source (e.g. bearing1Designation = "22232 CCK/W33") is simply
+  // missing from it. This keeps the real string/number value for the copy-formula preview,
+  // same precedence as the sheet itself: a field left blank on this item reads as its
+  // Formulas-page fixed value, the item's own saved value wins over that, and a freshly
+  // computed Auto result wins over whatever's saved (consistent with buildPricingVariables).
+  const sampleRawValues = useMemo(() => {
+    const values = item?.technicalData ?? {}
+    const fixedValues = Object.fromEntries(
+      Object.values(techDataFields)
+        .filter((f) => f.fixed_value && (values[f.key] === undefined || values[f.key] === ''))
+        .map((f) => [f.key, f.fixed_value]),
+    )
+    return { ...fixedValues, ...values, ...computeAutoFields(values) }
+  }, [item, techDataFields])
 
   const sectionOrder = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s.order])), [sections])
   const sectionLabels = useMemo(() => [...sections].sort((a, b) => a.order - b.order).map((s) => s.label), [sections])
@@ -429,6 +458,7 @@ export function FormulasPage() {
         title={activeSheet === 'pricing_tool' ? 'Add Pricing Tool Field' : 'Add Technical Data Sheet Field'}
         existingSections={activeSheetSectionLabels}
         sampleVars={sampleVars}
+        sampleRawValues={sampleRawValues}
         onCreate={async (input) => {
           const { fixed_value, options_source, ...createInput } = input
           try {
@@ -475,6 +505,7 @@ export function FormulasPage() {
         field={editTarget}
         existingSections={sectionLabels}
         sampleVars={sampleVars}
+        sampleRawValues={sampleRawValues}
         isAdmin={role === 'Admin'}
         onClose={() => setEditTarget(null)}
         onSave={async (patch) => {
@@ -1121,6 +1152,7 @@ function AddTechDataFieldModal({
   title = 'Add Technical Data Sheet Field',
   existingSections,
   sampleVars,
+  sampleRawValues,
   onCreate,
 }: {
   open: boolean
@@ -1128,6 +1160,10 @@ function AddTechDataFieldModal({
   title?: string
   existingSections: string[]
   sampleVars: Record<string, number>
+  /** Same sample item as sampleVars, but with text/select values intact (sampleVars is
+   * numbers only) — needed so a copy-formula preview can show "22232 CCK/W33", not
+   * nothing, when the source field isn't numeric. */
+  sampleRawValues: Record<string, string | number | undefined>
   onCreate: (input: {
     key: string
     label: string
@@ -1223,7 +1259,12 @@ function AddTechDataFieldModal({
 
   const preview = (() => {
     if (!isAuto || !expression.trim()) return null
-    if (copySourceKey) return { value: sampleVars[copySourceKey] ?? null, error: null as string | null }
+    if (copySourceKey) {
+      // sampleVars is numbers only — a text/select copy source (e.g. a bearing
+      // designation) is missing from it, so check the raw-value bag first.
+      const raw = sampleRawValues[copySourceKey] ?? sampleVars[copySourceKey] ?? null
+      return { value: raw === '' ? null : raw, error: null as string | null }
+    }
     try {
       const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
       return { value: evaluateFormula(expression, vars), error: null as string | null }
@@ -1396,7 +1437,7 @@ function AddTechDataFieldModal({
             ) : (
               trimmedFixed && (
                 <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
-                  Filled in automatically and shown read-only on every new RFQ — no dropdown.
+                  Pre-filled on every new RFQ — can be changed per RFQ.
                 </p>
               )
             )}
@@ -1466,12 +1507,14 @@ function AddTechDataFieldModal({
             </div>
             {autoTypeError && <p className="text-xs text-[var(--color-red)]">{autoTypeError}</p>}
             {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
-            {preview && preview.value !== null && (
+            {preview && (preview.value !== null || copySourceKey) && (
               <p className="text-xs text-[var(--color-ink-faint)]">
                 {copySourceKey ? 'Copies: ' : 'Preview: '}
-                <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span>{' '}
+                <span className="font-semibold text-[var(--color-blue)]">{preview.value ?? '—'}</span>{' '}
                 {copySourceKey
-                  ? `(this RFQ's own ${copySourceKey} value)`
+                  ? preview.value === null
+                    ? '(no value on this RFQ yet)'
+                    : `(this RFQ's own ${copySourceKey} value)`
                   : '(against the RFQ selected above, unfilled variables read as 0)'}
               </p>
             )}
@@ -1486,6 +1529,7 @@ function EditTechDataFieldModal({
   field,
   existingSections,
   sampleVars,
+  sampleRawValues,
   isAdmin,
   onClose,
   onSave,
@@ -1493,6 +1537,10 @@ function EditTechDataFieldModal({
   field: TechDataFieldDto | null
   existingSections: string[]
   sampleVars: Record<string, number>
+  /** Same sample item as sampleVars, but with text/select values intact (sampleVars is
+   * numbers only) — needed so a copy-formula preview can show "22232 CCK/W33", not
+   * nothing, when the source field isn't numeric. */
+  sampleRawValues: Record<string, string | number | undefined>
   isAdmin: boolean
   onClose: () => void
   onSave: (patch: {
@@ -1610,8 +1658,11 @@ function EditTechDataFieldModal({
     if (!isAuto || !expression.trim()) return null
     if (copySourceKey) {
       // A copy formula shows the source field's own sample value, not a calculation —
-      // there's nothing to evaluate.
-      return { value: sampleVars[copySourceKey] ?? null, error: null as string | null, isCopy: true }
+      // there's nothing to evaluate. sampleVars is numbers only, so a text/select
+      // source (e.g. a bearing designation) is missing from it — check the raw-value
+      // bag first.
+      const raw = sampleRawValues[copySourceKey] ?? sampleVars[copySourceKey] ?? null
+      return { value: raw === '' ? null : raw, error: null as string | null, isCopy: true }
     }
     try {
       const vars = Object.fromEntries(detectedVariables.map((v) => [v, sampleVars[v] ?? 0]))
@@ -1809,7 +1860,7 @@ function EditTechDataFieldModal({
             ) : (
               trimmedFixed && (
                 <p className="mt-1 text-xs text-[var(--color-ink-faint)]">
-                  Filled in automatically and shown read-only on every new RFQ — no dropdown.
+                  Pre-filled on every new RFQ — can be changed per RFQ.
                 </p>
               )
             )}
@@ -1894,12 +1945,14 @@ function EditTechDataFieldModal({
             </div>
             {autoTypeError && <p className="text-xs text-[var(--color-red)]">{autoTypeError}</p>}
             {preview?.error && <p className="text-xs text-[var(--color-red)]">{preview.error}</p>}
-            {preview && preview.value !== null && (
+            {preview && (preview.value !== null || preview.isCopy) && (
               <p className="text-xs text-[var(--color-ink-faint)]">
                 {preview.isCopy ? 'Copies: ' : 'Preview: '}
-                <span className="font-semibold text-[var(--color-blue)]">{preview.value}</span>{' '}
+                <span className="font-semibold text-[var(--color-blue)]">{preview.value ?? '—'}</span>{' '}
                 {preview.isCopy
-                  ? `(this RFQ's own ${copySourceField?.label ?? copySourceKey} value)`
+                  ? preview.value === null
+                    ? '(no value on this RFQ yet)'
+                    : `(this RFQ's own ${copySourceField?.label ?? copySourceKey} value)`
                   : '(against the RFQ selected above, unfilled variables read as 0)'}
               </p>
             )}
