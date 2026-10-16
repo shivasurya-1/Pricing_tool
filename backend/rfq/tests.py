@@ -579,9 +579,31 @@ class RFQItemFieldOverrideTests(TestCase):
         self.assertEqual(self._create("Sales", self.select_override).status_code, 403)
         self.assertEqual(self._create("Sales", {}).status_code, 201)
 
-    def test_auto_field_cannot_be_overridden(self):
+    def test_auto_field_type_cannot_be_overridden(self):
         response = self._create("Admin", {"shellPlateWeight": {"fieldType": "text"}})
         self.assertEqual(response.status_code, 400)
+        # Flagged as a value override, it still can't change type.
+        response = self._create("Admin", {"shellPlateWeight": {"fieldType": "text", "autoOverridden": True}})
+        self.assertEqual(response.status_code, 400)
+
+    def test_auto_field_value_override_is_saved_and_can_be_reset(self):
+        override = {"shellPlateWeight": {"fieldType": "number", "options": [], "autoOverridden": True}}
+        response = self._create("Controlling", override)
+        self.assertEqual(response.status_code, 201, response.data)
+        item = RFQItem.objects.get(rfq_id=response.data["id"])
+        self.assertEqual(item.field_overrides, override)
+        self.assertTrue(response.data["items"][0]["fieldOverrides"]["shellPlateWeight"]["autoOverridden"])
+
+        url = f"/api/rfq/rfqs/{response.data['id']}/item-tech-data/"
+        payload = {"itemId": item.id, "technicalData": {"shellPlateWeight": 999}, "fieldOverrides": item.field_overrides}
+        self.assertEqual(client_as("Sales").patch(url, payload, format="json").status_code, 200)  # unchanged overrides
+        item.refresh_from_db()
+        self.assertEqual(item.technical_data["shellPlateWeight"], 999)
+
+        reset = {"itemId": item.id, "technicalData": {}, "fieldOverrides": {}}
+        self.assertEqual(client_as("Admin").patch(url, reset, format="json").status_code, 200)
+        item.refresh_from_db()
+        self.assertEqual(item.field_overrides, {})
 
     def test_unknown_field_and_empty_select_are_rejected(self):
         self.assertEqual(self._create("Admin", {"noSuchField": {"fieldType": "text"}}).status_code, 400)

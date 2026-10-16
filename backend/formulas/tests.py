@@ -106,6 +106,34 @@ class FormulaApiTests(TestCase):
         self.formula.refresh_from_db()
         self.assertEqual(self.formula.expression, "a + b")  # unchanged
 
+    def test_expression_edit_refreshes_input_variables(self):
+        # The frontend orders Auto evaluation by input_variables, so a stale list after
+        # an expression edit would run this formula before what it now reads.
+        response = self.admin_client.patch(f"/api/formulas/{self.formula.key}/", {"expression": "c * d + a"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.formula.refresh_from_db()
+        self.assertEqual(self.formula.input_variables, ["c", "d", "a"])
+
+    def test_rebuild_input_variables_command_repairs_stale_lists(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        stale = FormulaDefinition.objects.create(
+            key="copyOfTest", label="Copy", section="SectionB", expression="testFormula", input_variables=[],
+        )
+        out = StringIO()
+        call_command("rebuild_input_variables", "--dry-run", stdout=out)
+        stale.refresh_from_db()
+        self.assertEqual(stale.input_variables, [])  # dry run changes nothing
+        self.assertIn("copyOfTest", out.getvalue())
+
+        call_command("rebuild_input_variables", stdout=StringIO())
+        stale.refresh_from_db()
+        self.formula.refresh_from_db()
+        self.assertEqual(stale.input_variables, ["testFormula"])
+        self.assertEqual(self.formula.input_variables, ["a", "b"])  # already correct, untouched
+
     def test_preview_does_not_persist(self):
         response = self.admin_client.post(
             f"/api/formulas/{self.formula.key}/preview/",
@@ -329,7 +357,7 @@ class TechDataFieldDefinitionApiTests(TestCase):
         # An Auto field's formula is listed once, as a field — not again under formulas.
         self.assertNotIn("shellPlateWeight", {f["key"] for f in response.data["formulas"]})
 
-    def _bearing_catalog_field(self):
+    def _bearing_catalog_field(self, value_field="price_inr"):
         from reference.models import BearingCatalogEntry
 
         BearingCatalogEntry.objects.all().delete()
@@ -337,7 +365,7 @@ class TechDataFieldDefinitionApiTests(TestCase):
         BearingCatalogEntry.objects.create(designation="21316 EK", bore_mm=80, price_inr=9000, price_eur=85, delivery_days=10)
         return TechDataFieldDefinition.objects.create(
             key="bearing1Designation", label="Bearing 1 Designation", section="2. PULLEY BODY DIMENSIONS",
-            field_type="select", options=["22218 EK"], options_source="bearings::designation::::22218%20EK",
+            field_type="select", options=["22218 EK"], options_source=f"bearings::designation::{value_field}::22218%20EK",
         )
 
     def test_catalog_linked_select_lists_the_catalog_live(self):
@@ -349,8 +377,12 @@ class TechDataFieldDefinitionApiTests(TestCase):
         response = self.sales_client.get("/api/formulas/tech-data-fields/bearing1Designation/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["options"], ["21316 EK", "22218 EK", "NEW 999"])
-        self.assertEqual(response.data["catalog"], {"table": "bearings", "table_label": "Bearings", "price_field": "price_inr"})
+        self.assertEqual(
+            response.data["catalog"],
+            {"table": "bearings", "table_label": "Bearings", "price_field": "price_inr", "value_field": "price_inr"},
+        )
         self.assertEqual(response.data["option_prices"]["NEW 999"], 50000)
+        self.assertEqual(response.data["catalog_prices"]["NEW 999"], 50000)
 
         plain = self.sales_client.get(f"/api/formulas/tech-data-fields/{self.core_field.key}/")
         self.assertIsNone(plain.data["catalog"])
@@ -408,6 +440,34 @@ class TechDataFieldDefinitionApiTests(TestCase):
         }
         response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
         self.assertEqual(response.status_code, 201, response.data)
+
+    def test_label_valued_catalog_select_keeps_the_label_not_its_price(self):
+        # Price Field left on "Designation itself": the picked designation is the value —
+        # never swapped for a price — while catalog_prices still prices bearing1Price.
+        self._bearing_catalog_field(value_field="")
+        url = "/api/formulas/tech-data-fields/bearing1Designation/"
+        response = self.admin_client.patch(url, {"fixed_value": "21316 EK"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["fixed_value"], "21316 EK")
+        self.assertIsNone(response.data["fixed_numeric_value"])
+        self.assertIsNone(response.data["option_prices"])
+        self.assertIsNone(response.data["catalog"]["value_field"])
+        self.assertEqual(response.data["catalog_prices"]["21316 EK"], 9000)
+        self.assertEqual(response.data["options"], ["21316 EK", "22218 EK"])
+
+        dropdown = self.sales_client.get("/api/formulas/tech-data-fields/dropdown-options/").data["bearing1Designation"]
+        self.assertIsNone(dropdown["fixed_numeric_value"])
+        self.assertIsNone(dropdown["value_field"])
+
+    def test_auto_field_cannot_calculate_with_a_label_valued_catalog_select(self):
+        self._bearing_catalog_field(value_field="")
+        payload = {
+            "key": "total", "label": "Total", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "number",
+            "is_auto": True, "expression": "2 * bearing1Designation",
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("bearing1Price", str(response.data["expression"]))
 
     def test_calculated_auto_field_has_no_copy_from(self):
         response = self.admin_client.get(f"/api/formulas/tech-data-fields/{self.auto_field.key}/")

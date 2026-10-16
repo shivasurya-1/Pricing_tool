@@ -14,6 +14,7 @@ from .catalog_options import (
     catalog_link_info,
     catalog_option_value,
     catalog_options,
+    is_label_valued,
     picked_catalog_label,
 )
 from .evaluator import FormulaError, copy_source, evaluate_formula, extract_variables
@@ -111,8 +112,9 @@ def resolve_expression_variables(expression: str, self_key: str | None = None) -
     unknown or non-numeric variable as 0): unknown names (typos), the formula's own key,
     and — in arithmetic — select fields whose options aren't numbers (e.g. a bearing
     designation code; reference its catalog price variable instead). A catalog-linked
-    select is allowed: in a calculation it stands for the picked row's value column
-    (its `option_prices` entry), not its label. A copy formula
+    select is allowed when a Price Field was picked: in a calculation it stands for the
+    picked row's value column (its `option_prices` entry), not its label — but one left
+    on "<label> itself" holds the label, so it's rejected like any text. A copy formula
     (just one key, see evaluator.copy_source) may reference any field type, since its
     value is copied as-is rather than calculated."""
     names = extract_variables(expression)
@@ -126,7 +128,8 @@ def resolve_expression_variables(expression: str, self_key: str | None = None) -
 
     non_numeric = []
     for field in TechDataFieldDefinition.objects.filter(key__in=names, field_type="select", formula__isnull=True):
-        if catalog_link_info(field.options_source) is not None:
+        # A label-valued catalog select ("<label> itself") holds codes, not numbers.
+        if catalog_link_info(field.options_source) is not None and not is_label_valued(field.options_source):
             continue
         if not field.options or not all(_is_number(o) for o in field.options):
             non_numeric.append(field.key)
@@ -274,15 +277,21 @@ class FormulaDefinitionViewSet(
         new_expression = serializer.validated_data.get("expression", previous_expression)
 
         # Fail closed: refuse to save a formula that doesn't actually evaluate against
-        # its own declared input variables (all defaulted to 1 as a smoke test).
+        # the variables it references (all defaulted to 1 as a smoke test). Those
+        # variables also become its stored input_variables — the frontend orders Auto
+        # evaluation by that list, so keeping the old one after an expression edit makes
+        # a field run before the Auto field it now reads, which then reads as 0.
+        extra = {}
         if new_expression != previous_expression:
-            sample = {name: 1.0 for name in instance.input_variables}
+            input_variables = [v for v in extract_variables(new_expression) if v != instance.key]
+            sample = {name: 1.0 for name in input_variables}
             try:
                 evaluate_formula(new_expression, sample)
             except FormulaError as exc:
                 raise ValidationError({"expression": str(exc)})
+            extra["input_variables"] = input_variables
 
-        instance = serializer.save(updated_by=self.request.user)
+        instance = serializer.save(updated_by=self.request.user, **extra)
 
         if new_expression != previous_expression:
             FormulaVersion.objects.create(
@@ -559,7 +568,11 @@ class TechDataFieldDefinitionViewSet(
                 **catalog_link_info(field.options_source),
                 "label": field.label,
                 "fixed_value": field.fixed_value,
-                "fixed_numeric_value": catalog_option_value(options, field.fixed_value) if field.fixed_value else None,
+                "fixed_numeric_value": (
+                    catalog_option_value(options, field.fixed_value)
+                    if field.fixed_value and not is_label_valued(field.options_source)
+                    else None
+                ),
                 "options": options,
             }
         return Response(result)

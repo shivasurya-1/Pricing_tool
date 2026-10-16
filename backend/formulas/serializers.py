@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .catalog_options import catalog_link_info, catalog_option_value, catalog_options
+from .catalog_options import catalog_link_info, catalog_option_value, catalog_options, is_label_valued
 from .evaluator import copy_source
 from .models import TECH_DATA_AUTO_SECTION_LABEL, FormulaDefinition, FormulaVersion, Section, SectionTab, TechDataFieldDefinition
 
@@ -149,23 +149,33 @@ class TechDataFieldDefinitionSerializer(SheetMixin, serializers.ModelSerializer)
         options = None
         if instance.field_type == "select":
             options = catalog_options(instance.options_source, cache=self.context.setdefault("_catalog_options", {}))
+        # `catalog_prices` is every option's catalog price, for looking up a paired price
+        # field (e.g. bearing1Price from bearing1Designation). `option_prices` is what the
+        # field's own value stands for — null when its value is the label itself, so the
+        # sheet shows and calculates with the picked label, not a price.
         if options is None:
             data["catalog"] = None
             data["option_prices"] = None
+            data["catalog_prices"] = None
         else:
+            prices = {o["label"]: o["price"] for o in options}
             data["options"] = [o["label"] for o in options]
             data["catalog"] = catalog_link_info(instance.options_source)
-            data["option_prices"] = {o["label"]: o["price"] for o in options}
+            data["catalog_prices"] = prices
+            data["option_prices"] = None if is_label_valued(instance.options_source) else prices
         data["fixed_numeric_value"] = self._fixed_numeric_value(instance, options)
         return data
 
     @staticmethod
     def _fixed_numeric_value(instance, options) -> float | None:
         """What the fixed value stands for when its key is used in a calculation: a
-        catalog-linked select's picked row value (price), else the value itself if numeric."""
+        catalog-linked select's picked row value (price) — none when the field's value is
+        the label itself — else the value itself if numeric."""
         if not instance.fixed_value:
             return None
         if options is not None:
+            if is_label_valued(instance.options_source):
+                return None
             return catalog_option_value(options, instance.fixed_value)
         try:
             return float(instance.fixed_value)

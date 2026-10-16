@@ -150,10 +150,18 @@ def validate_field_overrides(raw, user, field_name: str, current: dict | None = 
         field = fields.get(key)
         if field is None:
             raise ValidationError({field_name: f"Unknown Technical Data Sheet field '{key}'."})
-        if field.is_read_only:
-            raise ValidationError({field_name: f"'{key}' is an Auto or catalog-derived field — its type can't be overridden."})
         if not isinstance(override, dict) or override.get("fieldType") not in FIELD_OVERRIDE_TYPES:
             raise ValidationError({field_name: f"'{key}': fieldType must be one of {', '.join(FIELD_OVERRIDE_TYPES)}."})
+        if field.is_read_only:
+            # An Auto or catalog-derived field can't change type for one RFQ, but its
+            # value can be typed in by hand: `autoOverridden` tells the client to stop
+            # recomputing it on this item (see TechDataFieldOverride.autoOverridden).
+            if override.get("autoOverridden") is not True:
+                raise ValidationError({field_name: f"'{key}' is an Auto or catalog-derived field — its type can't be overridden."})
+            if override["fieldType"] != field.field_type:
+                raise ValidationError({field_name: f"'{key}': an overridden Auto field keeps its type ({field.field_type})."})
+            cleaned[key] = {"fieldType": field.field_type, "options": list(field.options or []), "autoOverridden": True}
+            continue
         options = []
         if override["fieldType"] == "select":
             raw_options = override.get("options")

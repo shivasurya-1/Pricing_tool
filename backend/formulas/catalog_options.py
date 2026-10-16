@@ -27,16 +27,34 @@ def parse_options_source(options_source: str) -> dict | None:
         return None
     allowed = [column["field"] for column in cfg["value_fields"]]
     picked_value_field = parts[2] if len(parts) > 2 else ""
-    # The price shown/filled for each option: the value column picked on the Formulas
-    # page if any, else the table's first value column (its INR price for every catalog).
+    # Each option's catalog price: the value column picked on the Formulas page if any,
+    # else the table's first value column (its INR price for every catalog). Kept even
+    # for a label-valued field, since a paired price field (bearing1Price) is looked up
+    # from it.
     price_field = picked_value_field if picked_value_field in allowed else (allowed[0] if allowed else None)
+    # What the field's own value stands for: the picked value column, or None when the
+    # picker's Price Field was left on "<label> itself" (an explicit empty 3rd part) —
+    # then the label is the value, shown and used as-is, never swapped for a price. A
+    # legacy two-part source predates that choice and keeps reading as its price.
+    if len(parts) > 2 and picked_value_field not in allowed:
+        value_field = None
+    else:
+        value_field = price_field
     return {
         "table": table,
         "table_label": cfg["label"],
         "label_field": label_field,
         "price_field": price_field,
+        "value_field": value_field,
         "model": cfg["model"],
     }
+
+
+def is_label_valued(options_source: str) -> bool:
+    """True when a catalog-linked field's value is the row label itself ("<label>
+    itself" picked as Price Field) rather than one of the row's value columns."""
+    link = parse_options_source(options_source)
+    return link is not None and link["value_field"] is None
 
 
 def catalog_options(options_source: str, cache: dict | None = None) -> list[dict] | None:
@@ -109,4 +127,10 @@ def catalog_link_info(options_source: str) -> dict | None:
     link = parse_options_source(options_source)
     if link is None:
         return None
-    return {"table": link["table"], "table_label": link["table_label"], "price_field": link["price_field"]}
+    return {
+        "table": link["table"],
+        "table_label": link["table_label"],
+        "price_field": link["price_field"],
+        # null = the field's value is the label itself (see parse_options_source).
+        "value_field": link["value_field"],
+    }
