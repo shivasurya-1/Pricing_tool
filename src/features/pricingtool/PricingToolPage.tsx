@@ -10,7 +10,7 @@ import { useReferenceStore } from '@/store/referenceStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { computePulleyPricing, type CostLine, type PulleyPricingResult } from '@/lib/pulleyPricingCalc'
 import { computeAutoFields } from '@/lib/pulleyTechDataCalc'
-import { catalogDisplayValue, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
+import { catalogDisplayValue, IN_HOUSE_OPERATIONS, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
 import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
 import './PricingToolSheet.css'
 
@@ -229,6 +229,8 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
   const costRates = useFormulaStore((s) => s.costRates)
   const techDataFields = useFormulaStore((s) => s.techDataFields)
   const sectionsRegistry = useFormulaStore((s) => s.sections)
+  // Section C's MHR rates — an edit on the In-House Hours page recomputes too.
+  const inHouseHourRates = useReferenceStore((s) => s.inHouseHourRates)
   const techSections = useTechDataSections()
 
   const columns: Column[] = useMemo(
@@ -237,8 +239,8 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
         const values = item.technicalData ?? {}
         return { item, values, autoValues: computeAutoFields(values), pricing: computePulleyPricing(values) }
       }),
-    // formulas/costRates/techDataFields: recompute when they change, though read via getState().
-    [items, formulas, costRates, techDataFields],
+    // formulas/costRates/techDataFields/inHouseHourRates: recompute when they change, though read via getState().
+    [items, formulas, costRates, techDataFields, inHouseHourRates],
   )
   const multi = columns.length > 1
   // Side by side: label | unit | one 140px column per pulley. A single pulley keeps the
@@ -287,6 +289,7 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     <ValueRow key={label} label={label} cells={cells} gridStyle={gridStyle} {...opts} />
   )
   const first = columns[0]
+  const missingRateLabels = IN_HOUSE_OPERATIONS.filter((op) => first.pricing.missingInHouseRates.includes(op.key)).map((op) => op.label)
 
   const head = (
     <PulleyHeaderRow
@@ -363,6 +366,11 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
                 ),
               )}
               {row(s.totalLabel, money((p) => p[s.total]), { unit: 'INR', total: true })}
+              {s.code === 'C' && missingRateLabels.length > 0 && (
+                <p className="pts-warn" role="note">
+                  No MHR rate on the In-House Hours page for {missingRateLabels.join(', ')} — costed at 0.
+                </p>
+              )}
             </SheetSection>
           ))}
 

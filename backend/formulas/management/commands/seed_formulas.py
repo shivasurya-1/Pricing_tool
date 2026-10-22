@@ -12,9 +12,9 @@ Conventions used so every formula stays a plain restricted arithmetic expression
   - A boolean "is this process outsourced" flag (e.g. srcStressReliefIsOutsource) is
     resolved by the calling code from the categorical In-house/Outsource/Logistics
     field before evaluation — formulas themselves never do string comparison.
-  - Per-operation labour rate variables (e.g. c1RateInrPerHour) and section totals
-    (totalA..totalE) are likewise resolved by the caller from the Cost Rate Tables /
-    already-evaluated formulas, keeping every expression here a simple, editable
+  - The In-House Hours page's per-pulley variables (e.g. c1InHouseCost, c1RateInrPerHour)
+    and section totals (totalA..totalE) are likewise resolved by the caller from
+    reference data / already-evaluated formulas, keeping every expression here a simple, editable
     one-line calculation.
   - Fields with NO formula in the client's own workbook (A3, B5, D1, D3, D8, E6) are
     still seeded, as `expression="0"`, so they show up on the Formulas page ready for
@@ -41,13 +41,13 @@ FORMULA_SECTIONS = [
 ]
 
 IN_HOUSE_OPS = [
-    ("c1", "Rolling / Bending Shell", "rollingBending"),
-    ("c2", "Welding – Shell & Hub", "weldingMigMag"),
-    ("c3", "Machining / Turning Body", "latheTurning"),
-    ("c4", "Assembly + Engineering", "assemblyLabour"),
-    ("c5", "Testing / Inspection / QC", "engineeringDesign"),
-    ("c6", "Painting & Surface Prep", "paintingSurfacePrep"),
-    ("c7", "Hub Pre-Turning", "latheTurning"),
+    ("c1", "Rolling / Bending Shell"),
+    ("c2", "Welding – Shell & Hub"),
+    ("c3", "Machining / Turning Body"),
+    ("c4", "Assembly + Engineering"),
+    ("c5", "Testing / Inspection / QC"),
+    ("c6", "Painting & Surface Prep"),
+    ("c7", "Hub Pre-Turning"),
 ]
 
 
@@ -61,9 +61,6 @@ def tech_data_auto_rows() -> list[dict]:
         dict(key="laggingCost", label="Lagging Cost", expression="laggingArea * laggingRate", vars=["laggingArea", "laggingRate"], unit="INR"),
         dict(key="totalBearingsHousings", label="Total Bearings + Sleeves + Housings (2x each)", expression="2 * (bearing1Price + bearing2Price + sleevePrice + housingPrice)", vars=["bearing1Price", "bearing2Price", "sleevePrice", "housingPrice"], unit="INR"),
     ]
-    for key, label, _rate_key in IN_HOUSE_OPS:
-        rows.append(dict(key=f"{key}TotalHours", label=f"{label} — Total Hours", expression=f"({key}RunMin + {key}SetupMin) / 60", vars=[f"{key}RunMin", f"{key}SetupMin"], unit="h"))
-        rows.append(dict(key=f"{key}Cost", label=f"{label} — Cost", expression=f"{key}TotalHours * {key}RateInrPerHour", vars=[f"{key}TotalHours", f"{key}RateInrPerHour"], unit="INR"))
     return rows
 
 
@@ -91,8 +88,8 @@ def section_b_rows() -> list[dict]:
 
 def section_c_rows() -> list[dict]:
     return [
-        dict(key=f"sectionC.{key}", label=label, expression=f"{key}Cost", vars=[f"{key}Cost"], unit="INR")
-        for key, label, _rate_key in IN_HOUSE_OPS
+        dict(key=f"sectionC.{key}", label=label, expression=f"{key}InHouseCost", vars=[f"{key}InHouseCost"], unit="INR")
+        for key, label in IN_HOUSE_OPS
     ]
 
 

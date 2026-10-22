@@ -152,7 +152,15 @@ class LockingDeviceCatalogEntrySerializer(serializers.ModelSerializer):
 class InHouseHourRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = InHouseHourRate
-        fields = ["id", "cost_head", "operation", "cost_centre", "activity_description", "mhr_rate", "order"]
+        fields = [
+            "id", "cost_head", "operation", "cost_centre", "activity_description", "operation_code", "mhr_rate",
+            "default_run_min", "default_setup_min", "order",
+        ]
+
+    def validate_operation_code(self, code):
+        # The Add-row form sends "" for "no operation"; store it as NULL so any number
+        # of reference-only rows can coexist under the unique constraint.
+        return code or None
 
 
 class OrganizationSettingsSerializer(serializers.ModelSerializer):

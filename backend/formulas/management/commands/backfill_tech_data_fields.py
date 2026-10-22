@@ -89,32 +89,16 @@ FIELD_ROWS: list[tuple[str, str, str, str, str, list[str], bool]] = [
     ("srcPainting", "Painting / Blasting", "8. SOURCING SELECTION", "", "select", ["In-house", "Outsource", "Logistics"], False),
 ]
 
-IN_HOUSE_OPS = [
-    ("c1", "C1. Rolling / Bending Shell"),
-    ("c2", "C2. Welding – Shell & Hub"),
-    ("c3", "C3. Machining / Turning Body"),
-    ("c4", "C4. Assembly + Engineering"),
-    ("c5", "C5. Testing / Inspection / QC"),
-    ("c6", "C6. Painting & Surface Prep"),
-    ("c7", "C7. Hub Pre-Turning"),
-]
-
-
-def in_house_hours_rows() -> list[tuple[str, str, str, str, str, list[str], bool]]:
-    rows = []
-    for key, label in IN_HOUSE_OPS:
-        rows.append((f"{key}RunMin", f"{label} — Run Time", "9. IN-HOUSE PROCESSING HOURS", "min", "number", [], False))
-        rows.append((f"{key}SetupMin", f"{label} — Setup Time", "9. IN-HOUSE PROCESSING HOURS", "min", "number", [], False))
-        rows.append((f"{key}TotalHours", f"{label} — Total Hours", "9. IN-HOUSE PROCESSING HOURS", "h", "number", [], True))
-        rows.append((f"{key}Cost", f"{label} — Cost", "9. IN-HOUSE PROCESSING HOURS", "INR", "number", [], True))
-    return rows
+# The in-house run/setup minutes aren't sheet fields: they're entered per pulley on the
+# In-House Hours page, which supplies them to formulas as variables (c1RunMin,
+# c1InHouseCost, ... — see formulas.views.IN_HOUSE_HOURS_VARIABLES).
 
 
 class Command(BaseCommand):
     help = "Backfill TechDataFieldDefinition rows from the frontend's hardcoded pulleyTechDataSchema.ts."
 
     def handle(self, *args, **options):
-        all_rows = FIELD_ROWS + in_house_hours_rows()
+        all_rows = FIELD_ROWS
         formulas_by_key = {f.key: f for f in FormulaDefinition.objects.all()}
 
         section_orders: dict[str, int] = {}

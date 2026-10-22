@@ -15,9 +15,41 @@
 
 import type { PulleyTechDataValues } from '@/types'
 import { DESIGNATION_TO_PRICE_FIELD, lookupCatalogPrice, IN_HOUSE_OPERATIONS, type TechDataSection } from '@/data/pulleyTechDataSchema'
-import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore } from '@/store/formulaStore'
+import { useReferenceStore } from '@/store/referenceStore'
 import { evaluateFormula } from '@/lib/formulaEval'
+
+const isBlank = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v.trim() === '')
+
+/** One pulley's In-House Hours variables, per operation c1 … c7 (backend list:
+ * formulas.views.IN_HOUSE_HOURS_VARIABLES):
+ *  - c#RunMin / c#SetupMin: the minutes entered for this pulley on the In-House Hours
+ *    page, else that operation's default minutes there;
+ *  - c#TotalMin = run + setup; c#RateInrPerHour: the operation's MHR rate;
+ *  - c#InHouseCost = rate × total minutes — the workbook's In-House Hours sheet (=$E7*H7).
+ * Rates and defaults come from the row with that operation_code; an operation with no row
+ * reads 0 and is listed in `missing`, the same as the workbook's IFNA(VLOOKUP(...), 0).
+ * While the backend is unreachable, the workbook's own rates and minutes are used. */
+export function inHouseHoursVars(values: PulleyTechDataValues): { vars: Record<string, number>; missing: string[] } {
+  const { loaded, inHouseHourRates } = useReferenceStore.getState()
+  const vars: Record<string, number> = {}
+  const missing: string[] = []
+  for (const op of IN_HOUSE_OPERATIONS) {
+    const row = loaded ? inHouseHourRates.find((r) => r.operation_code === op.key) : undefined
+    if (loaded && !row) missing.push(op.key)
+    const rate = loaded ? (row?.mhr_rate ?? 0) : op.workbookRate
+    const runDefault = loaded ? (row?.default_run_min ?? 0) : op.workbookRunMin
+    const setupDefault = loaded ? (row?.default_setup_min ?? 0) : op.workbookSetupMin
+    const run = isBlank(values[`${op.key}RunMin`]) ? runDefault : num(values[`${op.key}RunMin`])
+    const setup = isBlank(values[`${op.key}SetupMin`]) ? setupDefault : num(values[`${op.key}SetupMin`])
+    vars[`${op.key}RateInrPerHour`] = rate
+    vars[`${op.key}RunMin`] = run
+    vars[`${op.key}SetupMin`] = setup
+    vars[`${op.key}TotalMin`] = run + setup
+    vars[`${op.key}InHouseCost`] = rate * (run + setup)
+  }
+  return { vars, missing }
+}
 
 /** Prices a just-picked designation: `catalog_prices` (label -> its paired catalog
  * price, always present for a catalog-linked select regardless of Price Field) wins
@@ -87,12 +119,8 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataV
   const { techDataFields, costRates } = useFormulaStore.getState()
   // Every Cost Rate Tables key is now insertable directly into an Auto field's
   // expression — spread first so a sheet field sharing the same key still wins.
-  const vars: Record<string, number> = { ...costRates, ...fieldNumericVars(values) }
+  const vars: Record<string, number> = { ...costRates, ...fieldNumericVars(values), ...inHouseHoursVars(values).vars }
   const out: PulleyTechDataValues = {}
-
-  for (const op of IN_HOUSE_OPERATIONS) {
-    vars[`${op.key}RateInrPerHour`] = costRates[op.rateKey] ?? PULLEY_COST_RATES.labourRatesInrPerHour[op.rateKey]
-  }
 
   const autoFields = Object.values(techDataFields).filter((f) => f.is_auto)
   if (autoFields.length === 0) throw new Error('No Auto fields loaded from the backend')
@@ -147,7 +175,14 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataV
       // Copy the source's raw value as-is (text, number or selected option) — no
       // calculation, no rounding. The source may itself be an Auto field already
       // resolved earlier in `order`, or a plain Manual field sitting in `values`.
-      const copied = autoKeys.has(f.copy_from) ? (out[f.copy_from] ?? '') : (values[f.copy_from] ?? '')
+      // A source that isn't a sheet field (a Cost Rate Tables key, an MHR rate) has no
+      // value on the item — copy its rate instead.
+      const isSheetField = autoKeys.has(f.copy_from) || techDataFields[f.copy_from] !== undefined
+      const copied = autoKeys.has(f.copy_from)
+        ? (out[f.copy_from] ?? '')
+        : isSheetField
+          ? (values[f.copy_from] ?? '')
+          : (vars[f.copy_from] ?? '')
       out[key] = copied
       const n = typeof copied === 'number' ? copied : Number(copied)
       if (copied !== '' && !Number.isNaN(n)) vars[key] = n
@@ -208,16 +243,6 @@ function computeAutoFieldsStatic(values: PulleyTechDataValues): PulleyTechDataVa
   const housingPrice = num(values.housingPrice)
   const totalBearingsHousings = 2 * (bearing1Price + bearing2Price + sleevePrice + housingPrice)
 
-  const hoursFields: PulleyTechDataValues = {}
-  for (const op of IN_HOUSE_OPERATIONS) {
-    const runMin = num(values[`${op.key}RunMin`])
-    const setupMin = num(values[`${op.key}SetupMin`])
-    const totalHours = (runMin + setupMin) / 60
-    const rate = PULLEY_COST_RATES.labourRatesInrPerHour[op.rateKey]
-    hoursFields[`${op.key}TotalHours`] = round2(totalHours)
-    hoursFields[`${op.key}Cost`] = round2(totalHours * rate)
-  }
-
   return {
     sheetLength: round2(sheetLength),
     shellPlateWeight: round2(shellPlateWeight),
@@ -226,7 +251,6 @@ function computeAutoFieldsStatic(values: PulleyTechDataValues): PulleyTechDataVa
     laggingArea: round2(laggingArea),
     laggingCost: round2(laggingCost),
     totalBearingsHousings: round2(totalBearingsHousings),
-    ...hoursFields,
   }
 }
 

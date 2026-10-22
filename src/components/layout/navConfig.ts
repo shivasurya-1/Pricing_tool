@@ -65,7 +65,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: 'Raw Forging Prices', to: '/raw-forging-prices', icon: Factory, roles: ['Sourcing', 'Controlling', 'Admin'] },
       { label: 'Bearing & Sleeve Data', to: '/bearing-sleeve-data', icon: Package, roles: ['Sales', 'Sourcing', 'Admin'] },
       { label: 'Delivery Schedule', to: '/delivery-schedule', icon: Truck, roles: ['Sales', 'Sourcing', 'Admin'] },
-      { label: 'In-House Hours', to: '/in-house-hours', icon: Calculator, roles: ['Controlling', 'Admin'] },
+      { label: 'In-House Hours', to: '/in-house-hours', icon: Calculator, roles: ['Sourcing', 'Controlling', 'Admin'] },
       { label: 'Formulas', to: '/formulas', icon: Calculator, roles: ['Controlling', 'Admin'] },
     ],
   },

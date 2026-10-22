@@ -596,9 +596,13 @@ class RFQItemFieldOverrideTests(TestCase):
 
         url = f"/api/rfq/rfqs/{response.data['id']}/item-tech-data/"
         payload = {"itemId": item.id, "technicalData": {"shellPlateWeight": 999}, "fieldOverrides": item.field_overrides}
-        self.assertEqual(client_as("Sales").patch(url, payload, format="json").status_code, 200)  # unchanged overrides
+        saved = client_as("Sales").patch(url, payload, format="json")
+        self.assertEqual(saved.status_code, 200)  # unchanged overrides
         item.refresh_from_db()
         self.assertEqual(item.technical_data["shellPlateWeight"], 999)
+        # The response is what the app shows next, so it must carry the saved values
+        # rather than the items as they were prefetched before the save.
+        self.assertEqual(saved.data["items"][0]["technicalData"]["shellPlateWeight"], 999)
 
         reset = {"itemId": item.id, "technicalData": {}, "fieldOverrides": {}}
         self.assertEqual(client_as("Admin").patch(url, reset, format="json").status_code, 200)
@@ -666,7 +670,8 @@ class RFQMultiPulleyTests(TestCase):
         self.assertEqual(added["technicalData"]["pulleyTag"], "pulley_2")
         rfq = RFQ.objects.get(id=self.rfq_id)
         self.assertEqual(rfq.value, 100 * 2 + 300 * 3)
-        self.assertIn("Added pulley #2", rfq.audit_events.order_by("-id").first().action)
+        # Audit ids are random, so look the event up rather than taking the "last" one by id.
+        self.assertTrue(rfq.audit_events.filter(action__contains="Added pulley #2").exists())
 
     def test_duplicate_pulley(self):
         source_id = RFQ.objects.get(id=self.rfq_id).items.get().id

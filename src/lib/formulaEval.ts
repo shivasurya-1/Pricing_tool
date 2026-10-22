@@ -101,6 +101,10 @@ class Parser {
   private pos = 0
   private tokens: Token[]
   private variables: Record<string, number>
+  // > 0 while parsing an iff() branch that wasn't taken: it's still parsed (so a typo
+  // is still an error) but its value is discarded, so e.g. the x / total in
+  // iff(total > 0, x / total, 0) can't fail with "Division by zero" when total is 0.
+  private skipping = 0
 
   constructor(tokens: Token[], variables: Record<string, number>) {
     this.tokens = tokens
@@ -163,7 +167,7 @@ class Parser {
     while (this.peek().type === "op" && (this.peek().value === "*" || this.peek().value === "/")) {
       const op = this.consume().value
       const right = this.parseUnary()
-      if (op === "/" && right === 0) throw new FormulaError("Division by zero")
+      if (op === "/" && right === 0 && !this.skipping) throw new FormulaError("Division by zero")
       left = op === "*" ? left * right : left / right
     }
     return left
@@ -193,6 +197,7 @@ class Parser {
       this.consume()
       if (this.peek().type === "lparen") {
         this.consume()
+        if (t.value === "iff") return this.parseIff()
         const args: number[] = []
         if (this.peek().type !== "rparen") {
           args.push(this.parseComparison())
@@ -211,6 +216,26 @@ class Parser {
       return v === undefined || v === null || Number.isNaN(v) ? 0 : v
     }
     throw new FormulaError(`Unexpected token '${t.value || "end of expression"}'`)
+  }
+
+  /** iff(cond, a, b) after its "(" — evaluates only the branch `cond` picks. */
+  private parseIff(): number {
+    const cond = this.parseComparison()
+    this.consume("comma")
+    const ifTrue = this.parseBranch(!cond)
+    this.consume("comma")
+    const ifFalse = this.parseBranch(!!cond)
+    this.consume("rparen")
+    return cond ? ifTrue : ifFalse
+  }
+
+  private parseBranch(skip: boolean): number {
+    if (skip) this.skipping++
+    try {
+      return this.parseComparison()
+    } finally {
+      if (skip) this.skipping--
+    }
   }
 }
 

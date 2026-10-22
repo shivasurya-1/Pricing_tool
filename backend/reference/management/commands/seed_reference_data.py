@@ -249,22 +249,29 @@ class Command(BaseCommand):
         # the frontend's inHouseHoursRates.ts this used to be parsed from has since
         # been deleted (it had no importers left once MhrLhrCalculatorPage.tsx moved
         # to reading this same data live from the backend).
+        # Rates at the workbook's full precision; C7 has no row in the workbook (its
+        # Section C line is always 0 there), so it's seeded at 0 for an admin to fill in.
+        # Default minutes are the workbook's Model 1 (used by 16 of its 17 models).
         rows = [
-            dict(costHead="10b. Rolling / Bending Shell", operation="Rolling / bending", costCentre="—", activityDescription="C1. Rolling / Bending Shell", mhrRate=79.01),
-            dict(costHead="10c. Welding – Shell & Hub", operation="Welding (MIG/MAG) / Grinding-finishing", costCentre="—", activityDescription="C2. Welding – Shell & Hub", mhrRate=24.52),
-            dict(costHead="10d. Machining / Turning Body", operation="Lathe turning", costCentre="—", activityDescription="C3. Machining / Turning Body", mhrRate=42.90),
-            dict(costHead="10p. Assembly + Engineering", operation="Engineering / design", costCentre="—", activityDescription="C4. Assembly + Engineering", mhrRate=17.03),
-            dict(costHead="10q. Testing / Inspection / QC", operation="Testing / Inspection", costCentre="—", activityDescription="C5. Testing / Inspection / QC", mhrRate=12.96),
-            dict(costHead="10o. Painting & Surface Prep", operation="Engineering / design", costCentre="—", activityDescription="C6. Painting & Surface Prep", mhrRate=0),
+            dict(code="c1", costHead="10b. Rolling / Bending Shell", operation="Rolling / bending", costCentre="—", activityDescription="C1. Rolling / Bending Shell", mhrRate=79.0114102640929, runMin=390, setupMin=150),
+            dict(code="c2", costHead="10c. Welding – Shell & Hub", operation="Welding (MIG/MAG) / Grinding-finishing", costCentre="—", activityDescription="C2. Welding – Shell & Hub", mhrRate=24.520266414042009, runMin=3210, setupMin=930),
+            dict(code="c3", costHead="10d. Machining / Turning Body", operation="Lathe turning", costCentre="—", activityDescription="C3. Machining / Turning Body", mhrRate=42.896027784829471, runMin=840, setupMin=180),
+            dict(code="c4", costHead="10p. Assembly + Engineering", operation="Engineering / design", costCentre="—", activityDescription="C4. Assembly + Engineering", mhrRate=17.034090709137399, runMin=1830, setupMin=0),
+            dict(code="c5", costHead="10q. Testing / Inspection / QC", operation="Testing / Inspection", costCentre="—", activityDescription="C5. Testing / Inspection / QC", mhrRate=12.958718728244977, runMin=1530, setupMin=0),
+            dict(code="c6", costHead="10o. Painting & Surface Prep", operation="Engineering / design", costCentre="—", activityDescription="C6. Painting & Surface Prep", mhrRate=0, runMin=0, setupMin=0),
+            dict(code="c7", costHead="C7. Hub Pre-Turning", operation="Lathe turning", costCentre="", activityDescription="C7. Hub Pre-Turning", mhrRate=0, runMin=0, setupMin=0),
         ]
         for order, row in enumerate(rows):
             InHouseHourRate.objects.update_or_create(
-                cost_head=row["costHead"],
+                operation_code=row["code"],
                 defaults={
+                    "cost_head": row["costHead"],
                     "operation": row["operation"],
                     "cost_centre": row.get("costCentre", ""),
                     "activity_description": row["activityDescription"],
                     "mhr_rate": row["mhrRate"],
+                    "default_run_min": row["runMin"],
+                    "default_setup_min": row["setupMin"],
                     "order": order,
                 },
             )

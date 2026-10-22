@@ -169,6 +169,12 @@ export interface FormulaVariablesDto {
   formulas: { key: string; label: string; section: string; output_unit: string }[]
   cost_rates: { key: string; label: string; value: number; unit: string; table: string; table_label: string }[]
   labour_rate_lookups: string[]
+  /** c#RateInrPerHour -> that operation's MHR rate on the In-House Hours page (0 if it has none). */
+  labour_rate_values?: Record<string, number>
+  /** Operation codes (c1-c7) with no rate row on the In-House Hours page. */
+  missing_labour_rates?: string[]
+  /** Each pulley's In-House Hours variables (c1RunMin, c1TotalMin, c1InHouseCost, ...). */
+  in_house_hours?: { key: string; label: string }[]
   catalog_prices: { key: string; source_field: string }[]
 }
 

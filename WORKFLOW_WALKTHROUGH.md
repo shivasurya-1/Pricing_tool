@@ -45,7 +45,7 @@ Sidebar → **Master Data**. Three screens, each visible only to the roles that 
 | 3 | Same page | Fill **Project Name**, **Required Delivery Date**, and **Priority**. Leave the commercial fields (payment/delivery terms, Incoterms) on their defaults unless the customer specified otherwise |
 | 4 | Same page, **Items** section | Click **Add Pulley** |
 | 5 | Product picker (modal) | Select the pulley product the customer wants, then click **Next: Fill Technical Data** |
-| 6 | **Technical Data Sheet** drawer opens automatically | Fill in what the customer gave you: body dimensions, hub, shaft, bearings/housings/sleeves, lagging, locking device. Leave **Section 8 (Sourcing Selection)** and **Section 9 (In-House Hours)** for now — Sourcing fills those in later. Click **Done** when finished |
+| 6 | **Technical Data Sheet** drawer opens automatically | Fill in what the customer gave you: body dimensions, hub, shaft, bearings/housings/sleeves, lagging, locking device. Leave **Section 8 (Sourcing Selection)** for now — Sourcing fills it in later, along with each pulley's run/setup minutes on the **In-House Hours** page. Click **Done** when finished |
 | 7 | Back on Create RFQ | The item row now shows a **Captured** badge. Repeat steps 4–6 for every pulley in this quote |
 | 8 | Bottom of page | Click **Submit RFQ** |
 

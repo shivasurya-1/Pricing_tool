@@ -12,6 +12,7 @@ string is valid, unmodified, on both the Python (simpleeval) and JS (expr-eval)
 sides — see the "Safety" section of the backend build plan.
 """
 
+import ast
 import math
 import re
 
@@ -45,6 +46,17 @@ ALLOWED_NAMES = {
 
 class FormulaError(Exception):
     pass
+
+
+class _Evaluator(EvalWithCompoundTypes):
+    """Evaluates only the branch iff() picks, so e.g. the x / total in
+    iff(total > 0, x / total, 0) can't fail with "Division by zero" when total is 0 —
+    the same as the frontend's evaluator (src/lib/formulaEval.ts)."""
+
+    def _eval_call(self, node):
+        if isinstance(node.func, ast.Name) and node.func.id == "iff" and len(node.args) == 3 and not node.keywords:
+            return self._eval(node.args[1] if self._eval(node.args[0]) else node.args[2])
+        return super()._eval_call(node)
 
 
 # A variable name: not preceded by a word char or '.', so the "e3" in "1e3" or the
@@ -87,7 +99,7 @@ def evaluate_formula(expression: str, variables: dict[str, float]) -> float:
     names = {**ALLOWED_NAMES, **{k: (v if v is not None else 0) for k, v in variables.items()}}
 
     for _ in range(MAX_MISSING_NAME_RETRIES):
-        evaluator = EvalWithCompoundTypes(functions=ALLOWED_FUNCTIONS, names=names)
+        evaluator = _Evaluator(functions=ALLOWED_FUNCTIONS, names=names)
         try:
             result = evaluator.eval(expression)
             break

@@ -4,7 +4,7 @@ import { useFormulaStore } from '@/store/formulaStore'
 
 /**
  * Catalogs (bearings/sleeves/housings/lagging/locking-devices), Raw Forging Prices,
- * and the In-House Hours legend table — all backend-editable (add/delete), separate
+ * and the In-House Hours MHR rates (Section C) — all backend-editable (add/delete), separate
  * from formulaStore (formulas + the Technical Data Sheet's field schema, which are a
  * different concept). Same loaded/loading/silent-catch contract as every other store
  * here — see formulaStore.ts's note on why.
@@ -92,7 +92,13 @@ export interface InHouseHourRateDto {
   operation: string
   cost_centre: string
   activity_description: string
+  /** Section C operation this rate costs (c1-c7), or null for a reference-only row. */
+  operation_code: string | null
+  /** INR per hour. */
   mhr_rate: number
+  /** Minutes a pulley ("model") gets for this operation until its own are entered. */
+  default_run_min: number
+  default_setup_min: number
   order: number
 }
 
@@ -285,13 +291,16 @@ export const useReferenceStore = create<ReferenceState>((set, get) => ({
   createInHouseHourRate: async (input) => {
     const created = await api.post<InHouseHourRateDto>('/reference/in-house-hours/', input)
     set((s) => ({ inHouseHourRates: [...s.inHouseHourRates, created] }))
+    await useFormulaStore.getState().loadFormulaVariables()
   },
   updateInHouseHourRate: async (id, patch) => {
     const updated = await api.patch<InHouseHourRateDto>(`/reference/in-house-hours/${id}/`, patch)
     set((s) => ({ inHouseHourRates: s.inHouseHourRates.map((r) => (r.id === id ? updated : r)) }))
+    await useFormulaStore.getState().loadFormulaVariables()
   },
   deleteInHouseHourRate: async (id) => {
     await api.delete(`/reference/in-house-hours/${id}/`)
     set((s) => ({ inHouseHourRates: s.inHouseHourRates.filter((x) => x.id !== id) }))
+    await useFormulaStore.getState().loadFormulaVariables()
   },
 }))

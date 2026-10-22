@@ -445,7 +445,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
             update_fields.append("field_overrides")
         item.save(update_fields=update_fields)
         touch(rfq)
-        return Response(self.get_serializer(rfq).data)
+        return Response(self._fresh(rfq))
 
     @action(detail=True, methods=["patch"], url_path="item-sourcing-confirmed")
     def confirm_item_sourcing(self, request, pk=None):
@@ -460,7 +460,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         item.sourcing_confirmed = bool(request.data.get("confirmed"))
         item.save(update_fields=["sourcing_confirmed"])
         touch(rfq)
-        return Response(self.get_serializer(rfq).data)
+        return Response(self._fresh(rfq))
 
     @action(detail=True, methods=["patch"], url_path="item-process-vendor")
     def assign_process_vendor(self, request, pk=None):
@@ -478,7 +478,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         item.process_vendors = others
         item.save(update_fields=["process_vendors"])
         touch(rfq)
-        return Response(self.get_serializer(rfq).data)
+        return Response(self._fresh(rfq))
 
     # ---- pulleys (items) on a saved RFQ ---------------------------------------------
     def _require_items_editable(self, request, rfq: RFQ) -> str:
@@ -691,7 +691,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
                 total_value += float(line.get("finalPrice", 0) or 0)
             rfq.value = total_value
             touch(rfq)
-        return Response(self.get_serializer(rfq).data)
+        return Response(self._fresh(rfq))
 
     @action(detail=True, methods=["post"], url_path="submit-controlling")
     def submit_controlling(self, request, pk=None):

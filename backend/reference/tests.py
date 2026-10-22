@@ -223,6 +223,64 @@ class ReferenceApiTests(TestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(InHouseHourRate.objects.filter(id=row_id).exists())
 
+    def test_in_house_hour_rate_operation_code_is_unique_but_optional(self):
+        url = "/api/reference/in-house-hours/"
+        base = {"cost_head": "Head", "operation": "Op", "activity_description": "Desc", "mhr_rate": 10}
+        for _ in range(2):
+            response = self.admin_client.post(url, {**base, "operation_code": ""}, format="json")
+            self.assertEqual(response.status_code, 201, response.data)
+            self.assertIsNone(response.data["operation_code"])
+
+        response = self.admin_client.post(url, {**base, "operation_code": "c1"}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        response = self.admin_client.post(url, {**base, "operation_code": "c1"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("operation_code", response.data)
+        response = self.admin_client.post(url, {**base, "operation_code": "c9"}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_operation_code_backfill_matches_by_description_not_order(self):
+        import importlib
+
+        from django.apps import apps
+
+        migration = importlib.import_module("reference.migrations.0010_inhousehourrate_operation_code")
+        InHouseHourRate.objects.create(cost_head="10c. Welding", operation="Welding", activity_description="C2. Welding – Shell & Hub", mhr_rate=24.52, order=0)
+        InHouseHourRate.objects.create(cost_head="10b. Rolling", operation="Rolling", activity_description="C1. Rolling / Bending Shell", mhr_rate=80, order=1)
+        InHouseHourRate.objects.create(cost_head="Misc", operation="Other", activity_description="Overheads", mhr_rate=5, order=2)
+
+        migration.backfill_operation_codes(apps, None)
+
+        welding = InHouseHourRate.objects.get(cost_head="10c. Welding")
+        self.assertEqual(welding.operation_code, "c2")
+        self.assertAlmostEqual(welding.mhr_rate, 24.520266414042009)  # seeded rounded rate -> full precision
+        rolling = InHouseHourRate.objects.get(cost_head="10b. Rolling")
+        self.assertEqual(rolling.operation_code, "c1")
+        self.assertEqual(rolling.mhr_rate, 80)  # an edited rate is left alone
+        self.assertIsNone(InHouseHourRate.objects.get(cost_head="Misc").operation_code)
+        self.assertEqual(InHouseHourRate.objects.get(operation_code="c7").mhr_rate, 0)
+
+    def test_default_minutes_carried_over_from_the_old_fields_and_formulas(self):
+        import importlib
+
+        from django.apps import apps
+
+        from formulas.models import FormulaDefinition, TechDataFieldDefinition
+
+        migration = importlib.import_module("reference.migrations.0011_inhousehourrate_default_minutes")
+        InHouseHourRate.objects.create(cost_head="Rolling", operation="Rolling", activity_description="C1", operation_code="c1", mhr_rate=79)
+        InHouseHourRate.objects.create(cost_head="Welding", operation="Welding", activity_description="C2", operation_code="c2", mhr_rate=24)
+        TechDataFieldDefinition.objects.create(key="c1RunMin", label="Run", section="9", field_type="number", fixed_value="390")
+        TechDataFieldDefinition.objects.create(key="c1SetupMin", label="Setup", section="9", field_type="number", fixed_value="150")
+        FormulaDefinition.objects.create(key="c2RunMin", label="Run", section="C", expression="3210")
+
+        migration.carry_over_default_minutes(apps, None)
+
+        c1 = InHouseHourRate.objects.get(operation_code="c1")
+        self.assertEqual((c1.default_run_min, c1.default_setup_min), (390, 150))
+        c2 = InHouseHourRate.objects.get(operation_code="c2")
+        self.assertEqual((c2.default_run_min, c2.default_setup_min), (3210, 0))
+
     # ---- Catalogs were already open before this change — confirm still true ----
 
     def test_bearing_catalog_supports_create_and_delete(self):
@@ -281,7 +339,11 @@ class SeedReferenceDataTests(TestCase):
 
         call_command("seed_reference_data")
         first_count = InHouseHourRate.objects.count()
-        self.assertEqual(first_count, 6)
+        self.assertEqual(first_count, 7)
+        self.assertEqual(
+            sorted(InHouseHourRate.objects.values_list("operation_code", flat=True)),
+            ["c1", "c2", "c3", "c4", "c5", "c6", "c7"],
+        )
 
         call_command("seed_reference_data")
         self.assertEqual(InHouseHourRate.objects.count(), first_count)

@@ -7,7 +7,14 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from accounts.permissions import CanEditReferenceData, IsAdminRole
-from reference.models import GlobalParameter, LogisticsPackingRate, MachiningLabourRate, MaterialRate
+from reference.models import (
+    IN_HOUSE_OPERATION_CODES,
+    GlobalParameter,
+    InHouseHourRate,
+    LogisticsPackingRate,
+    MachiningLabourRate,
+    MaterialRate,
+)
 
 from .catalog_options import (
     catalog_labels_for_value,
@@ -39,12 +46,37 @@ from .serializers import (
     TechDataFieldModeSerializer,
 )
 
-# Variables the in-house-hours Auto formulas reference that aren't themselves a
-# Technical Data Sheet field — injected at evaluation time from cost-rate lookups
-# (see src/lib/pulleyTechDataCalc.ts's computeAutoFieldsDynamic). A new field's
-# declared input_variables may reference these without tripping the
+# Variables the in-house-hours formulas reference that aren't themselves a Technical
+# Data Sheet field — each operation's MHR rate from the In-House Hours page, injected
+# at evaluation time (see src/lib/pulleyTechDataCalc.ts's inHouseHoursVars). A new
+# field's declared input_variables may reference these without tripping the
 # unknown-variable rejection below.
-INJECTED_RATE_VARIABLES = {f"{op}RateInrPerHour" for op in ("c1", "c2", "c3", "c4", "c5", "c6", "c7")}
+INJECTED_RATE_VARIABLES = {f"{code}RateInrPerHour" for code in IN_HOUSE_OPERATION_CODES}
+
+# Per pulley ("model"), from the In-House Hours page: its run/setup minutes (or the
+# row's default minutes), their total, and the cost — rate x total minutes, as the
+# workbook's In-House Hours sheet does. Computed client-side (src/lib/pulleyTechDataCalc.ts's
+# inHouseHoursVars); Section C formulas read them, e.g. c1Cost = c1InHouseCost.
+IN_HOUSE_HOURS_VARIABLES = {
+    f"{code}{suffix}": f"{code.upper()} — {label}"
+    for code in IN_HOUSE_OPERATION_CODES
+    for suffix, label in (
+        ("RunMin", "Run (min)"),
+        ("SetupMin", "Setup (min)"),
+        ("TotalMin", "Total (min)"),
+        ("InHouseCost", "Cost (INR)"),
+    )
+}
+
+
+def in_house_rate_values() -> tuple[dict[str, float], list[str]]:
+    """c1RateInrPerHour ... c7RateInrPerHour from the In-House Hours page, plus the
+    operation codes that have no rate row there — those read as 0, the same as the
+    client workbook's IFNA(VLOOKUP(...), 0)."""
+    rates = dict(InHouseHourRate.objects.exclude(operation_code=None).values_list("operation_code", "mhr_rate"))
+    values = {f"{code}RateInrPerHour": rates.get(code, 0) for code in IN_HOUSE_OPERATION_CODES}
+    missing = [code for code in IN_HOUSE_OPERATION_CODES if code not in rates]
+    return values, missing
 
 # Catalog prices the frontend looks up and injects whenever their designation field
 # changes (src/data/pulleyTechDataSchema.ts's PRICE_FIELD_SOURCE: price key -> the
@@ -86,6 +118,7 @@ def known_variable_keys(extra_key: str | None = None) -> set[str]:
     keys = set(FormulaDefinition.objects.values_list("key", flat=True))
     keys |= set(TechDataFieldDefinition.objects.values_list("key", flat=True))
     keys |= INJECTED_RATE_VARIABLES
+    keys |= set(IN_HOUSE_HOURS_VARIABLES)
     keys |= set(CATALOG_PRICE_VARIABLES)
     keys |= cost_rate_keys()
     if extra_key:
@@ -261,11 +294,15 @@ class FormulaDefinitionViewSet(
                     "table": table,
                     "table_label": table_label,
                 })
+        labour_rate_values, missing_labour_rates = in_house_rate_values()
         return Response({
             "fields": fields,
             "formulas": formulas,
             "cost_rates": cost_rates,
             "labour_rate_lookups": sorted(INJECTED_RATE_VARIABLES),
+            "labour_rate_values": labour_rate_values,
+            "missing_labour_rates": missing_labour_rates,
+            "in_house_hours": [{"key": key, "label": label} for key, label in IN_HOUSE_HOURS_VARIABLES.items()],
             "catalog_prices": [
                 {"key": price_key, "source_field": source} for price_key, source in CATALOG_PRICE_VARIABLES.items()
             ],

@@ -79,7 +79,7 @@ Sidebar → **Costing Tool**. Seven screens, each a faithful rebuild of one tab 
 
 | Screen | Route | What it does |
 |---|---|---|
-| Technical Data Sheet | `/tech-data` | Full customer spec capture — body, hub, shaft, bearings, lagging, locking device, sourcing per process, in-house hours. Also opens directly from RFQ item creation |
+| Technical Data Sheet | `/tech-data` | Full customer spec capture — body, hub, shaft, bearings, lagging, locking device, sourcing per process (in-house run/setup minutes are entered per model on the In-House Hours page). Also opens directly from RFQ item creation |
 | Pricing Tool | `/pricing-tool` | Computed cost buildup (Sections A–F) for any RFQ's items, live from their Technical Data |
 | Cost Rate Tables | `/cost-rate-tables` | The master rate card — exchange rate, GST, material ₹/kg, labour ₹/hr, lagging prices, logistics rates |
 | Raw Forging Prices | `/raw-forging-prices` | Shaft and shell raw material rates by size band, with the in-house / outsourced split |

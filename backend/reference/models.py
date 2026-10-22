@@ -288,16 +288,35 @@ class OrganizationSettings(ReferenceOwnedModel):
         return "Organization Settings"
 
 
+# The Pricing Tool's Section C operations (C1. Rolling / Bending Shell ... C7. Hub
+# Pre-Turning) — the prefix of every in-house formula variable (c1RunMin, c1Cost,
+# c1RateInrPerHour, ...).
+IN_HOUSE_OPERATION_CODES = ("c1", "c2", "c3", "c4", "c5", "c6", "c7")
+
+
 class InHouseHourRate(ReferenceOwnedModel):
-    """Mirrors src/data/inHouseHoursRates.ts's InHouseHourRate — the "In-House Hours"
-    page's simple MHR-rate legend table (informational; not consumed by any
-    calculation, unlike MachiningLabourRate's per-operation labour rates)."""
+    """One row of the "In-House Hours" page: an in-house operation's MHR rate, plus the
+    run/setup minutes a pulley ("model") gets until its own are entered on that page. A
+    row with an `operation_code` supplies that operation's formula variables
+    (c#RateInrPerHour, c#RunMin, c#SetupMin, c#TotalMin, c#InHouseCost = rate x total
+    minutes, as the workbook does); an operation with no row is costed at 0, like the
+    client workbook's IFNA(VLOOKUP(...), 0)."""
 
     cost_head = models.CharField(max_length=100)
     operation = models.CharField(max_length=150)
     cost_centre = models.CharField(max_length=30, blank=True)
     activity_description = models.CharField(max_length=150)
-    mhr_rate = models.FloatField()
+    operation_code = models.CharField(
+        max_length=2,
+        choices=[(code, code.upper()) for code in IN_HOUSE_OPERATION_CODES],
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="Section C operation this rate costs (c1-c7). Blank = reference only, not used in any calculation.",
+    )
+    mhr_rate = models.FloatField(help_text="INR per hour.")
+    default_run_min = models.FloatField(default=0, help_text="Run minutes a model gets until its own are entered.")
+    default_setup_min = models.FloatField(default=0, help_text="Setup minutes a model gets until its own are entered.")
     order = models.PositiveIntegerField(default=0)
 
     class Meta:

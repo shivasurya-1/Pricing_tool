@@ -30,6 +30,12 @@ class EvaluatorTests(TestCase):
         self.assertEqual(evaluate_formula("iff(x > 0, 1, 2)", {"x": 5}), 1)
         self.assertEqual(evaluate_formula("iff(x > 0, 1, 2)", {"x": -5}), 2)
 
+    def test_iff_only_evaluates_the_branch_it_picks(self):
+        # A percentage guarded against an empty pulley (total 0) mustn't divide by zero.
+        self.assertEqual(evaluate_formula("iff(total > 0, part / total, 0)", {"part": 5, "total": 0}), 0)
+        self.assertEqual(evaluate_formula("iff(total > 0, part / total, 0)", {"part": 5, "total": 2}), 2.5)
+        self.assertEqual(evaluate_formula("iff(total == 0, 0, part / total)", {"part": 5, "total": 0}), 0)
+
     def test_missing_variable_defaults_to_zero(self):
         # Matches the frontend's num() convention: an unfilled field reads as 0.
         self.assertEqual(evaluate_formula("a + b", {"a": 5}), 5)
@@ -353,9 +359,61 @@ class TechDataFieldDefinitionApiTests(TestCase):
         self.assertEqual(cost_rates["packingWoodCratePer100kg"]["table_label"], "Logistics & Packing Rates")
         self.assertIn("shellOD", {f["key"] for f in response.data["fields"]})
         self.assertIn("c1RateInrPerHour", response.data["labour_rate_lookups"])
+        self.assertEqual(response.data["missing_labour_rates"], ["c1", "c2", "c3", "c4", "c5", "c6", "c7"])
         self.assertIn("bearing1Price", {p["key"] for p in response.data["catalog_prices"]})
         # An Auto field's formula is listed once, as a field — not again under formulas.
         self.assertNotIn("shellPlateWeight", {f["key"] for f in response.data["formulas"]})
+
+    def test_variables_endpoint_returns_in_house_hours_rates(self):
+        from reference.models import InHouseHourRate
+
+        InHouseHourRate.objects.create(cost_head="Rolling", operation="Rolling", activity_description="C1", operation_code="c1", mhr_rate=79.0114102640929)
+        InHouseHourRate.objects.create(cost_head="Welding", operation="Welding", activity_description="C2", operation_code="c2", mhr_rate=24.52)
+        InHouseHourRate.objects.create(cost_head="Misc", operation="Other", activity_description="Overheads", mhr_rate=99)
+
+        response = self.sales_client.get("/api/formulas/variables/")
+        self.assertEqual(response.status_code, 200)
+        values = response.data["labour_rate_values"]
+        self.assertEqual(values["c1RateInrPerHour"], 79.0114102640929)
+        self.assertEqual(values["c2RateInrPerHour"], 24.52)
+        # No rate row -> 0 (the workbook's IFNA(..., 0)), and reported as missing.
+        self.assertEqual(values["c7RateInrPerHour"], 0)
+        self.assertEqual(response.data["missing_labour_rates"], ["c3", "c4", "c5", "c6", "c7"])
+
+    def test_migration_drops_run_setup_minute_fields_and_fixed_formulas(self):
+        import importlib
+
+        from django.apps import apps
+
+        migration = importlib.import_module("formulas.migrations.0009_drop_in_house_minute_fields")
+        Section.objects.create(key="sec-9", label="9. IN-HOUSE PROCESSING HOURS", tab="tech_sheet")
+        TechDataFieldDefinition.objects.create(key="c2RunMin", label="C2 Run", section="9. IN-HOUSE PROCESSING HOURS", field_type="number", fixed_value="3210")
+        FormulaDefinition.objects.create(key="c1RunMin", label="C1 Run", section="Pricing Section C — In-House Processing", expression="390")
+        cost = FormulaDefinition.objects.create(
+            key="c1Cost", label="C1 Cost", section="Pricing Section C — In-House Processing",
+            expression="c1RateInrPerHour * (c1RunMin + c1SetupMin)", input_variables=["c1RateInrPerHour", "c1RunMin", "c1SetupMin"],
+        )
+
+        migration.drop_run_setup_minute_fields(apps, None)
+        migration.drop_run_setup_minute_fields(apps, None)  # idempotent
+
+        self.assertFalse(TechDataFieldDefinition.objects.filter(key="c2RunMin").exists())
+        self.assertFalse(FormulaDefinition.objects.filter(key="c1RunMin").exists())
+        self.assertFalse(Section.objects.filter(label="9. IN-HOUSE PROCESSING HOURS").exists())
+        # A formula reading the minutes is kept — the In-House Hours page supplies them now.
+        self.assertTrue(FormulaDefinition.objects.filter(pk=cost.pk).exists())
+
+    def test_in_house_hours_variables_are_valid_in_formulas(self):
+        payload = {
+            "key": "c1CostField", "label": "C1 Cost", "section": "2. PULLEY BODY DIMENSIONS", "field_type": "number",
+            "is_auto": True, "expression": "c1InHouseCost + c1TotalMin * 0",
+        }
+        response = self.admin_client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+
+        response = self.sales_client.get("/api/formulas/variables/")
+        keys = {v["key"] for v in response.data["in_house_hours"]}
+        self.assertTrue({"c1RunMin", "c1SetupMin", "c1TotalMin", "c1InHouseCost", "c7InHouseCost"} <= keys)
 
     def _bearing_catalog_field(self, value_field="price_inr"):
         from reference.models import BearingCatalogEntry

@@ -6,7 +6,6 @@
  */
 
 import { BRG_CATALOG, SLEEVE_CATALOG, HOUSING_CATALOG, LAGGING_CATALOG, LOCKING_DEVICE_CATALOG } from '@/data/pulleyCatalogs'
-import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
 import { useReferenceStore } from '@/store/referenceStore'
 import type { TechDataFieldOverrides } from '@/types'
@@ -64,28 +63,19 @@ export const PROCESS_SOURCING_MAP: { srcKey: string; label: string; cKey?: strin
   { srcKey: 'srcPainting', label: 'Painting / Blasting', cKey: 'c6', dKey: 'd4' },
 ]
 
-/** The 7 in-house operations from the "In-House Hours" tab, each costed via its MHR rate. */
-export const IN_HOUSE_OPERATIONS: { key: string; label: string; rateKey: keyof typeof PULLEY_COST_RATES.labourRatesInrPerHour }[] = [
-  { key: 'c1', label: 'C1. Rolling / Bending Shell', rateKey: 'rollingBending' },
-  { key: 'c2', label: 'C2. Welding – Shell & Hub', rateKey: 'weldingMigMag' },
-  { key: 'c3', label: 'C3. Machining / Turning Body', rateKey: 'latheTurning' },
-  { key: 'c4', label: 'C4. Assembly + Engineering', rateKey: 'assemblyLabour' },
-  { key: 'c5', label: 'C5. Testing / Inspection / QC', rateKey: 'engineeringDesign' },
-  { key: 'c6', label: 'C6. Painting & Surface Prep', rateKey: 'paintingSurfacePrep' },
-  { key: 'c7', label: 'C7. Hub Pre-Turning', rateKey: 'latheTurning' },
+/** The 7 in-house operations of Section C, each costed on the In-House Hours page at the
+ * MHR rate of the row with that operation_code. The `workbook*` values (the client
+ * workbook's In-House Hours rate in INR/h, and its Model 1 minutes; C7 has no row there)
+ * are only used while the backend is unreachable. */
+export const IN_HOUSE_OPERATIONS: { key: string; label: string; workbookRate: number; workbookRunMin: number; workbookSetupMin: number }[] = [
+  { key: 'c1', label: 'C1. Rolling / Bending Shell', workbookRate: 79.0114102640929, workbookRunMin: 390, workbookSetupMin: 150 },
+  { key: 'c2', label: 'C2. Welding – Shell & Hub', workbookRate: 24.520266414042009, workbookRunMin: 3210, workbookSetupMin: 930 },
+  { key: 'c3', label: 'C3. Machining / Turning Body', workbookRate: 42.896027784829471, workbookRunMin: 840, workbookSetupMin: 180 },
+  { key: 'c4', label: 'C4. Assembly + Engineering', workbookRate: 17.034090709137399, workbookRunMin: 1830, workbookSetupMin: 0 },
+  { key: 'c5', label: 'C5. Testing / Inspection / QC', workbookRate: 12.958718728244977, workbookRunMin: 1530, workbookSetupMin: 0 },
+  { key: 'c6', label: 'C6. Painting & Surface Prep', workbookRate: 0, workbookRunMin: 0, workbookSetupMin: 0 },
+  { key: 'c7', label: 'C7. Hub Pre-Turning', workbookRate: 0, workbookRunMin: 0, workbookSetupMin: 0 },
 ]
-
-function inHouseHoursFields(): TechDataField[] {
-  return IN_HOUSE_OPERATIONS.flatMap((op) => {
-    const rate = PULLEY_COST_RATES.labourRatesInrPerHour[op.rateKey]
-    return [
-      { key: `${op.key}RunMin`, label: `${op.label} — Run Time`, unit: 'min', type: 'number' as const },
-      { key: `${op.key}SetupMin`, label: `${op.label} — Setup Time`, unit: 'min', type: 'number' as const },
-      { key: `${op.key}TotalHours`, label: `${op.label} — Total Hours`, unit: 'h', type: 'number' as const, auto: true },
-      { key: `${op.key}Cost`, label: `${op.label} — Cost @ ₹${rate}/hr`, unit: 'INR', type: 'number' as const, auto: true },
-    ]
-  })
-}
 
 export const HEADER_FIELDS: TechDataField[] = [
   { key: 'customerName', label: 'Customer Name', type: 'text' },
@@ -187,10 +177,6 @@ export const TECH_DATA_SECTIONS: TechDataSection[] = [
       { key: 'srcBalancing', label: 'Static Balancing', type: 'select', options: SOURCING_OPTIONS },
       { key: 'srcPainting', label: 'Painting / Blasting', type: 'select', options: SOURCING_OPTIONS },
     ],
-  },
-  {
-    title: '9. IN-HOUSE PROCESSING HOURS',
-    fields: inHouseHoursFields(),
   },
 ]
 

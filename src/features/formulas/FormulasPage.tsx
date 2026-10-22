@@ -24,7 +24,7 @@ import { ApiError } from '@/lib/apiClient'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-blue)]'
 
-// Rate-lookup variables the in-house-hours Auto formulas can reference — not fields
+// MHR-rate variables (In-House Hours page) the in-house-hours formulas can reference — not fields
 // themselves (see backend/formulas/views.py's INJECTED_RATE_VARIABLES), but valid to
 // use in a new formula, so they're offered in the "Insert" picker and recognized by
 // the variable-detection scan below.
@@ -103,7 +103,16 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
           ))}
         </optgroup>
       )}
-      <optgroup label="Labour rates per operation — Cost Rate Tables → Machining & Labour Rates">
+      {formulaVariables.in_house_hours && formulaVariables.in_house_hours.length > 0 && (
+        <optgroup label="In-House Hours page — per model (minutes and cost)">
+          {formulaVariables.in_house_hours.map((v) => (
+            <option key={v.key} value={v.key}>
+              {v.label} ({v.key})
+            </option>
+          ))}
+        </optgroup>
+      )}
+      <optgroup label="MHR rate per operation (INR/h) — In-House Hours page">
         {labourKeys.map((v) => {
           const op = IN_HOUSE_OPERATIONS.find((o) => `${o.key}RateInrPerHour` === v)
           if (!op) {
@@ -115,7 +124,7 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
           }
           return (
             <option key={v} value={v}>
-              {op.label} — {op.rateKey} ({v})
+              {op.label} — {formulaVariables.labour_rate_values?.[v] !== undefined ? `₹${formulaVariables.labour_rate_values[v].toFixed(2)}/h` : 'MHR rate'} ({v})
             </option>
           )
         })}

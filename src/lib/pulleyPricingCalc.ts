@@ -2,11 +2,10 @@
  * Replicates the "Pricing Tool" sheet's Section A-F cost buildup, reading
  * from a single RFQ item's captured Technical Data Sheet values.
  *
- * Section C (In-House Processing) is costed from the "9. In-House Processing
- * Hours" section — Run + Setup minutes per operation x that operation's MHR
- * rate (from Cost Rate Tables / labourRatesInrPerHour), rather than the
- * source workbook's separate In-House Hours + MHR & LHR Calculator tabs.
- * A line is only marked `pending` if no hours have been entered yet.
+ * Section C (In-House Processing) is costed on the In-House Hours page — each
+ * pulley's Run + Setup minutes per operation x that operation's MHR rate (see
+ * computeSectionC), the app's version of the source workbook's In-House Hours
+ * tab. A line is only marked `pending` if it has no minutes at all.
  *
  * Two calculation paths, same as pulleyTechDataCalc.ts: computePulleyPricingDynamic
  * evaluates the current (editable, backend-fetched) formula definitions; the
@@ -18,7 +17,7 @@ import type { PulleyTechDataValues } from '@/types'
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
 import { useFormulaStore } from '@/store/formulaStore'
-import { computeAutoFields, fieldNumericVars } from '@/lib/pulleyTechDataCalc'
+import { computeAutoFields, fieldNumericVars, inHouseHoursVars } from '@/lib/pulleyTechDataCalc'
 import { evaluateFormula } from '@/lib/formulaEval'
 
 const num = (v: string | number | undefined): number => (typeof v === 'number' ? v : Number(v) || 0)
@@ -50,6 +49,8 @@ export interface PulleyPricingResult {
   grossMarginPercent: number
   itemTotal: number
   qty: number
+  /** Section C operations (c1-c7) with no rate row on the In-House Hours page — costed at 0. */
+  missingInHouseRates: string[]
 }
 
 /** Builds the full variable bag Section A-F formulas evaluate against — exported so
@@ -126,6 +127,44 @@ function toNumericVars(values: PulleyTechDataValues): Record<string, number> {
   return out
 }
 
+/**
+ * Section C — one line per in-house operation, from the In-House Hours page's variables
+ * for this pulley (inHouseHoursVars): by default c#Cost = c#InHouseCost, the cost the page
+ * shows (MHR rate × run + setup minutes, as the workbook's In-House Hours sheet does).
+ * Whatever the Formulas page defines takes precedence: an Auto field c#Cost (already
+ * computed into `vars`), else a standalone c#Cost pricing formula; and a `sectionC.c#`
+ * line formula on top of either. Shared by both calculation paths, so a customised sheet
+ * whose other sections fail the dynamic path still gets its own Section C formulas.
+ */
+function computeSectionC(values: PulleyTechDataValues, vars: Record<string, number>): { lines: CostLine[]; missing: string[] } {
+  const { loaded, formulas, techDataFields } = useFormulaStore.getState()
+  const { vars: inHouseVars, missing } = inHouseHoursVars(values)
+  Object.assign(vars, inHouseVars)
+
+  const lines = IN_HOUSE_OPERATIONS.map((op): CostLine => {
+    const costKey = `${op.key}Cost`
+    const minutes = vars[`${op.key}TotalMin`]
+    const defaultCost = vars[`${op.key}InHouseCost`]
+    const costFormula = loaded && !techDataFields[costKey] ? formulas[costKey] : undefined
+    if (!(loaded && techDataFields[costKey]?.is_auto && vars[costKey] !== undefined)) {
+      vars[costKey] = costFormula ? evaluateOr(costFormula.expression, vars, defaultCost) : defaultCost
+    }
+    const lineFormula = loaded ? formulas[`sectionC.${op.key}`] : undefined
+    const value = lineFormula ? evaluateOr(lineFormula.expression, vars, vars[costKey]) : vars[costKey]
+    return { key: op.key, label: lineFormula?.label ?? op.label, value, pending: minutes === 0 }
+  })
+  return { lines, missing }
+}
+
+function evaluateOr(expression: string, vars: Record<string, number>, fallback: number): number {
+  try {
+    return evaluateFormula(expression, vars)
+  } catch (err) {
+    console.warn(`[computeSectionC] formula "${expression}" failed, using the default cost:`, err)
+    return fallback
+  }
+}
+
 const SECTION_A_KEYS = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']
 const SECTION_B_KEYS = ['b1', 'b2', 'b3', 'b4', 'b5', 'b6']
 const SECTION_D_KEYS = ['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8']
@@ -142,16 +181,13 @@ function computePulleyPricingDynamic(values: PulleyTechDataValues): PulleyPricin
     const f = formulas[fullKey]
     if (!f) throw new Error(`Formula not loaded: ${fullKey}`)
     const value = evaluateFormula(f.expression, vars)
-    const pending =
-      f.expression === '0' ||
-      (shortKey === 'b6' && value === 0) ||
-      (sectionPrefix === 'sectionC' && vars[`${shortKey}RunMin`] === 0 && vars[`${shortKey}SetupMin`] === 0)
+    const pending = f.expression === '0' || (shortKey === 'b6' && value === 0)
     return { key: shortKey, label: f.label, value, pending }
   }
 
   const sectionA = SECTION_A_KEYS.map((k) => evalLine('sectionA', k))
   const sectionB = SECTION_B_KEYS.map((k) => evalLine('sectionB', k))
-  const sectionC = IN_HOUSE_OPERATIONS.map((op) => evalLine('sectionC', op.key))
+  const { lines: sectionC, missing: missingInHouseRates } = computeSectionC(values, vars)
   const sectionD = SECTION_D_KEYS.map((k) => evalLine('sectionD', k))
   const sectionE = SECTION_E_KEYS.map((k) => evalLine('sectionE', k))
 
@@ -192,6 +228,7 @@ function computePulleyPricingDynamic(values: PulleyTechDataValues): PulleyPricin
     grossMarginPercent: summary.grossMarginPercent,
     itemTotal: summary.itemTotal,
     qty,
+    missingInHouseRates,
   }
 }
 
@@ -237,12 +274,8 @@ function computePulleyPricingStatic(values: PulleyTechDataValues): PulleyPricing
   ]
 
   // SECTION C — IN-HOUSE PROCESSING, from Section 9 (Run + Setup minutes x MHR rate)
-  const sectionC: CostLine[] = IN_HOUSE_OPERATIONS.map((op) => {
-    const runMin = num(values[`${op.key}RunMin`])
-    const setupMin = num(values[`${op.key}SetupMin`])
-    const cost = num(values[`${op.key}Cost`])
-    return { key: op.key, label: op.label, value: cost, pending: runMin === 0 && setupMin === 0 }
-  })
+  // Freshly computed Auto fields (e.g. a c#Cost Auto field) win over stale saved ones.
+  const { lines: sectionC, missing: missingInHouseRates } = computeSectionC(values, { ...fieldNumericVars(values), ...toNumericVars(computeAutoFields(values)) })
 
   // SECTION D — OUTSOURCED PROCESSING
   const laggingCost = num(values.laggingCost)
@@ -307,6 +340,7 @@ function computePulleyPricingStatic(values: PulleyTechDataValues): PulleyPricing
     grossMarginPercent,
     itemTotal,
     qty,
+    missingInHouseRates,
   }
 }
 

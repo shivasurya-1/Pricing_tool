@@ -67,6 +67,8 @@
 .pts-grand { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin: 4px 0 18px; padding: 10px 14px; background: #1b2433; color: #fff; border-radius: 6px; font-weight: 700; }
 .pts-grand-v { font-size: 14pt; font-variant-numeric: tabular-nums; }
 
+.pts-warn { margin: 0; padding: 7px 14px; background: #fffbeb; color: #92400e; font-size: 9.5pt; border-bottom: 1px solid #e9edf3; }
+
 .pts-foot { margin: 20px 8px 0; padding-top: 10px; border-top: 1px solid #dde2ea; font-size: 9pt; color: #8a93a6; }
 
 @media (max-width: 640px) {
