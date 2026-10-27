@@ -41,7 +41,6 @@ const COST_SECTIONS: {
   { code: 'E', title: 'Packing & shipment cost', totalLabel: 'TOTAL PACKING & SHIPMENT COST (E)', lines: 'sectionE', total: 'totalE', color: '#0E7490' },
 ]
 const SECTION_F_COLOR = '#1E3A8A'
-const PRICING_FIELD_COLORS = ['#475569', '#9A3412', '#3F6212']
 
 // Section 5's catalog-driven components. The sleeve field is "sleeveCode" on the
 // built-in schema but may be renamed (e.g. "adapterSleeveCode") on a customised sheet.
@@ -117,6 +116,23 @@ function fieldValue(field: TechDataField, col: Column, rfq: RFQ): string | numbe
   if (/number\s*of\s*pulleys|\bqty\b|quantity/i.test(id)) return col.values.qty ?? col.item.quantity
   if (/quote\s*ref|project\s*\/\s*quote|quotereference/i.test(id)) return rfq.quoteReference || rfq.projectName || undefined
   return undefined
+}
+
+/**
+ * A process's In-house / Outsource choice for one pulley. Same resolution the Pricing Tool
+ * sheet's own fields use: the saved value, else the auto-computed one, else the field's
+ * fixed value — looked up by the process's key, or by its label on a customised sheet
+ * where the field is keyed differently.
+ */
+function sourcingValue(p: { srcKey: string; label: string }, col: Column, techDataFields: Record<string, TechDataFieldDto>): string | number | undefined {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const field = techDataFields[p.srcKey] ?? Object.values(techDataFields).find((f) => norm(f.label) === norm(p.label))
+  const keys = field && field.key !== p.srcKey ? [p.srcKey, field.key] : [p.srcKey]
+  for (const key of keys) {
+    const v = col.values[key] ?? col.autoValues[key]
+    if (v !== undefined && v !== null && v !== '') return v
+  }
+  return field?.fixed_value || undefined
 }
 
 export function PricingToolPage() {
@@ -228,7 +244,6 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
   const formulas = useFormulaStore((s) => s.formulas)
   const costRates = useFormulaStore((s) => s.costRates)
   const techDataFields = useFormulaStore((s) => s.techDataFields)
-  const sectionsRegistry = useFormulaStore((s) => s.sections)
   // Section C's MHR rates — an edit on the In-House Hours page recomputes too.
   const inHouseHourRates = useReferenceStore((s) => s.inHouseHourRates)
   const techSections = useTechDataSections()
@@ -267,19 +282,6 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     return { sections: withCodes.sort((a, b) => a.code - b.code || a.index - b.index), sourcingCode }
   }, [techSections])
   const maxInputCode = Math.max(inputSections.sourcingCode, ...inputSections.sections.map((s) => s.code))
-
-  // Pricing Tool fields (Manage Sections -> Pricing Tool tab), shown read-only.
-  const pricingFieldSections = useMemo(() => {
-    const sectionOrder = Object.fromEntries(sectionsRegistry.map((s) => [s.label, s.order]))
-    const bySection: Record<string, TechDataFieldDto[]> = {}
-    for (const f of Object.values(techDataFields)) {
-      if (f.sheet !== 'pricing_tool') continue
-      ;(bySection[f.section] ??= []).push(f)
-    }
-    return Object.entries(bySection)
-      .sort(([a], [b]) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999) || a.localeCompare(b))
-      .map(([title, fields]) => ({ title, fields: fields.sort((a, b) => a.order - b.order) }))
-  }, [techDataFields, sectionsRegistry])
 
   const oemDiscountPct = Math.round((costRates.oemDiscount ?? 0.1) * 1000) / 10
   const gstPct = Math.round((costRates.gstRate ?? 0.18) * 1000) / 10
@@ -344,7 +346,7 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
           })}
 
           <SheetSection code={inputSections.sourcingCode} title="Sourcing selection" color={INPUT_COLORS[8]}>
-            {PROCESS_SOURCING_MAP.map((p) => row(p.label, columns.map((c) => <SourcingPill key={c.item.id} value={c.values[p.srcKey]} />)))}
+            {PROCESS_SOURCING_MAP.map((p) => row(p.label, columns.map((c) => <SourcingPill key={c.item.id} value={sourcingValue(p, c, techDataFields)} />)))}
           </SheetSection>
         </div>
       </div>
@@ -370,25 +372,6 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
                 <p className="pts-warn" role="note">
                   No MHR rate on the In-House Hours page for {missingRateLabels.join(', ')} — costed at 0.
                 </p>
-              )}
-            </SheetSection>
-          ))}
-
-          {pricingFieldSections.map((section, i) => (
-            <SheetSection key={section.title} code={`P${i + 1}`} title={section.title} color={PRICING_FIELD_COLORS[i % PRICING_FIELD_COLORS.length]}>
-              {section.fields.map((field) =>
-                row(
-                  field.label,
-                  columns.map((c) =>
-                    fmtValue(
-                      catalogDisplayValue(
-                        field.option_prices,
-                        field.fixed_value || (field.is_read_only ? (c.autoValues[field.key] ?? c.values[field.key]) : c.values[field.key]),
-                      ),
-                    ),
-                  ),
-                  { unit: field.unit },
-                ),
               )}
             </SheetSection>
           ))}
@@ -433,7 +416,7 @@ function PulleyHeaderRow({ columns, gridStyle, show }: { columns: Column[]; grid
   return (
     <div className="pts-row pts-colhead" style={gridStyle}>
       <span>Pulley</span>
-      <span className="pts-u"></span>
+      <span className="pts-u">Unit</span>
       {columns.map((c) => (
         <span key={c.item.id} className="pts-v">
           <span className="pts-colname">{c.item.productName || 'Pulley'}</span>

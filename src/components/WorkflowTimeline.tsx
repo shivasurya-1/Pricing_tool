@@ -82,14 +82,13 @@ export function WorkflowTimeline({ rfq, auditLog }: { rfq: RFQ; auditLog: AuditE
           return (
             <div key={i} className="flex flex-1 flex-col items-center">
               <div className="flex w-full items-center">
-                {i > 0 && (
-                  <div
-                    className={clsx(
-                      'h-0.5 flex-1',
-                      statusFor(NODES[i - 1]) === 'completed' ? 'bg-[var(--color-green)]' : 'bg-[var(--color-border)]',
-                    )}
-                  />
-                )}
+                {/* Half-lines on both sides keep every circle centred over its label; the ends are left blank. */}
+                <div
+                  className={clsx(
+                    'h-0.5 flex-1',
+                    i > 0 && (statusFor(NODES[i - 1]) === 'completed' ? 'bg-[var(--color-green)]' : 'bg-[var(--color-border)]'),
+                  )}
+                />
                 <button
                   onClick={() => setExpanded(isOpen ? null : i)}
                   className={clsx(
@@ -102,11 +101,12 @@ export function WorkflowTimeline({ rfq, auditLog }: { rfq: RFQ; auditLog: AuditE
                 >
                   {status === 'completed' ? <Check size={15} /> : status === 'rejected' ? <X size={15} /> : <Circle size={8} fill="currentColor" />}
                 </button>
-                {i < NODES.length - 1 && (
-                  <div
-                    className={clsx('h-0.5 flex-1', status === 'completed' ? 'bg-[var(--color-green)]' : 'bg-[var(--color-border)]')}
-                  />
-                )}
+                <div
+                  className={clsx(
+                    'h-0.5 flex-1',
+                    i < NODES.length - 1 && (status === 'completed' ? 'bg-[var(--color-green)]' : 'bg-[var(--color-border)]'),
+                  )}
+                />
               </div>
               <p className="mt-2 text-xs font-semibold text-[var(--color-ink)]">
                 {i + 1}. {node.label}
