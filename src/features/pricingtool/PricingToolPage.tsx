@@ -9,8 +9,8 @@ import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
 import { useReferenceStore } from '@/store/referenceStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { computePulleyPricing, type CostLine, type PulleyPricingResult } from '@/lib/pulleyPricingCalc'
-import { computeAutoFields } from '@/lib/pulleyTechDataCalc'
-import { catalogDisplayValue, IN_HOUSE_OPERATIONS, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
+import { computeAutoFields, inHouseOperationLabel } from '@/lib/pulleyTechDataCalc'
+import { catalogDisplayValue, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
 import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
 import './PricingToolSheet.css'
 
@@ -291,7 +291,7 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     <ValueRow key={label} label={label} cells={cells} gridStyle={gridStyle} {...opts} />
   )
   const first = columns[0]
-  const missingRateLabels = IN_HOUSE_OPERATIONS.filter((op) => first.pricing.missingInHouseRates.includes(op.key)).map((op) => op.label)
+  const missingRateLabels = first.pricing.missingInHouseRates.map(inHouseOperationLabel)
 
   const head = (
     <PulleyHeaderRow

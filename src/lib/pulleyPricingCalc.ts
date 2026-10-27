@@ -15,9 +15,8 @@
 
 import type { PulleyTechDataValues } from '@/types'
 import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
-import { IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
 import { useFormulaStore } from '@/store/formulaStore'
-import { computeAutoFields, fieldNumericVars, inHouseHoursVars } from '@/lib/pulleyTechDataCalc'
+import { computeAutoFields, fieldNumericVars, inHouseHoursVars, inHouseOperationCodes, inHouseOperationLabel } from '@/lib/pulleyTechDataCalc'
 import { evaluateFormula } from '@/lib/formulaEval'
 
 const num = (v: string | number | undefined): number => (typeof v === 'number' ? v : Number(v) || 0)
@@ -141,17 +140,18 @@ function computeSectionC(values: PulleyTechDataValues, vars: Record<string, numb
   const { vars: inHouseVars, missing } = inHouseHoursVars(values)
   Object.assign(vars, inHouseVars)
 
-  const lines = IN_HOUSE_OPERATIONS.map((op): CostLine => {
-    const costKey = `${op.key}Cost`
-    const minutes = vars[`${op.key}TotalMin`]
-    const defaultCost = vars[`${op.key}InHouseCost`]
+  // c1 … c7 plus any line added on the In-House Hours page (c8, …).
+  const lines = inHouseOperationCodes().map((code): CostLine => {
+    const costKey = `${code}Cost`
+    const minutes = vars[`${code}TotalMin`]
+    const defaultCost = vars[`${code}InHouseCost`]
     const costFormula = loaded && !techDataFields[costKey] ? formulas[costKey] : undefined
     if (!(loaded && techDataFields[costKey]?.is_auto && vars[costKey] !== undefined)) {
       vars[costKey] = costFormula ? evaluateOr(costFormula.expression, vars, defaultCost) : defaultCost
     }
-    const lineFormula = loaded ? formulas[`sectionC.${op.key}`] : undefined
+    const lineFormula = loaded ? formulas[`sectionC.${code}`] : undefined
     const value = lineFormula ? evaluateOr(lineFormula.expression, vars, vars[costKey]) : vars[costKey]
-    return { key: op.key, label: lineFormula?.label ?? op.label, value, pending: minutes === 0 }
+    return { key: code, label: lineFormula?.label ?? inHouseOperationLabel(code), value, pending: minutes === 0 }
   })
   return { lines, missing }
 }

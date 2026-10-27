@@ -34,21 +34,38 @@ export function inHouseHoursVars(values: PulleyTechDataValues): { vars: Record<s
   const { loaded, inHouseHourRates } = useReferenceStore.getState()
   const vars: Record<string, number> = {}
   const missing: string[] = []
-  for (const op of IN_HOUSE_OPERATIONS) {
-    const row = loaded ? inHouseHourRates.find((r) => r.operation_code === op.key) : undefined
-    if (loaded && !row) missing.push(op.key)
-    const rate = loaded ? (row?.mhr_rate ?? 0) : op.workbookRate
-    const runDefault = loaded ? (row?.default_run_min ?? 0) : op.workbookRunMin
-    const setupDefault = loaded ? (row?.default_setup_min ?? 0) : op.workbookSetupMin
-    const run = isBlank(values[`${op.key}RunMin`]) ? runDefault : num(values[`${op.key}RunMin`])
-    const setup = isBlank(values[`${op.key}SetupMin`]) ? setupDefault : num(values[`${op.key}SetupMin`])
-    vars[`${op.key}RateInrPerHour`] = rate
-    vars[`${op.key}RunMin`] = run
-    vars[`${op.key}SetupMin`] = setup
-    vars[`${op.key}TotalMin`] = run + setup
-    vars[`${op.key}InHouseCost`] = rate * (run + setup)
+  for (const code of inHouseOperationCodes()) {
+    const op = IN_HOUSE_OPERATIONS.find((o) => o.key === code)
+    const row = loaded ? inHouseHourRates.find((r) => r.operation_code === code) : undefined
+    if (loaded && !row) missing.push(code)
+    const rate = loaded ? (row?.mhr_rate ?? 0) : (op?.workbookRate ?? 0)
+    const runDefault = loaded ? (row?.default_run_min ?? 0) : (op?.workbookRunMin ?? 0)
+    const setupDefault = loaded ? (row?.default_setup_min ?? 0) : (op?.workbookSetupMin ?? 0)
+    const run = isBlank(values[`${code}RunMin`]) ? runDefault : num(values[`${code}RunMin`])
+    const setup = isBlank(values[`${code}SetupMin`]) ? setupDefault : num(values[`${code}SetupMin`])
+    vars[`${code}RateInrPerHour`] = rate
+    vars[`${code}RunMin`] = run
+    vars[`${code}SetupMin`] = setup
+    vars[`${code}TotalMin`] = run + setup
+    vars[`${code}InHouseCost`] = rate * (run + setup)
   }
   return { vars, missing }
+}
+
+/** The Section C operations: the built-in c1 … c7 plus every line added on the In-House
+ * Hours page (c8, c9, …), in order — the backend's in_house_operation_codes(). */
+export function inHouseOperationCodes(): string[] {
+  const { loaded, inHouseHourRates } = useReferenceStore.getState()
+  const codes = new Set(IN_HOUSE_OPERATIONS.map((op) => op.key))
+  if (loaded) for (const r of inHouseHourRates) if (r.operation_code) codes.add(r.operation_code)
+  return [...codes].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
+}
+
+/** An operation's name: its row's activity description on the In-House Hours page, else
+ * the built-in label (e.g. "C7. Hub Pre-Turning"), else just its code. */
+export function inHouseOperationLabel(code: string): string {
+  const row = useReferenceStore.getState().inHouseHourRates.find((r) => r.operation_code === code)
+  return row?.activity_description || IN_HOUSE_OPERATIONS.find((op) => op.key === code)?.label || code.toUpperCase()
 }
 
 /** Prices a just-picked designation: `catalog_prices` (label -> its paired catalog

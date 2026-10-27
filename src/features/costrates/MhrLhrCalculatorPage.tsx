@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Card } from '@/components/ui/Card'
@@ -7,11 +7,16 @@ import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useReferenceStore, type InHouseHourRateDto } from '@/store/referenceStore'
 import { useDataStore } from '@/store/dataStore'
 import { useAuthStore } from '@/store/authStore'
-import { IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
 import { formatCurrency } from '@/lib/format'
 import { InHouseHoursGrid } from './InHouseHoursGrid'
 
-const columns: ReferenceColumn<InHouseHourRateDto>[] = [
+/** c1 … the highest code in use (at least c7), plus the next new one. */
+function sectionCLineOptions(rows: InHouseHourRateDto[]): string[] {
+  const highest = Math.max(7, ...rows.map((r) => (r.operation_code ? Number(r.operation_code.slice(1)) : 0)))
+  return Array.from({ length: highest + 1 }, (_, i) => `c${i + 1}`)
+}
+
+const rateColumns = (lineOptions: string[]): ReferenceColumn<InHouseHourRateDto>[] => [
   { key: 'cost_head', header: 'Cost Head', type: 'text', required: true },
   { key: 'operation', header: 'Operation', type: 'text', required: true },
   { key: 'cost_centre', header: 'Cost Centre', type: 'text' },
@@ -20,7 +25,7 @@ const columns: ReferenceColumn<InHouseHourRateDto>[] = [
     key: 'operation_code',
     header: 'Section C Line',
     type: 'select',
-    options: IN_HOUSE_OPERATIONS.map((op) => op.key),
+    options: lineOptions,
     editable: true,
     format: (r) => (r.operation_code ? r.operation_code.toUpperCase() : '—'),
   },
@@ -42,6 +47,7 @@ export function MhrLhrCalculatorPage() {
   const canEditRates = role === 'Controlling' || role === 'Admin'
   const [rfqId, setRfqId] = useState('')
   const rfq = rfqs.find((r) => r.id === rfqId)
+  const columns = useMemo(() => rateColumns(sectionCLineOptions(inHouseHourRates)), [inHouseHourRates])
 
   return (
     <div>
@@ -82,9 +88,9 @@ export function MhrLhrCalculatorPage() {
             <div className="mb-3 flex items-start gap-2 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-4 py-3 text-sm text-[var(--color-blue)]">
               <Info size={16} className="mt-0.5 shrink-0" />
               <p>
-                MHR rates and default minutes, shared by every RFQ. Each row costs the Section C line it is linked to; a row with no
-                Section C line is for reference only. A model uses the default minutes until its own are entered above. Saved changes
-                apply to every RFQ's pricing.
+                MHR rates and default minutes, shared by every RFQ. Each row is a Section C line of the Pricing Tool — a new row gets
+                the next free line (C7, C8, …) automatically. A model uses the default minutes until its own are entered above. Saved
+                changes apply to every RFQ's pricing.
               </p>
             </div>
             <ReferenceCrudTable

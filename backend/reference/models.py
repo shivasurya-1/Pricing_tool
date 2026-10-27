@@ -288,31 +288,53 @@ class OrganizationSettings(ReferenceOwnedModel):
         return "Organization Settings"
 
 
-# The Pricing Tool's Section C operations (C1. Rolling / Bending Shell ... C7. Hub
-# Pre-Turning) — the prefix of every in-house formula variable (c1RunMin, c1Cost,
-# c1RateInrPerHour, ...).
+# The Pricing Tool's built-in Section C operations (C1. Rolling / Bending Shell ... C7.
+# Hub Pre-Turning) — the prefix of every in-house formula variable (c1RunMin, c1Cost,
+# c1RateInrPerHour, ...). Rows added on the In-House Hours page continue the series
+# (c8, c9, ...); see in_house_operation_codes().
 IN_HOUSE_OPERATION_CODES = ("c1", "c2", "c3", "c4", "c5", "c6", "c7")
+OPERATION_CODE_RE = r"^c[1-9][0-9]*$"
+
+
+def operation_code_number(code: str) -> int:
+    return int(code[1:])
+
+
+def in_house_operation_codes() -> list[str]:
+    """The built-in c1-c7 plus every code used on the In-House Hours page, in order."""
+    used = InHouseHourRate.objects.exclude(operation_code=None).values_list("operation_code", flat=True)
+    return sorted(set(IN_HOUSE_OPERATION_CODES) | set(used), key=operation_code_number)
+
+
+def next_operation_code() -> str:
+    """The lowest code (c1, c2, ...) no In-House Hours row uses yet."""
+    used = set(InHouseHourRate.objects.exclude(operation_code=None).values_list("operation_code", flat=True))
+    n = 1
+    while f"c{n}" in used:
+        n += 1
+    return f"c{n}"
 
 
 class InHouseHourRate(ReferenceOwnedModel):
     """One row of the "In-House Hours" page: an in-house operation's MHR rate, plus the
-    run/setup minutes a pulley ("model") gets until its own are entered on that page. A
-    row with an `operation_code` supplies that operation's formula variables
-    (c#RateInrPerHour, c#RunMin, c#SetupMin, c#TotalMin, c#InHouseCost = rate x total
-    minutes, as the workbook does); an operation with no row is costed at 0, like the
-    client workbook's IFNA(VLOOKUP(...), 0)."""
+    run/setup minutes a pulley ("model") gets until its own are entered on that page.
+    Its `operation_code` (c1, c2, ... — assigned automatically when a row is added) is
+    its Section C line and the prefix of its formula variables (c#RateInrPerHour,
+    c#RunMin, c#SetupMin, c#TotalMin, c#InHouseCost = rate x total minutes, as the
+    workbook does); a built-in operation with no row is costed at 0, like the client
+    workbook's IFNA(VLOOKUP(...), 0)."""
 
     cost_head = models.CharField(max_length=100)
     operation = models.CharField(max_length=150)
     cost_centre = models.CharField(max_length=30, blank=True)
     activity_description = models.CharField(max_length=150)
     operation_code = models.CharField(
-        max_length=2,
-        choices=[(code, code.upper()) for code in IN_HOUSE_OPERATION_CODES],
+        max_length=10,
         unique=True,
         null=True,
         blank=True,
-        help_text="Section C operation this rate costs (c1-c7). Blank = reference only, not used in any calculation.",
+        validators=[RegexValidator(OPERATION_CODE_RE, "Use c followed by a number, e.g. c8.")],
+        help_text="Section C line this row costs (c1, c2, ...). Assigned automatically when a row is added.",
     )
     mhr_rate = models.FloatField(help_text="INR per hour.")
     default_run_min = models.FloatField(default=0, help_text="Run minutes a model gets until its own are entered.")

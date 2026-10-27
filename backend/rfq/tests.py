@@ -250,6 +250,55 @@ class RFQWorkflowTests(TestCase):
         self.assertEqual(rfq.stage, "Won")
         self.assertEqual(rfq.status, "Won")
 
+        # Changing the customer response back reopens the RFQ at Quotation Sent.
+        for status in ("Viewed", "Lost", "Negotiation"):
+            self.sales.patch(f"/api/rfq/quotations/{quotation_id}/status/", {"status": status, "actorName": "Sales", "lossReason": "Price"}, format="json")
+        rfq.refresh_from_db()
+        self.assertEqual((rfq.stage, rfq.status, rfq.loss_reason), ("Quotation Sent", "Quotation Sent", None))
+
+
+class RFQDetailsEditTests(TestCase):
+    """PATCH /rfqs/{id}/details/ — editing the RFQ's header details at any stage."""
+
+    # Same fixtures as RFQWorkflowTests, without re-running its tests.
+    setUp = RFQWorkflowTests.setUp
+    _create_rfq = RFQWorkflowTests._create_rfq
+
+    def _details(self, client, rfq_id, body):
+        return client.patch(f"/api/rfq/rfqs/{rfq_id}/details/", {"actorName": "Tester", **body}, format="json")
+
+    def test_sales_edits_details_and_activity_lists_the_changes(self):
+        rfq_id = self._create_rfq(submit=True)  # Operations Review — Sales still owns the details
+        other = Customer.objects.create(id="cust-1b", code="CUST-001B", name="Beta Conveyors")
+        response = self._details(self.sales, rfq_id, {
+            "projectName": "Plant 2 upgrade", "priority": "High", "contactEmail": "buyer@beta.example.com", "customerId": other.id,
+        })
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["projectName"], "Plant 2 upgrade")  # fresh data in the response
+        rfq = RFQ.objects.get(id=rfq_id)
+        self.assertEqual((rfq.project_name, rfq.priority, rfq.customer_id, rfq.customer_code), ("Plant 2 upgrade", "High", other.id, "CUST-001B"))
+        event = rfq.audit_events.filter(action__startswith="RFQ details edited").get()
+        self.assertIn("Project Name:", event.comment)
+        self.assertIn("Customer: Acme Pulleys → Beta Conveyors", event.comment)
+
+    def test_nothing_changed_adds_no_activity(self):
+        rfq_id = self._create_rfq()
+        self.assertEqual(self._details(self.sales, rfq_id, {"projectName": "Same name"}).status_code, 200)
+        before = RFQ.objects.get(id=rfq_id).audit_events.count()
+        self.assertEqual(self._details(self.sales, rfq_id, {"projectName": "Same name"}).status_code, 200)
+        self.assertEqual(RFQ.objects.get(id=rfq_id).audit_events.count(), before)
+
+    def test_validation(self):
+        rfq_id = self._create_rfq()
+        self.assertEqual(self._details(self.sales, rfq_id, {"projectName": "  "}).status_code, 400)
+        self.assertEqual(self._details(self.sales, rfq_id, {"contactEmail": "not-an-email"}).status_code, 400)
+        self.assertEqual(self._details(self.sales, rfq_id, {"priority": "Whenever"}).status_code, 400)
+
+    def test_only_sales_admin_or_stage_owner_can_edit(self):
+        rfq_id = self._create_rfq(submit=True)  # Operations Review
+        self.assertEqual(self._details(self.operations, rfq_id, {"location": "Pune"}).status_code, 200)
+        self.assertEqual(self._details(self.sourcing, rfq_id, {"location": "Chennai"}).status_code, 403)
+
 
 class RFQWorkflowSecurityRegressionTests(TestCase):
     """Every action that mutates an RFQ must reject a caller whose role doesn't own
@@ -476,7 +525,15 @@ class QuotationEmailTests(TestCase):
         gen = self.sales.post(f"/api/rfq/rfqs/{self.rfq_id}/generate-quotation/", {"actorName": "Sales"}, format="json")
         self.quotation_id = gen.data["id"]
 
-    def test_send_email_delivers_a_pdf_to_the_contact_email(self):
+    def test_send_email_goes_to_the_customer_email(self):
+        self.customer.email = "accounts@acme.example.com"
+        self.customer.save(update_fields=["email"])
+        response = self.sales.post(f"/api/rfq/quotations/{self.quotation_id}/send-email/", {"actorName": "Sales"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(mail.outbox[0].to, ["accounts@acme.example.com"])
+
+    def test_send_email_falls_back_to_the_rfq_contact_and_attaches_a_pdf(self):
+        # This customer has no email on file, so the RFQ's contact email is used.
         response = self.sales.post(f"/api/rfq/quotations/{self.quotation_id}/send-email/", {"actorName": "Sales"}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(len(mail.outbox), 1)
@@ -488,7 +545,7 @@ class QuotationEmailTests(TestCase):
         self.assertEqual(mimetype, "application/pdf")
         self.assertTrue(content.startswith(b"%PDF"))
 
-    def test_send_email_without_a_contact_email_is_rejected(self):
+    def test_send_email_without_any_email_is_rejected(self):
         rfq = RFQ.objects.get(id=self.rfq_id)
         rfq.contact_email = ""
         rfq.save(update_fields=["contact_email"])

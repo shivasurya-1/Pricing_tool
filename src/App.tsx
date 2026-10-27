@@ -15,6 +15,7 @@ import { OperationsReviewScreen } from '@/features/rfq/OperationsReviewScreen'
 import { SourcingScreen } from '@/features/rfq/SourcingScreen'
 import { ControllingScreen } from '@/features/rfq/ControllingScreen'
 import { ApprovalScreen } from '@/features/rfq/ApprovalScreen'
+import { ApprovalsPage } from '@/features/rfq/ApprovalsPage'
 import { QuotationListPage } from '@/features/quotations/QuotationListPage'
 import { QuotationDetailPage } from '@/features/quotations/QuotationDetailPage'
 import { MyTasksPage } from '@/features/tasks/MyTasksPage'
@@ -81,6 +82,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/rfqs" element={<RFQListPage />} />
+        <Route path="/approvals" element={<ApprovalsPage />} />
         <Route path="/rfqs/new" element={<RFQCreatePage />} />
         <Route path="/rfqs/:id" element={<RFQDetailPage />} />
         <Route path="/rfqs/:id/operations" element={<OperationsReviewScreen />} />

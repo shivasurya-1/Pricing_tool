@@ -20,6 +20,17 @@ import type {
 } from '@/types'
 import { buildInHouseCapabilities, buildUsers } from '@/data/mockSeed'
 import { applyFieldChange } from '@/lib/pulleyTechDataCalc'
+
+/** The RFQ fields the Edit form can change (see the backend's EDITABLE_DETAIL_FIELDS). */
+export type RfqDetailsInput = Partial<
+  Pick<
+    RFQ,
+    | 'customerId' | 'contactPerson' | 'contactEmail' | 'contactPhone' | 'customerReference' | 'rfqReceivedDate'
+    | 'projectName' | 'projectCode' | 'quoteReference' | 'endCustomer' | 'location' | 'industry' | 'requiredDeliveryDate' | 'priority'
+    | 'currency' | 'paymentTerms' | 'deliveryTerms' | 'quotationValidity' | 'incoterms' | 'taxApplicability' | 'freightRequirement'
+    | 'customerRemarks' | 'internalNotes' | 'customerNotes'
+  >
+>
 import { api, ApiError } from '@/lib/apiClient'
 import { useUiStore } from '@/store/uiStore'
 
@@ -108,6 +119,8 @@ interface DataState {
   confirmItemSourcing: (id: string, itemId: string, confirmed: boolean) => Promise<void>
   assignProcessVendor: (id: string, itemId: string, processKey: string, vendorId: string, vendorName: string) => Promise<void>
   saveSourcingComment: (id: string, comment: string) => Promise<void>
+  /** The RFQ's customer, project, commercial and notes details — editable at any stage. */
+  updateRfqDetails: (id: string, details: RfqDetailsInput, actorName: string) => Promise<RFQ>
   submitSourcing: (id: string, actorName: string) => Promise<void>
 
   saveCostBreakdown: (id: string, lines: CostBreakdownLine[]) => Promise<void>
@@ -290,6 +303,16 @@ export const useDataStore = create<DataState>()((set, get) => ({
     withErrorToast(async () => {
       const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-process-vendor/`, { itemId, processKey, vendorId, vendorName })
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  updateRfqDetails: (id, details, actorName) =>
+    withErrorToast(async () => {
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/details/`, { ...details, actorName })
+      // The edit is recorded in this RFQ's history server-side — refresh it so the
+      // Activity tab shows it without a page reload.
+      const events = await api.get<AuditEvent[]>(`/rfq/audit-log/?rfqId=${encodeURIComponent(id)}`)
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq), auditLog: [...s.auditLog.filter((e) => e.rfqId !== id), ...events] }))
+      return rfq
     }),
 
   saveSourcingComment: (id, comment) =>

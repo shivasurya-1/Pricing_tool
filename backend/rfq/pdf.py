@@ -5,13 +5,30 @@ same totals math), so the download never disagrees with the preview.
 
 import io
 from datetime import datetime
+from pathlib import Path
 
 from reference.models import OrganizationSettings
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.fonts import addMapping
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+# The PDF's built-in Helvetica has no rupee sign (₹), so it printed as nothing — the
+# document uses DejaVu Sans (bundled in ./fonts, free licence: LICENSE_DEJAVU.txt)
+# instead, with its bold face mapped to <b> in paragraphs.
+FONT = "DejaVuSans"
+FONT_BOLD = "DejaVuSans-Bold"
+_FONTS_DIR = Path(__file__).resolve().parent / "fonts"
+pdfmetrics.registerFont(TTFont(FONT, _FONTS_DIR / "DejaVuSans.ttf"))
+pdfmetrics.registerFont(TTFont(FONT_BOLD, _FONTS_DIR / "DejaVuSans-Bold.ttf"))
+addMapping(FONT, 0, 0, FONT)
+addMapping(FONT, 1, 0, FONT_BOLD)
+addMapping(FONT, 0, 1, FONT)
+addMapping(FONT, 1, 1, FONT_BOLD)
 
 NAVY = colors.HexColor("#1e3a5f")
 INK_FAINT = colors.HexColor("#6b7280")
@@ -60,9 +77,9 @@ def build_quotation_pdf(quotation, rfq) -> bytes:
     tax_line = f"{settings_obj.tax_registration_label or 'Tax Reg. No.'}: {settings_obj.tax_registration_number}" if settings_obj.tax_registration_number else ""
 
     styles = getSampleStyleSheet()
-    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, textColor=INK_FAINT)
-    small_bold = ParagraphStyle("small_bold", parent=small, fontName="Helvetica-Bold", textColor=colors.black)
-    label_style = ParagraphStyle("label", parent=styles["Normal"], fontSize=7, textColor=INK_FAINT)
+    small = ParagraphStyle("small", parent=styles["Normal"], fontName=FONT, fontSize=8, textColor=INK_FAINT)
+    small_bold = ParagraphStyle("small_bold", parent=small, fontName=FONT_BOLD, textColor=colors.black)
+    label_style = ParagraphStyle("label", parent=styles["Normal"], fontName=FONT, fontSize=7, textColor=INK_FAINT)
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=20 * mm, bottomMargin=20 * mm, leftMargin=18 * mm, rightMargin=18 * mm)
@@ -112,8 +129,9 @@ def build_quotation_pdf(quotation, rfq) -> bytes:
         ])
     items_table = Table(items_rows, colWidths=[10 * mm, 82 * mm, 24 * mm, 30 * mm, 26 * mm])
     items_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 0), (-1, 0), FONT_BOLD),
         ("TEXTCOLOR", (0, 0), (-1, 0), INK_FAINT),
         ("LINEBELOW", (0, 0), (-1, 0), 1.5, NAVY),
         ("LINEBELOW", (0, 1), (-1, -1), 0.5, BORDER),
@@ -135,11 +153,12 @@ def build_quotation_pdf(quotation, rfq) -> bytes:
     ]
     totals_table = Table(totals_rows, colWidths=[35 * mm, 35 * mm], hAlign="RIGHT")
     totals_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), FONT),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("TEXTCOLOR", (0, 0), (0, -1), INK_FAINT),
         ("LINEABOVE", (0, -1), (-1, -1), 1.5, NAVY),
-        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("FONTNAME", (0, -1), (-1, -1), FONT_BOLD),
         ("FONTSIZE", (0, -1), (-1, -1), 10),
         ("TOPPADDING", (0, -1), (-1, -1), 4),
     ]))

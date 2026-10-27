@@ -223,21 +223,25 @@ class ReferenceApiTests(TestCase):
         self.assertEqual(response.status_code, 204)
         self.assertFalse(InHouseHourRate.objects.filter(id=row_id).exists())
 
-    def test_in_house_hour_rate_operation_code_is_unique_but_optional(self):
+    def test_new_rows_get_the_next_free_operation_code(self):
         url = "/api/reference/in-house-hours/"
         base = {"cost_head": "Head", "operation": "Op", "activity_description": "Desc", "mhr_rate": 10}
-        for _ in range(2):
-            response = self.admin_client.post(url, {**base, "operation_code": ""}, format="json")
-            self.assertEqual(response.status_code, 201, response.data)
-            self.assertIsNone(response.data["operation_code"])
+        InHouseHourRate.objects.create(cost_head="Rolling", operation="Rolling", activity_description="C1", operation_code="c1", mhr_rate=79)
 
-        response = self.admin_client.post(url, {**base, "operation_code": "c1"}, format="json")
-        self.assertEqual(response.status_code, 201, response.data)
-        response = self.admin_client.post(url, {**base, "operation_code": "c1"}, format="json")
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("operation_code", response.data)
-        response = self.admin_client.post(url, {**base, "operation_code": "c9"}, format="json")
-        self.assertEqual(response.status_code, 400)
+        first = self.admin_client.post(url, {**base, "operation_code": ""}, format="json")
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(first.data["operation_code"], "c2")  # lowest free code
+        self.assertEqual(self.admin_client.post(url, base, format="json").data["operation_code"], "c3")
+
+        beyond = self.admin_client.post(url, {**base, "operation_code": "c9"}, format="json")
+        self.assertEqual(beyond.status_code, 201, beyond.data)  # any c<number>, not just c1-c7
+        self.assertEqual(self.admin_client.post(url, {**base, "operation_code": "c9"}, format="json").status_code, 400)
+        self.assertEqual(self.admin_client.post(url, {**base, "operation_code": "x1"}, format="json").status_code, 400)
+
+        # Saving a row without a code keeps the one it has.
+        updated = self.admin_client.patch(f"{url}{first.data['id']}/", {"operation_code": "", "mhr_rate": 12}, format="json")
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.assertEqual(updated.data["operation_code"], "c2")
 
     def test_operation_code_backfill_matches_by_description_not_order(self):
         import importlib

@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import (
+    next_operation_code,
     BearingCatalogEntry,
     GlobalParameter,
     HousingCatalogEntry,
@@ -158,9 +159,19 @@ class InHouseHourRateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_operation_code(self, code):
-        # The Add-row form sends "" for "no operation"; store it as NULL so any number
-        # of reference-only rows can coexist under the unique constraint.
-        return code or None
+        # "" means "not chosen": a new row then gets the next free code, an edited row
+        # keeps the one it has (every row is a Section C line).
+        return (code or "").strip().lower() or None
+
+    def create(self, validated_data):
+        if not validated_data.get("operation_code"):
+            validated_data["operation_code"] = next_operation_code()
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if not validated_data.get("operation_code"):
+            validated_data.pop("operation_code", None)
+        return super().update(instance, validated_data)
 
 
 class OrganizationSettingsSerializer(serializers.ModelSerializer):

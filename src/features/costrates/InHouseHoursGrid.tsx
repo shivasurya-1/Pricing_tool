@@ -6,12 +6,9 @@ import { useAuthStore } from '@/store/authStore'
 import { useReferenceStore } from '@/store/referenceStore'
 import { useUiStore } from '@/store/uiStore'
 import { Button } from '@/components/ui/Button'
-import { IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
 import { applyFieldChange, inHouseHoursVars } from '@/lib/pulleyTechDataCalc'
 import { canRoleActOnStage } from '@/lib/workflow'
 import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
-
-const minuteKeys = IN_HOUSE_OPERATIONS.flatMap((op) => [`${op.key}RunMin`, `${op.key}SetupMin`])
 
 const fmt = (n: number) => n.toLocaleString('en-IN', { maximumFractionDigits: 0 })
 const head = 'border-b border-r border-[var(--color-border)] px-2 py-1.5'
@@ -66,7 +63,7 @@ interface Row {
   operation: string
   costCentre: string
   activity: string
-  rate: number | null
+  rate: number
   /** Section C operation (c1-c7) this row costs, or null for a reference-only rate row. */
   code: string | null
 }
@@ -109,47 +106,31 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
     [rfq.items, drafts, inHouseHourRates],
   )
 
-  // The rate table's rows in its own order, then any Section C operation with no rate
-  // row (costed at 0, like the workbook's IFNA(VLOOKUP(...), 0)).
-  const rows: Row[] = useMemo(() => {
-    const fromTable = [...inHouseHourRates]
-      .sort((a, b) => a.order - b.order)
-      .map((r) => ({
-        key: `rate-${r.id}`,
-        costHead: r.cost_head,
-        operation: r.operation,
-        costCentre: r.cost_centre,
-        activity: r.activity_description,
-        rate: r.mhr_rate,
-        code: r.operation_code,
-      }))
-    const linked = new Set(fromTable.map((r) => r.code))
-    const unlinked = IN_HOUSE_OPERATIONS.filter((op) => !linked.has(op.key)).map((op) => ({
-      key: `missing-${op.key}`,
-      costHead: '',
-      operation: '',
-      costCentre: '',
-      activity: op.label,
-      rate: null,
-      code: op.key,
-    }))
-    return [...fromTable, ...unlinked]
-  }, [inHouseHourRates])
+  // Exactly the MHR Rates table's rows, in its order — deleting a row there removes it
+  // here too (its Section C line is then costed at 0, like the workbook's IFNA(..., 0)).
+  const rows: Row[] = useMemo(
+    () =>
+      [...inHouseHourRates]
+        .sort((a, b) => a.order - b.order)
+        .map((r) => ({
+          key: `rate-${r.id}`,
+          costHead: r.cost_head,
+          operation: r.operation,
+          costCentre: r.cost_centre,
+          activity: r.activity_description,
+          rate: r.mhr_rate,
+          code: r.operation_code,
+        })),
+    [inHouseHourRates],
+  )
+  // The operations the grid shows, for its Total row.
+  const shownCodes = rows.map((r) => r.code).filter((c): c is string => !!c)
 
   // "c1RunMin" -> the c1 row's default run minutes, as text ('' when the row is missing).
   const defaultOf = (key: string) => {
     const row = inHouseHourRates.find((r) => r.operation_code === key.slice(0, 2))
     if (!row) return ''
     return String(key.endsWith('RunMin') ? row.default_run_min : row.default_setup_min)
-  }
-
-  const withDefaultsFilled = (values: PulleyTechDataValues): PulleyTechDataValues => {
-    const filled = { ...values }
-    for (const key of minuteKeys) {
-      const fallback = defaultOf(key)
-      if ((filled[key] === undefined || filled[key] === '') && fallback !== '') filled[key] = Number(fallback)
-    }
-    return filled
   }
 
   const setMinutes = (item: RFQItem, key: string, raw: string) => {
@@ -160,27 +141,20 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
   const save = async () => {
     setSaving(true)
     try {
-      // Saves every model, keeping every minute it shows: cells left on the default are
-      // stored as that model's own values, so after saving the whole grid reads as
-      // entered (dark). A model whose minutes are all stored already is skipped.
-      let saved = 0
-      for (const item of rfq.items) {
-        const current = valuesOf(item)
-        const filled = withDefaultsFilled(current)
-        if (drafts[item.id] === undefined && minuteKeys.every((k) => filled[k] === current[k])) continue
-        await saveItemTechData(rfq.id, item.id, filled)
-        saved++
-      }
+      // Saves every model with an edit, storing exactly what was typed: a cell left empty
+      // stays empty (and keeps showing the row's default in grey).
+      for (const item of dirtyItems) await saveItemTechData(rfq.id, item.id, drafts[item.id])
       setDrafts({})
-      pushToast(saved ? `In-house hours saved for ${saved} ${saved === 1 ? 'model' : 'models'}.` : 'All models are already saved.', 'success')
+      pushToast(
+        dirtyItems.length ? `In-house hours saved for ${dirtyItems.length} ${dirtyItems.length === 1 ? 'model' : 'models'}.` : 'Nothing to save — no minutes were changed.',
+        'success',
+      )
     } catch {
       // withErrorToast already showed the error; keep the unsaved edits.
     } finally {
       setSaving(false)
     }
   }
-
-  const missing = columns[0]?.hours.missing ?? []
 
   if (rfq.items.length === 0) return <p className="text-sm text-[var(--color-ink-soft)]">This RFQ has no pulleys yet.</p>
 
@@ -211,12 +185,6 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
           )}
         </div>
       </div>
-
-      {missing.length > 0 && (
-        <p className="mb-3 rounded-md border border-[var(--color-amber-100)] bg-[var(--color-amber-50)] px-3 py-1.5 text-xs text-[var(--color-amber)]">
-          No MHR rate for {missing.map((c) => c.toUpperCase()).join(', ')} — costed at 0. Link a rate row to it below.
-        </p>
-      )}
 
       <div className="overflow-x-auto rounded-md border border-[var(--color-border)]">
         <table className="border-collapse text-sm">
@@ -253,7 +221,7 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
               <tr key={row.key} className="border-b border-[var(--color-border)]">
                 {frozenCols.map((c) => {
                   const f = frozenCell(frozenCols, c.key, 'bg-white')
-                  const text = c.key === 'rate' ? (row.rate === null ? '—' : row.rate.toFixed(1)) : row[c.key]
+                  const text = c.key === 'rate' ? row.rate.toFixed(1) : row[c.key]
                   return (
                     <td
                       key={c.key}
@@ -301,7 +269,7 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
                 )
               })}
               {columns.map(({ item, hours }) => {
-                const sum = (suffix: string) => IN_HOUSE_OPERATIONS.reduce((s, op) => s + hours.vars[`${op.key}${suffix}`], 0)
+                const sum = (suffix: string) => shownCodes.reduce((s, code) => s + hours.vars[`${code}${suffix}`], 0)
                 return <TotalsGroup key={item.id} run={sum('RunMin')} setup={sum('SetupMin')} cost={sum('InHouseCost')} />
               })}
             </tr>

@@ -23,6 +23,7 @@ export function QuotationDetailPage() {
   const navigate = useNavigate()
   const quotations = useDataStore((s) => s.quotations)
   const rfqs = useDataStore((s) => s.rfqs)
+  const customers = useDataStore((s) => s.customers)
   const sendQuotation = useDataStore((s) => s.sendQuotation)
   const sendQuotationEmail = useDataStore((s) => s.sendQuotationEmail)
   const updateQuotationStatus = useDataStore((s) => s.updateQuotationStatus)
@@ -71,7 +72,10 @@ export function QuotationDetailPage() {
                 setSendingEmail(true)
                 try {
                   await sendQuotationEmail(quotation.id, name)
-                  pushToast(`Quotation emailed to ${rfq.contactEmail || 'customer'}.`, 'success')
+                  // Same recipient rule as the backend's quotation_recipient(): the customer's
+                  // email, else the RFQ's contact email.
+                  const recipient = customers.find((c) => c.id === rfq.customerId)?.email || rfq.contactEmail
+                  pushToast(`Quotation emailed to ${recipient || 'customer'}.`, 'success')
                 } catch {
                   // Error toast already shown by the store.
                 } finally {
@@ -117,7 +121,14 @@ export function QuotationDetailPage() {
       {showPreview ? (
         <QuotationPreview rfq={rfq} quotation={quotation} />
       ) : (
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <>
+        {/* Print only ever shows the quotation document (#print-area, see index.css), so it's
+            kept on the page — hidden on screen — while the preview is closed too; otherwise
+            Print before Preview printed a blank page. */}
+        <div className="hidden print:block">
+          <QuotationPreview rfq={rfq} quotation={quotation} />
+        </div>
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3 print:hidden">
           <div className="space-y-5 lg:col-span-2">
             <Card>
               <CardHeader title="Quotation Summary" />
@@ -166,6 +177,7 @@ export function QuotationDetailPage() {
             </div>
           </Card>
         </div>
+        </>
       )}
 
       <Modal

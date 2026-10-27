@@ -8,7 +8,7 @@ from rest_framework.response import Response
 
 from accounts.permissions import CanEditReferenceData, IsAdminRole
 from reference.models import (
-    IN_HOUSE_OPERATION_CODES,
+    in_house_operation_codes,
     GlobalParameter,
     InHouseHourRate,
     LogisticsPackingRate,
@@ -47,35 +47,41 @@ from .serializers import (
 )
 
 # Variables the in-house-hours formulas reference that aren't themselves a Technical
-# Data Sheet field — each operation's MHR rate from the In-House Hours page, injected
-# at evaluation time (see src/lib/pulleyTechDataCalc.ts's inHouseHoursVars). A new
+# Data Sheet field — each In-House Hours operation's (c1 ... c7 and any row added on
+# that page) MHR rate and, per pulley ("model"), its run/setup minutes (or the row's
+# default minutes), their total and the cost: rate x total minutes, as the workbook's
+# In-House Hours sheet does. Computed client-side (src/lib/pulleyTechDataCalc.ts's
+# inHouseHoursVars); Section C formulas read them, e.g. c1Cost = c1InHouseCost. A new
 # field's declared input_variables may reference these without tripping the
 # unknown-variable rejection below.
-INJECTED_RATE_VARIABLES = {f"{code}RateInrPerHour" for code in IN_HOUSE_OPERATION_CODES}
+IN_HOUSE_HOURS_SUFFIXES = (
+    ("RunMin", "Run (min)"),
+    ("SetupMin", "Setup (min)"),
+    ("TotalMin", "Total (min)"),
+    ("InHouseCost", "Cost (INR)"),
+)
 
-# Per pulley ("model"), from the In-House Hours page: its run/setup minutes (or the
-# row's default minutes), their total, and the cost — rate x total minutes, as the
-# workbook's In-House Hours sheet does. Computed client-side (src/lib/pulleyTechDataCalc.ts's
-# inHouseHoursVars); Section C formulas read them, e.g. c1Cost = c1InHouseCost.
-IN_HOUSE_HOURS_VARIABLES = {
-    f"{code}{suffix}": f"{code.upper()} — {label}"
-    for code in IN_HOUSE_OPERATION_CODES
-    for suffix, label in (
-        ("RunMin", "Run (min)"),
-        ("SetupMin", "Setup (min)"),
-        ("TotalMin", "Total (min)"),
-        ("InHouseCost", "Cost (INR)"),
-    )
-}
+
+def injected_rate_variables() -> set[str]:
+    return {f"{code}RateInrPerHour" for code in in_house_operation_codes()}
+
+
+def in_house_hours_variables() -> dict[str, str]:
+    return {
+        f"{code}{suffix}": f"{code.upper()} — {label}"
+        for code in in_house_operation_codes()
+        for suffix, label in IN_HOUSE_HOURS_SUFFIXES
+    }
 
 
 def in_house_rate_values() -> tuple[dict[str, float], list[str]]:
-    """c1RateInrPerHour ... c7RateInrPerHour from the In-House Hours page, plus the
-    operation codes that have no rate row there — those read as 0, the same as the
-    client workbook's IFNA(VLOOKUP(...), 0)."""
+    """c#RateInrPerHour for every In-House Hours operation, plus the codes that have
+    no rate row there — those read as 0, the same as the client workbook's
+    IFNA(VLOOKUP(...), 0)."""
     rates = dict(InHouseHourRate.objects.exclude(operation_code=None).values_list("operation_code", "mhr_rate"))
-    values = {f"{code}RateInrPerHour": rates.get(code, 0) for code in IN_HOUSE_OPERATION_CODES}
-    missing = [code for code in IN_HOUSE_OPERATION_CODES if code not in rates]
+    codes = in_house_operation_codes()
+    values = {f"{code}RateInrPerHour": rates.get(code, 0) for code in codes}
+    missing = [code for code in codes if code not in rates]
     return values, missing
 
 # Catalog prices the frontend looks up and injects whenever their designation field
@@ -117,8 +123,8 @@ def known_variable_keys(extra_key: str | None = None) -> set[str]:
     field's key and vice versa."""
     keys = set(FormulaDefinition.objects.values_list("key", flat=True))
     keys |= set(TechDataFieldDefinition.objects.values_list("key", flat=True))
-    keys |= INJECTED_RATE_VARIABLES
-    keys |= set(IN_HOUSE_HOURS_VARIABLES)
+    keys |= injected_rate_variables()
+    keys |= set(in_house_hours_variables())
     keys |= set(CATALOG_PRICE_VARIABLES)
     keys |= cost_rate_keys()
     if extra_key:
@@ -299,10 +305,10 @@ class FormulaDefinitionViewSet(
             "fields": fields,
             "formulas": formulas,
             "cost_rates": cost_rates,
-            "labour_rate_lookups": sorted(INJECTED_RATE_VARIABLES),
+            "labour_rate_lookups": sorted(injected_rate_variables()),
             "labour_rate_values": labour_rate_values,
             "missing_labour_rates": missing_labour_rates,
-            "in_house_hours": [{"key": key, "label": label} for key, label in IN_HOUSE_HOURS_VARIABLES.items()],
+            "in_house_hours": [{"key": key, "label": label} for key, label in in_house_hours_variables().items()],
             "catalog_prices": [
                 {"key": price_key, "source_field": source} for price_key, source in CATALOG_PRICE_VARIABLES.items()
             ],

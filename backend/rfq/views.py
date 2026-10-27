@@ -3,6 +3,8 @@ from pathlib import Path
 
 from accounts.models import Role
 from accounts.permissions import role_write_permission
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import ProtectedError
 from django.http import FileResponse, HttpResponse
@@ -18,6 +20,7 @@ from .email import notify_role_by_email, send_quotation_email
 from .id_utils import next_quotation_number, next_rfq_number
 from .pdf import build_quotation_pdf
 from .models import (
+    PRIORITY_CHOICES,
     ALLOWED_ATTACHMENT_EXTENSIONS,
     AppNotification,
     AuditEvent,
@@ -275,6 +278,17 @@ class QuotationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
             rfq.status = "Lost"
             rfq.loss_reason = loss_reason
             touch(rfq)
+        elif new_status in ("Sent", "Viewed", "Negotiation") and rfq.stage in ("Won", "Lost"):
+            # The customer response was changed back from Won/Lost: the RFQ is open again,
+            # at the stage it had before (the quotation was already sent).
+            rfq.stage = "Quotation Sent"
+            rfq.status = "Quotation Sent"
+            rfq.loss_reason = None
+            touch(rfq)
+
+        if new_status != "Lost" and quotation.loss_reason:
+            quotation.loss_reason = None
+            quotation.save(update_fields=["loss_reason"])
 
         return Response(self.get_serializer(quotation).data)
 
@@ -421,6 +435,86 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         rfq.status = "Sourcing"
         touch(rfq)
         return Response(self.get_serializer(rfq).data)
+
+    # ---- RFQ details (header) ------------------------------------------------------
+    # camelCase request key -> (model field, label used in the Activity history).
+    EDITABLE_DETAIL_FIELDS = {
+        "contactPerson": ("contact_person", "Contact Person"),
+        "contactEmail": ("contact_email", "Email"),
+        "contactPhone": ("contact_phone", "Phone"),
+        "customerReference": ("customer_reference", "Customer Reference"),
+        "rfqReceivedDate": ("rfq_received_date", "RFQ Received Date"),
+        "projectName": ("project_name", "Project Name"),
+        "projectCode": ("project_code", "Project Code"),
+        "quoteReference": ("quote_reference", "Quote Reference"),
+        "endCustomer": ("end_customer", "End Customer"),
+        "location": ("location", "Location"),
+        "industry": ("industry", "Industry"),
+        "requiredDeliveryDate": ("required_delivery_date", "Required Delivery Date"),
+        "priority": ("priority", "Priority"),
+        "currency": ("currency", "Currency"),
+        "paymentTerms": ("payment_terms", "Payment Terms"),
+        "deliveryTerms": ("delivery_terms", "Delivery Terms"),
+        "quotationValidity": ("quotation_validity", "Quotation Validity"),
+        "incoterms": ("incoterms", "Incoterms"),
+        "taxApplicability": ("tax_applicability", "Tax Applicability"),
+        "freightRequirement": ("freight_requirement", "Freight Requirement"),
+        "customerRemarks": ("customer_remarks", "Customer Remarks"),
+        "internalNotes": ("internal_notes", "Internal Notes"),
+        "customerNotes": ("customer_notes", "Customer Notes"),
+    }
+
+    @action(detail=True, methods=["patch"], url_path="details")
+    def update_details(self, request, pk=None):
+        """Body: any of EDITABLE_DETAIL_FIELDS (camelCase) plus optional customerId — the
+        RFQ's customer, project, commercial and notes details, editable at any stage.
+        Allowed for Admin, Sales (who own these details) and the current stage's owner.
+        Only fields that actually change are saved, each listed in the Activity history."""
+        rfq = self.get_object()
+        actor_name, role = self._actor(request)
+        if role not in ("Admin", "Sales") and STAGE_OWNER.get(rfq.stage) != role:
+            raise PermissionDenied("Only Admin, Sales or the current stage's owner can edit this RFQ's details.")
+
+        data = request.data
+        changes: list[str] = []
+        update_fields: list[str] = []
+
+        customer_id = data.get("customerId")
+        if customer_id and customer_id != rfq.customer_id:
+            customer = get_object_or_404(Customer, pk=customer_id)
+            changes.append(f"Customer: {rfq.customer.name} → {customer.name}")
+            rfq.customer = customer
+            rfq.customer_code = customer.code
+            update_fields += ["customer", "customer_code"]
+
+        for key, (field, label) in self.EDITABLE_DETAIL_FIELDS.items():
+            if key not in data:
+                continue
+            value = str(data.get(key) or "").strip()
+            if key == "projectName" and not value:
+                raise ValidationError({"projectName": "Project Name is required."})
+            if key == "priority" and value not in dict(PRIORITY_CHOICES):
+                raise ValidationError({"priority": f"Must be one of {', '.join(dict(PRIORITY_CHOICES))}."})
+            if key == "contactEmail" and value:
+                try:
+                    validate_email(value)
+                except DjangoValidationError:
+                    raise ValidationError({"contactEmail": "Enter a valid email address."})
+            old = getattr(rfq, field) or ""
+            if value != old:
+                changes.append(f"{label}: {old or '—'} → {value or '—'}")
+                setattr(rfq, field, value)
+                update_fields.append(field)
+
+        if update_fields:
+            rfq.save(update_fields=update_fields)
+            append_audit(
+                rfq, user=actor_name, role=role, module="RFQ", record=rfq.rfq_number,
+                action_text=f"RFQ details edited ({len(changes)} {'change' if len(changes) == 1 else 'changes'})",
+                comment="\n".join(changes),
+            )
+            touch(rfq)
+        return Response(self._fresh(rfq))
 
     # ---- item-level actions --------------------------------------------------------
     @action(detail=True, methods=["patch"], url_path="item-tech-data")

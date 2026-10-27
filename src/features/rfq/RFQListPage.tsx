@@ -15,17 +15,35 @@ import { useUiStore } from '@/store/uiStore'
 
 export function RFQListPage() {
   const navigate = useNavigate()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
   const rfqs = useDataStore((s) => s.rfqs)
   const pushToast = useUiStore((s) => s.pushToast)
 
   const [search, setSearch] = useState('')
-  const [stageFilter, setStageFilter] = useState<string>(params.get('stage') ?? '')
+  // The stage filter lives in the URL (?stage=...), not component state: the sidebar's
+  // RFQs / Approvals / Sourcing / Pricing links all open this same page with a different
+  // ?stage, and a state copied once at mount kept the previous link's filter.
+  const stageFilter = params.get('stage') ?? ''
+  const setStageFilter = (stage: string) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (stage) next.set('stage', stage)
+        else next.delete('stage')
+        return next
+      },
+      { replace: true },
+    )
   const [priorityFilter, setPriorityFilter] = useState('')
   const [customerFilter, setCustomerFilter] = useState('')
 
   const customers = useMemo(() => [...new Set(rfqs.map((r) => r.endCustomer))].sort(), [rfqs])
-  const stages = useMemo(() => [...new Set(rfqs.map((r) => r.stage))], [rfqs])
+  // Plus the stage a sidebar link filtered on even when no RFQ is in it right now, so the
+  // dropdown shows that filter instead of "all stages" over an empty list.
+  const stages = useMemo(
+    () => [...new Set([...rfqs.map((r) => r.stage as string), ...(stageFilter ? [stageFilter] : [])])],
+    [rfqs, stageFilter],
+  )
 
   const filtered = rfqs.filter((r) => {
     if (search && !`${r.rfqNumber} ${r.endCustomer} ${r.projectName}`.toLowerCase().includes(search.toLowerCase())) return false

@@ -16,11 +16,12 @@ import { PulleyTechDataCompareView } from '@/components/pulley/PulleyTechDataCom
 import { WorkflowTimeline } from '@/components/WorkflowTimeline'
 import { EmptyState } from '@/components/EmptyState'
 import { formatCurrency, formatDate, formatDateTime, formatFileSize } from '@/lib/format'
-import { canRoleActOnStage, STAGE_ORDER } from '@/lib/workflow'
+import { canRoleActOnStage, isTerminalStage, STAGE_ORDER } from '@/lib/workflow'
 import { actionRouteForRfq } from '@/lib/routes'
 import { summarizeCostBreakdown, marginStatus, marginStatusColor } from '@/lib/pricing'
 import { PulleySourcingSummary } from '@/components/pulley/PulleySourcingSummary'
 import { RfqItemsPanel } from './RfqItemsPanel'
+import { RfqDetailsEditModal } from './RfqDetailsEditModal'
 import { downloadFile, ApiError } from '@/lib/apiClient'
 import clsx from 'clsx'
 
@@ -41,6 +42,7 @@ export function RFQDetailPage() {
   const uploadRfqAttachment = useDataStore((s) => s.uploadRfqAttachment)
   const deleteRfqAttachment = useDataStore((s) => s.deleteRfqAttachment)
   const [tab, setTab] = useState('Overview')
+  const [editOpen, setEditOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [deleteAttachmentId, setDeleteAttachmentId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -72,6 +74,12 @@ export function RFQDetailPage() {
       }
       return
     }
+    if (rfq.stage === 'Quotation Generated' || rfq.stage === 'Quotation Sent' || rfq.stage === 'Won' || rfq.stage === 'Lost') {
+      // actionRouteForRfq() only knows the RFQ's own page for these stages (it can't see
+      // the quotation's id), which would leave "Go to Quotation" doing nothing.
+      navigate(quotation ? `/quotations/${quotation.id}` : '/quotations')
+      return
+    }
     navigate(actionRouteForRfq(rfq))
   }
 
@@ -92,6 +100,9 @@ export function RFQDetailPage() {
       case 'Quotation Generated':
       case 'Quotation Sent':
         return 'Go to Quotation'
+      case 'Won':
+      case 'Lost':
+        return 'View Quotation'
       default:
         return 'Open'
     }
@@ -110,10 +121,15 @@ export function RFQDetailPage() {
         description={`${rfq.endCustomer} · ${rfq.projectName}`}
         actions={
           <>
-            <Button variant="secondary" icon={<Pencil size={14} />} onClick={() => pushToast('Editing an in-flight RFQ is not enabled in this prototype.', 'info')}>
-              Edit
-            </Button>
-            {canAct && (
+            {/* Same rule as the backend's update_details: Admin, Sales or the stage's owner. */}
+            {(role === 'Admin' || role === 'Sales' || canAct) && (
+              <Button variant="secondary" icon={<Pencil size={14} />} onClick={() => setEditOpen(true)}>
+                Edit
+              </Button>
+            )}
+            {/* A closed RFQ (Won/Lost/Rejected) has no next step on this page — only its
+                quotation to look at, when there is one. */}
+            {canAct && !(isTerminalStage(rfq.stage) && !quotation) && (
               <Button variant="primary" icon={<ArrowRight size={14} />} onClick={primaryAction}>
                 {primaryLabel()}
               </Button>
@@ -414,6 +430,7 @@ export function RFQDetailPage() {
         confirmLabel="Delete"
         danger
       />
+      {editOpen && <RfqDetailsEditModal rfq={rfq} open onClose={() => setEditOpen(false)} />}
     </div>
   )
 }

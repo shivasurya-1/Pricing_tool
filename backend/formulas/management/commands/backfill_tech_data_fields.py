@@ -91,7 +91,7 @@ FIELD_ROWS: list[tuple[str, str, str, str, str, list[str], bool]] = [
 
 # The in-house run/setup minutes aren't sheet fields: they're entered per pulley on the
 # In-House Hours page, which supplies them to formulas as variables (c1RunMin,
-# c1InHouseCost, ... — see formulas.views.IN_HOUSE_HOURS_VARIABLES).
+# c1InHouseCost, ... — see formulas.views.in_house_hours_variables).
 
 
 class Command(BaseCommand):

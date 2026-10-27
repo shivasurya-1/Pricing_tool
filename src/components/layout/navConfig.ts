@@ -46,7 +46,7 @@ export const NAV_SECTIONS: NavSection[] = [
     title: 'Workbench',
     items: [
       { label: 'My Tasks', to: '/tasks', icon: ListChecks, dataTour: 'nav-tasks' },
-      { label: 'Approvals', to: '/rfqs?stage=Approval+Pending', icon: ClipboardCheck, roles: ['Approval Panel', 'Admin'] },
+      { label: 'Approvals', to: '/approvals', icon: ClipboardCheck, roles: ['Approval Panel', 'Admin'] },
       { label: 'Notifications', to: '/notifications', icon: Bell },
     ],
   },

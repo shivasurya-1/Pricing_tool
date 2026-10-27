@@ -11,21 +11,30 @@ from reference.models import OrganizationSettings
 from .pdf import build_quotation_pdf
 
 
-def send_quotation_email(quotation, rfq) -> None:
+def quotation_recipient(rfq) -> str:
+    """Who a quotation is emailed to: the customer's email on the Customers page, else
+    the RFQ's contact email when the customer has none."""
+    return (rfq.customer.email if rfq.customer_id else "") or rfq.contact_email or ""
+
+
+def send_quotation_email(quotation, rfq) -> str:
     """The "Send Email" button — a real, user-triggered send with the quotation PDF
-    attached. Raises ValueError if there's nowhere to send it, which the view turns
-    into a 400 rather than silently doing nothing."""
-    if not rfq.contact_email:
-        raise ValueError("This RFQ has no contact email on file.")
+    attached, to quotation_recipient(). Returns the address it went to. Raises
+    ValueError if there's nowhere to send it, which the view turns into a 400 rather
+    than silently doing nothing."""
+    recipient = quotation_recipient(rfq)
+    if not recipient:
+        raise ValueError("Neither the customer nor this RFQ has an email address on file.")
 
     settings_obj = OrganizationSettings.load()
     company = settings_obj.company_name or "Your Company"
     subject = f"Quotation {quotation.quotation_number} from {company}"
     body = settings_obj.quotation_header_text or f"Please find attached our quotation {quotation.quotation_number} for {rfq.project_name}."
 
-    email = EmailMessage(subject=subject, body=body, from_email=settings.DEFAULT_FROM_EMAIL, to=[rfq.contact_email])
+    email = EmailMessage(subject=subject, body=body, from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient])
     email.attach(f"{quotation.quotation_number}.pdf", build_quotation_pdf(quotation, rfq), "application/pdf")
     email.send(fail_silently=False)
+    return recipient
 
 
 def notify_role_by_email(*, target_role, subject, body) -> None:
