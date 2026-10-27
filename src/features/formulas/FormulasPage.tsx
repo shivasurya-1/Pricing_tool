@@ -231,9 +231,10 @@ export function FormulasPage() {
     const baseVars = { ...costRates, ...fieldNumericVars(values), ...toNumericVars(computeAutoFields(values)) }
     if (!item?.technicalData) return baseVars
     const pricing = computePulleyPricing(item.technicalData)
-    return {
-      ...baseVars,
-      ...buildPricingVariables(item.technicalData, costRates, autoOverrideKeys),
+    // The built-in pricing totals, only under names the sheet doesn't define itself — a
+    // field or formula of the user's own named e.g. totalDirectCost or netOemPrice keeps
+    // its own calculated value (overwriting it made such formulas preview as 0).
+    const builtIn: Record<string, number> = {
       totalA: pricing.totalA,
       totalB: pricing.totalB,
       totalC: pricing.totalC,
@@ -243,6 +244,12 @@ export function FormulasPage() {
       totalDirectCost: pricing.totalDirectCost,
       listPrice: pricing.listPrice,
       netOemPrice: pricing.netOemPrice,
+    }
+    const own = (key: string) => key in techDataFields || key in formulas
+    return {
+      ...baseVars,
+      ...buildPricingVariables(item.technicalData, costRates, autoOverrideKeys),
+      ...Object.fromEntries(Object.entries(builtIn).filter(([key]) => !own(key))),
     }
   }, [item, costRates, formulas, techDataFields, autoOverrideKeys])
 

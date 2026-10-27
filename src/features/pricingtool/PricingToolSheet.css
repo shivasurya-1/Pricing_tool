@@ -62,12 +62,12 @@
 .pts-multi .pts-sh > * { position: sticky; left: 14px; }
 .pts-multi .pts-sh .pts-st { left: 46px; }
 .pts-colhead { align-items: end; border-bottom: 2px solid #1b2433; margin-bottom: 10px; font-weight: 700; }
+.pts-colhead .pts-u { color: #1b2433; font-size: inherit; }
+.pts-colgroup { text-align: center; padding-bottom: 6px; border-bottom: 1px solid #c3cad6; letter-spacing: 0.02em; }
 .pts-colhead .pts-colname { display: block; font-size: 10.5pt; line-height: 1.2; }
 .pts-colhead .pts-coltag { display: block; font-size: 9pt; font-weight: 600; color: #667085; }
 .pts-grand { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin: 4px 0 18px; padding: 10px 14px; background: #1b2433; color: #fff; border-radius: 6px; font-weight: 700; }
 .pts-grand-v { font-size: 14pt; font-variant-numeric: tabular-nums; }
-
-.pts-warn { margin: 0; padding: 7px 14px; background: #fffbeb; color: #92400e; font-size: 9.5pt; border-bottom: 1px solid #e9edf3; }
 
 .pts-foot { margin: 20px 8px 0; padding-top: 10px; border-top: 1px solid #dde2ea; font-size: 9pt; color: #8a93a6; }
 

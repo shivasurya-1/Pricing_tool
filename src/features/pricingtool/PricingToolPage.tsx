@@ -9,7 +9,7 @@ import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
 import { useReferenceStore } from '@/store/referenceStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { computePulleyPricing, type CostLine, type PulleyPricingResult } from '@/lib/pulleyPricingCalc'
-import { computeAutoFields, inHouseOperationLabel } from '@/lib/pulleyTechDataCalc'
+import { computeAutoFields } from '@/lib/pulleyTechDataCalc'
 import { catalogDisplayValue, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
 import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
 import './PricingToolSheet.css'
@@ -41,6 +41,21 @@ const COST_SECTIONS: {
   { code: 'E', title: 'Packing & shipment cost', totalLabel: 'TOTAL PACKING & SHIPMENT COST (E)', lines: 'sectionE', total: 'totalE', color: '#0E7490' },
 ]
 const SECTION_F_COLOR = '#1E3A8A'
+const EXTRA_SECTION_COLORS = ['#475569', '#9A3412', '#3F6212', '#0E7490']
+
+/** Pricing Tool sections (Formulas page → Pricing Tool tab) this page already draws its
+ * own way: "Pricing Section A–F" are the built-in A–F blocks above, and the numbered
+ * "1. …" – "8. …" sections copy the Technical Data Sheet's inputs (Sections 1–8). Every
+ * other Pricing Tool section is a user-added one and is shown after Section F. */
+/** A "GRAND TOTAL — …" Pricing Tool section: its fields are shown summed over all of the
+ * RFQ's pulleys (one figure for the RFQ), not per pulley. */
+function isGrandTotalSection(label: string): boolean {
+  return /^\s*GRAND TOTAL\b/i.test(label)
+}
+
+function isBuiltInPricingSection(label: string): boolean {
+  return /^\s*Pricing Section [A-F]\b/i.test(label) || /^\s*\d+\s*\./.test(label)
+}
 
 // Section 5's catalog-driven components. The sleeve field is "sleeveCode" on the
 // built-in schema but may be renamed (e.g. "adapterSleeveCode") on a customised sheet.
@@ -88,6 +103,14 @@ function fmtCost(line: CostLine | undefined): string {
   return line.pending ? '—' : fmtNumber(line.value, 0)
 }
 
+/** A Pricing Section A–F field's value: amounts as in the rest of the sheet, and a "%"
+ * field — calculated as a fraction, e.g. 0.227, as the workbook does — as "22.7%". */
+function fmtFormulaValue(v: string | number | undefined | null, unit: string | undefined): string {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : null
+  if (unit === '%' && n !== null) return `${(Math.abs(n) <= 1 ? n * 100 : n).toFixed(1)}%`
+  return fmtValue(v)
+}
+
 /** "5.BEARINGS, HOUSINGS & SLEEVES" -> { code: 5, title: "Bearings, housings & sleeves" }. */
 function parseSectionTitle(raw: string): { code: number | null; title: string } {
   const m = raw.match(/^\s*(\d+)\s*[.)]?\s*(.*)$/)
@@ -107,6 +130,19 @@ function isTotalRow(field: TechDataField): boolean {
  * itself stores those values (`pulleyTag`, `qty`, the RFQ's quote reference), so an
  * empty value falls back to the latter.
  */
+/** A Pricing Tool field in the shape the input sections render (see fieldValue). */
+function pricingFieldAsSheetField(f: TechDataFieldDto): TechDataField {
+  return {
+    key: f.key,
+    label: f.label,
+    unit: f.unit || undefined,
+    type: f.field_type,
+    auto: f.is_read_only,
+    fixedValue: f.fixed_value || undefined,
+    catalogPrices: f.option_prices ?? undefined,
+  }
+}
+
 function fieldValue(field: TechDataField, col: Column, rfq: RFQ): string | number | undefined {
   const raw = field.auto ? (col.autoValues[field.key] ?? col.values[field.key]) : col.values[field.key]
   if (raw !== undefined && raw !== null && raw !== '') return catalogDisplayValue(field.catalogPrices, raw)
@@ -244,6 +280,7 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
   const formulas = useFormulaStore((s) => s.formulas)
   const costRates = useFormulaStore((s) => s.costRates)
   const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const sectionsRegistry = useFormulaStore((s) => s.sections)
   // Section C's MHR rates — an edit on the In-House Hours page recomputes too.
   const inHouseHourRates = useReferenceStore((s) => s.inHouseHourRates)
   const techSections = useTechDataSections()
@@ -264,8 +301,23 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
 
   // Sections 1-8: the Technical Data Sheet's own sections, in their numbered order.
   // Sourcing choices (srcRollingBending etc.) are drawn as Section 8 pills, wherever
-  // the sheet keeps them.
+  // the sheet keeps them. A section the Formulas page's Pricing Tool tab has its own
+  // numbered copy of (e.g. "2.  PULLEY BODY DIMENSIONS") shows that copy's fields
+  // instead — the pricing values calculated from the sheet (raw thickness = thickness
+  // + 8, hub width + 5, catalog prices, …), as the workbook's Pricing Tool sheet does.
   const inputSections = useMemo(() => {
+    const pricingCopies = new Map<number, TechDataField[]>()
+    for (const f of Object.values(techDataFields)) {
+      if (f.sheet !== 'pricing_tool') continue
+      const code = parseSectionTitle(f.section).code
+      if (code === null || !/^\s*\d+\s*\./.test(f.section)) continue
+      const list = pricingCopies.get(code) ?? []
+      list.push({ ...pricingFieldAsSheetField(f), order: f.order } as TechDataField & { order: number })
+      pricingCopies.set(code, list)
+    }
+    const copyFor = (code: number) =>
+      (pricingCopies.get(code) as (TechDataField & { order: number })[] | undefined)?.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
+
     const srcKeys = new Set(PROCESS_SOURCING_MAP.map((p) => p.srcKey))
     const parsed = techSections
       .map((s, i) => ({ ...parseSectionTitle(s.title), fields: s.fields.filter((f) => !srcKeys.has(f.key)), index: i }))
@@ -279,9 +331,52 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
       return { ...s, code: next }
     }) as { code: number; title: string; fields: TechDataField[]; index: number }[]
     const sourcingCode = used.has(8) ? Math.max(...used) + 1 : 8
-    return { sections: withCodes.sort((a, b) => a.code - b.code || a.index - b.index), sourcingCode }
-  }, [techSections])
+    // Swap in the pricing copy's fields (the sourcing section keeps its pills).
+    const sections = withCodes.map((s) => {
+      const copy = s.code === sourcingCode ? undefined : copyFor(s.code)
+      return copy && copy.length > 0 ? { ...s, fields: copy } : s
+    })
+    return { sections: sections.sort((a, b) => a.code - b.code || a.index - b.index), sourcingCode }
+  }, [techSections, techDataFields])
   const maxInputCode = Math.max(inputSections.sourcingCode, ...inputSections.sections.map((s) => s.code))
+
+  // Sections added on the Formulas page's Pricing Tool tab, in their Manage Sections
+  // order, with each field's calculated (Auto), fixed or entered value per pulley.
+  const extraSections = useMemo(() => {
+    const order = Object.fromEntries(sectionsRegistry.map((s) => [s.label, s.order]))
+    const bySection: Record<string, TechDataFieldDto[]> = {}
+    for (const f of Object.values(techDataFields)) {
+      if (f.sheet !== 'pricing_tool' || isBuiltInPricingSection(f.section)) continue
+      ;(bySection[f.section] ??= []).push(f)
+    }
+    return Object.entries(bySection)
+      .sort(([a], [b]) => (order[a] ?? 999) - (order[b] ?? 999) || a.localeCompare(b))
+      .map(([title, fields]) => ({ title, fields: fields.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key)) }))
+  }, [techDataFields, sectionsRegistry])
+  // The Formulas page's "Pricing Section A … F" fields, by letter: when a section has
+  // them, its block shows those fields' calculated values instead of the built-in lines.
+  const formulaSections = useMemo(() => {
+    const byLetter: Record<string, (TechDataField & { order: number })[]> = {}
+    for (const f of Object.values(techDataFields)) {
+      if (f.sheet !== 'pricing_tool') continue
+      const letter = /^\s*Pricing Section ([A-F])\b/i.exec(f.section)?.[1]?.toUpperCase()
+      if (!letter) continue
+      ;(byLetter[letter] ??= []).push({ ...pricingFieldAsSheetField(f), order: f.order })
+    }
+    for (const list of Object.values(byLetter)) list.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
+    return byLetter as Record<string, TechDataField[]>
+  }, [techDataFields])
+  const formulaRows = (letter: string) =>
+    formulaSections[letter]?.map((f) =>
+      row(f.label, columns.map((c) => fmtFormulaValue(fieldValue(f, c, rfq), f.unit)), { unit: f.unit, total: /^total\b/i.test(f.label) }),
+    )
+  const extraValue = (field: TechDataFieldDto, c: Column) =>
+    fmtValue(
+      catalogDisplayValue(
+        field.option_prices,
+        field.fixed_value || (field.is_read_only ? (c.autoValues[field.key] ?? c.values[field.key]) : c.values[field.key]),
+      ),
+    )
 
   const oemDiscountPct = Math.round((costRates.oemDiscount ?? 0.1) * 1000) / 10
   const gstPct = Math.round((costRates.gstRate ?? 0.18) * 1000) / 10
@@ -291,13 +386,11 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     <ValueRow key={label} label={label} cells={cells} gridStyle={gridStyle} {...opts} />
   )
   const first = columns[0]
-  const missingRateLabels = first.pricing.missingInHouseRates.map(inHouseOperationLabel)
 
   const head = (
     <PulleyHeaderRow
       columns={columns}
       gridStyle={gridStyle}
-      show={multi}
     />
   )
 
@@ -305,7 +398,7 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     <div className={clsx('pts-card', multi && 'pts-multi')}>
       <div className="pts-top">
         <div>
-          <div className="pts-brand">Pricing Tool</div>
+          <div className="pts-brand">PRICING TOOL</div>
           <div className="pts-sub">{multi ? `${columns.length} pulleys` : first.item.productName || 'Pulley'}</div>
         </div>
         <div className="pts-meta">
@@ -354,29 +447,31 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
       <div className="pts-part">
         <div className="pts-pbar">
           <span className="pts-pt">Cost build-up and pricing</span>
-          <span className="pts-pc">Sections A to F</span>
+          <span className="pts-pc">Sections A to F{extraSections.length > 0 ? ` + ${extraSections.length} more` : ''}</span>
         </div>
         <div className="pts-scroll">
           {head}
           {COST_SECTIONS.map((s) => (
             <SheetSection key={s.code} code={s.code} title={s.title} color={s.color}>
-              {first.pricing[s.lines].map((line, i) =>
-                row(
-                  line.label,
-                  columns.map((c) => fmtCost(c.pricing[s.lines][i])),
-                  { unit: 'INR' },
-                ),
-              )}
-              {row(s.totalLabel, money((p) => p[s.total]), { unit: 'INR', total: true })}
-              {s.code === 'C' && missingRateLabels.length > 0 && (
-                <p className="pts-warn" role="note">
-                  No MHR rate on the In-House Hours page for {missingRateLabels.join(', ')} — costed at 0.
-                </p>
+              {formulaSections[s.code]?.length ? (
+                formulaRows(s.code)
+              ) : (
+                <>
+                  {first.pricing[s.lines].map((line, i) =>
+                    row(
+                      line.label,
+                      columns.map((c) => fmtCost(c.pricing[s.lines][i])),
+                      { unit: 'INR' },
+                    ),
+                  )}
+                  {row(s.totalLabel, money((p) => p[s.total]), { unit: 'INR', total: true })}
+                </>
               )}
             </SheetSection>
           ))}
 
           <SheetSection code="F" title="Cost summary & pricing" color={SECTION_F_COLOR}>
+            {formulaSections.F?.length ? formulaRows('F') : <>
             {row('Total Rematerialise Cost (A)', money((p) => p.totalA), { unit: 'INR' })}
             {row('Total Ancillary Parts Cost (B)', money((p) => p.totalB), { unit: 'INR' })}
             {row('Total In-House Processing (C)', money((p) => p.totalC), { unit: 'INR' })}
@@ -394,7 +489,31 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
             {row('Net Price EUR equivalent', money((p) => p.netPriceEur), { unit: 'EUR' })}
             {row('Gross Margin %', columns.map((c) => `${c.pricing.grossMarginPercent.toFixed(1)}%`), { unit: '%' })}
             {row('Item Total (Qty × Net OEM Price) INR', money((p) => p.itemTotal), { unit: 'INR', keyRow: true })}
+            </>}
           </SheetSection>
+
+          {extraSections.map((section, i) => (
+            <SheetSection key={section.title} code={`P${i + 1}`} title={section.title} color={EXTRA_SECTION_COLORS[i % EXTRA_SECTION_COLORS.length]}>
+              {isGrandTotalSection(section.title)
+                ? // One figure for the whole RFQ: each field summed over every pulley, like the
+                  // workbook's Grand Total block (=SUM(C122:S122)/110 is the sum of each
+                  // model's C122/110 — exactly what the per-pulley formula calculates).
+                  section.fields.map((field) => (
+                    <div key={field.key} className="pts-grand">
+                      <span>
+                        {field.label} <span className="font-normal opacity-70">— all {columns.length} {columns.length === 1 ? 'pulley' : 'pulleys'}</span>
+                      </span>
+                      <span className="pts-grand-v">
+                        {(field.unit || (/\bEUR\b/i.test(field.label) ? 'EUR' : '')) && `${field.unit || 'EUR'} `}
+                        {fmtNumber(columns.reduce((sum, c) => sum + (Number(c.autoValues[field.key] ?? c.values[field.key]) || 0), 0), 0)}
+                      </span>
+                    </div>
+                  ))
+                : section.fields.map((field) =>
+                    row(field.label, columns.map((c) => extraValue(field, c)), { unit: field.unit, total: /^total\b/i.test(field.label) }),
+                  )}
+            </SheetSection>
+          ))}
 
           {multi && (
             <div className="pts-grand">
@@ -410,15 +529,23 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
   )
 }
 
-/** Column headings when several pulleys are shown side by side. */
-function PulleyHeaderRow({ columns, gridStyle, show }: { columns: Column[]; gridStyle: CSSProperties; show: boolean }) {
-  if (!show) return null
+/** The sheet's column headings — PARAMETER | Unit | one column per pulley — as in the
+ * workbook's Pricing Tool sheet; shown for a single pulley too. */
+function PulleyHeaderRow({ columns, gridStyle }: { columns: Column[]; gridStyle: CSSProperties }) {
   return (
     <div className="pts-row pts-colhead" style={gridStyle}>
-      <span>Pulley</span>
-      <span className="pts-u">Unit</span>
+      <span className="pts-l" style={{ gridRow: '1 / span 2' }}>
+        PARAMETER
+      </span>
+      <span className="pts-u" style={{ gridRow: '1 / span 2' }}>
+        Unit
+      </span>
+      {/* Spans every pulley column, with the pulleys listed under it. */}
+      <span className="pts-colgroup" style={{ gridColumn: '3 / -1', gridRow: 1 }}>
+        PULLEY — PRICING TOOL
+      </span>
       {columns.map((c) => (
-        <span key={c.item.id} className="pts-v">
+        <span key={c.item.id} className="pts-v" style={{ gridRow: 2 }}>
           <span className="pts-colname">{c.item.productName || 'Pulley'}</span>
           <span className="pts-coltag">
             {c.values.pulleyTag ? String(c.values.pulleyTag) : '—'} · Qty {fmtValue(c.values.qty ?? c.item.quantity)}
