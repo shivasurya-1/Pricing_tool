@@ -1,5 +1,7 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .bulk_import import BulkImportTemplateView, BulkImportView
 from .views import FormulaDefinitionViewSet, SectionViewSet, TechDataFieldDefinitionViewSet
 
 router = DefaultRouter()
@@ -10,4 +12,8 @@ router.register("formulas/tech-data-fields", TechDataFieldDefinitionViewSet, bas
 router.register("formulas/sections", SectionViewSet, basename="section")
 router.register("formulas", FormulaDefinitionViewSet, basename="formula")
 
-urlpatterns = router.urls
+# Before the router for the same reason: "formulas/{key}/" would match "bulk-import".
+urlpatterns = [
+    path("formulas/bulk-import/", BulkImportView.as_view(), name="formulas-bulk-import"),
+    path("formulas/bulk-import/template/", BulkImportTemplateView.as_view(), name="formulas-bulk-import-template"),
+] + router.urls

@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useRef, useState } from 'react'
-import { Info, Layers, ListTree, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
+import { FileSpreadsheet, Info, Layers, ListTree, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
 import { Card, CardHeader } from '@/components/ui/Card'
@@ -21,6 +21,7 @@ import { computePulleyPricing, buildPricingVariables } from '@/lib/pulleyPricing
 import { evaluateFormula, FormulaError } from '@/lib/formulaEval'
 import { formatCurrency } from '@/lib/format'
 import { ApiError } from '@/lib/apiClient'
+import { BulkImportModal } from './BulkImportModal'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-blue)]'
 
@@ -198,6 +199,7 @@ export function FormulasPage() {
   const [deleteFormulaTarget, setDeleteFormulaTarget] = useState<FormulaDefinitionDto | null>(null)
   const [deleteAllOpen, setDeleteAllOpen] = useState(false)
   const [sectionsManagerOpen, setSectionsManagerOpen] = useState(false)
+  const [bulkImportOpen, setBulkImportOpen] = useState(false)
   const [showTechDataSheet, setShowTechDataSheet] = useState(false)
   const [formulaTab, setFormulaTab] = useState<(typeof FORMULA_TABS)[number]>('Pricing Tool Formulas')
 
@@ -393,6 +395,9 @@ export function FormulasPage() {
             </Button>
             <Button variant="primary" icon={<Plus size={15} />} onClick={() => setAddFieldOpen(true)}>
               Add Field
+            </Button>
+            <Button variant="secondary" icon={<FileSpreadsheet size={15} />} onClick={() => setBulkImportOpen(true)}>
+              Bulk Import
             </Button>
             {role === 'Admin' && (
               <Button variant="danger" icon={<Trash2 size={15} />} onClick={() => setDeleteAllOpen(true)}>
@@ -592,6 +597,8 @@ export function FormulasPage() {
         confirmLabel="Delete All Formulas"
         danger
       />
+
+      <BulkImportModal open={bulkImportOpen} onClose={() => setBulkImportOpen(false)} />
 
       <SectionsManagerModal
         open={sectionsManagerOpen}
