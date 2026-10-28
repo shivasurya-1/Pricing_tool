@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "formulas",
     "reference",
     "rfq",
+    "delivery",
 ]
 
 MIDDLEWARE = [

@@ -1,283 +1,430 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Info, RotateCcw } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
-import { Card, CardHeader } from '@/components/ui/Card'
-import { Badge } from '@/components/ui/Badge'
+import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/EmptyState'
-import { useDataStore } from '@/store/dataStore'
-import { useFormulaStore } from '@/store/formulaStore'
-import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
-import { formatDate } from '@/lib/format'
-import {
-  DELIVERY_ACTIVITIES,
-  PHASES,
-  MAX_GROUP_KEYS,
-  SUM_GROUP_KEYS,
-  ACTIVITY_TO_SRC_KEY,
-  computeActivityDays,
-  type DeliverySourcing,
-  type DeliveryActivity,
-} from '@/data/deliverySchedule'
-import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
-import type { RFQItem } from '@/types'
+import { api, ApiError } from '@/lib/apiClient'
+import { useAuthStore } from '@/store/authStore'
+import { useUiStore } from '@/store/uiStore'
+import { DELIVERY_ACTIVITIES, MAX_GROUP_KEYS, SUM_GROUP_KEYS, computeActivityDays, type DeliverySourcing } from '@/data/deliverySchedule'
+
+type TotalGroup = 'max' | 'sum' | 'none'
+
+/** GET/PATCH /api/delivery-schedule/ — see backend/delivery/views.py. */
+interface ActivityDto {
+  id: number
+  phase: string
+  label: string
+  sourcing: DeliverySourcing
+  std_days: number
+  override_days: number | null
+  unit: string
+  notes: string
+  total_group: TotalGroup
+  is_custom: boolean
+}
+interface ScheduleDto {
+  safety_factor: number
+  activities: ActivityDto[]
+}
+
+/** One row of the sheet — numbers kept as typed text until saved. A workbook row is
+ * fixed except Sourcing, Std. Days and Override Days; a row added on the page
+ * (isCustom) can also be renamed, given notes, re-grouped in the total and deleted. */
+interface Row {
+  isCustom: boolean
+  key: string
+  id?: number
+  phase: string
+  label: string
+  sourcing: DeliverySourcing
+  std: string
+  override: string
+  unit: string
+  notes: string
+  totalGroup: TotalGroup
+}
 
 const SOURCING_OPTIONS: DeliverySourcing[] = ['In-house', 'Outsource', 'Logistics', '—']
-const TONE: Record<DeliverySourcing, 'teal' | 'purple' | 'blue' | 'neutral'> = {
-  'In-house': 'teal',
-  Outsource: 'purple',
-  Logistics: 'blue',
-  '—': 'neutral',
+// Shown under an added row: how it counts, which follows its phase like the workbook's
+// formula =MAX(F28:F32)+F6+F7+... (Phase 3 is the MAX() group, Phase 1 isn't in it).
+const COUNT_NOTE: Record<TotalGroup, string> = {
+  sum: 'Added to total days',
+  max: 'Counts only if longer than the other purchased parts',
+  none: 'Not in total — runs in parallel',
+}
+// The workbook's phases, in order — a band stays (with its Add row) even if all its rows are deleted.
+const WORKBOOK_PHASES = [...new Set(DELIVERY_ACTIVITIES.map((a) => a.phase.toUpperCase()))]
+
+let newRowCounter = 0
+
+function toRows(dto: ScheduleDto): Row[] {
+  return dto.activities.map((a) => ({
+    isCustom: a.is_custom,
+    key: String(a.id),
+    id: a.id,
+    phase: a.phase,
+    label: a.label,
+    sourcing: a.sourcing,
+    std: String(a.std_days),
+    override: a.override_days === null ? '' : String(a.override_days),
+    unit: a.unit,
+    notes: a.notes,
+    totalGroup: a.total_group,
+  }))
 }
 
-interface RowState {
-  sourcing: DeliverySourcing
-  overrideDays: number | undefined
+/** The workbook defaults (src/data/deliverySchedule.ts), shown read-only while the backend is unreachable. */
+function fallbackRows(): Row[] {
+  return DELIVERY_ACTIVITIES.map((a) => ({
+    isCustom: false,
+    key: a.key,
+    phase: a.phase.toUpperCase(),
+    label: a.label,
+    sourcing: a.sourcing,
+    std: String(a.stdDays),
+    override: a.overrideDays === undefined ? '' : String(a.overrideDays),
+    unit: a.unit,
+    notes: a.note ?? '',
+    totalGroup: MAX_GROUP_KEYS.includes(a.key) ? 'max' : SUM_GROUP_KEYS.includes(a.key) ? 'sum' : 'none',
+  }))
 }
 
-/** Seeds each activity from the item's real Sourcing-confirmed choice where a mapping
- * exists (ACTIVITY_TO_SRC_KEY); everything else keeps the workbook's generic default. */
-function baselineStateForItem(item: RFQItem | undefined): Record<string, RowState> {
-  return Object.fromEntries(
-    DELIVERY_ACTIVITIES.map((a) => {
-      const srcKey = ACTIVITY_TO_SRC_KEY[a.key]
-      const realMode = srcKey ? item?.technicalData?.[srcKey] : undefined
-      const sourcing = (realMode === 'In-house' || realMode === 'Outsource' || realMode === 'Logistics' ? realMode : a.sourcing) as DeliverySourcing
-      return [a.key, { sourcing, overrideDays: a.overrideDays }]
-    }),
-  )
+// How a row added to each phase counts — the same as that phase's workbook rows
+// (backend/delivery/defaults.py's PHASE_TOTAL_GROUP).
+const PHASE_TOTAL_GROUP: Record<string, TotalGroup> = Object.fromEntries(fallbackRows().map((r) => [r.phase, r.totalGroup]))
+
+const parseDays = (text: string) => (text.trim() === '' ? undefined : Number(text))
+
+/** The workbook's Unit column: =IF(C="Outsource",IF(E<>"",E,D),IF(C="In-house",D,IF(C="Logistics",D,0))) */
+const rowDays = (r: Row) => computeActivityDays(r.sourcing, parseDays(r.std) ?? 0, parseDays(r.override))
+
+function fmtDays(n: number) {
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
 }
 
+/** The PATCH body — also used to tell whether anything changed. */
+function toPayload(rows: Row[], safetyFactor: string) {
+  return {
+    safety_factor: Number(safetyFactor),
+    activities: rows.map((r) => ({
+      id: r.id ?? null,
+      sourcing: r.sourcing,
+      std_days: parseDays(r.std) ?? 0,
+      override_days: parseDays(r.override) ?? null,
+      // Only saved for an added row — a workbook row keeps the sheet's own. How it counts
+      // in the total follows its phase (set by the backend).
+      ...(r.isCustom && { phase: r.phase, label: r.label.trim(), notes: r.notes }),
+    })),
+  }
+}
+
+const cellInput =
+  'w-full rounded border border-transparent bg-transparent px-1.5 py-1 text-center text-sm outline-none hover:border-[var(--color-border)] focus:border-[var(--color-blue)] focus:bg-white'
+// Activity | Sourcing | Std. | Override | Days | unit | Notes | delete
+const COLUMNS = 'minmax(190px,2.4fr) 116px 76px 88px 66px 52px minmax(130px,1.6fr) 36px'
+
+/**
+ * The client workbook's "Delivery Schedule" sheet, standalone: days from order to dispatch.
+ * Exactly the workbook's rows; Sourcing, Std. Days and Override Days are its input cells,
+ * and TOTAL CALENDAR DAYS is its formula =MAX(F28:F32)+F6+F7+F23+F24+F25+F26+F34+F35+F37+F38+F39.
+ */
 export function DeliverySchedulePage() {
-  const navigate = useNavigate()
-  const rfqs = useDataStore((s) => s.rfqs)
-  const costRates = useFormulaStore((s) => s.costRates)
-  // "deliverySafetyFactor" is a live-editable Global cost rate (Cost Rate Tables page) —
-  // fall back to the static default only if the backend never loaded.
-  const deliverySafetyFactor = costRates.deliverySafetyFactor ?? PULLEY_COST_RATES.deliverySafetyFactor
-  const rfqsWithTechData = useMemo(() => rfqs.filter((r) => r.items.some((it) => isTechDataFilled(it.technicalData))), [rfqs])
+  const role = useAuthStore((s) => s.role)
+  const pushToast = useUiStore((s) => s.pushToast)
+  const [rows, setRows] = useState<Row[]>([])
+  const [safetyFactor, setSafetyFactor] = useState('1.2')
+  const [saved, setSaved] = useState('')
+  const [status, setStatus] = useState<'loading' | 'ready' | 'offline'>('loading')
+  const [busy, setBusy] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
 
-  const [rfqId, setRfqId] = useState(rfqsWithTechData[0]?.id ?? '')
-  const rfq = rfqs.find((r) => r.id === rfqId)
-  const items = useMemo(() => (rfq ? rfq.items.filter((it) => isTechDataFilled(it.technicalData)) : []), [rfq])
-  const [itemId, setItemId] = useState(items[0]?.id ?? '')
-  const item = items.find((it) => it.id === itemId) ?? items[0]
-
-  const [state, setState] = useState<Record<string, RowState>>(() => baselineStateForItem(item))
-
-  useEffect(() => {
-    setState(baselineStateForItem(item))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item?.id])
+  const apply = (dto: ScheduleDto) => {
+    const next = toRows(dto)
+    setRows(next)
+    setSafetyFactor(String(dto.safety_factor))
+    setSaved(JSON.stringify(toPayload(next, String(dto.safety_factor))))
+  }
 
   useEffect(() => {
-    if (!items.some((it) => it.id === itemId)) setItemId(items[0]?.id ?? '')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rfqId])
+    api
+      .get<ScheduleDto>('/delivery-schedule/')
+      .then((dto) => {
+        apply(dto)
+        setStatus('ready')
+      })
+      .catch(() => {
+        setRows(fallbackRows())
+        setStatus('offline')
+      })
+  }, [])
 
-  const days = useMemo(() => {
-    const out: Record<string, number> = {}
-    for (const a of DELIVERY_ACTIVITIES) {
-      const s = state[a.key]
-      out[a.key] = computeActivityDays(s.sourcing, a.stdDays, s.overrideDays)
+  const canEdit = status === 'ready' && (role === 'Admin' || role === 'Sourcing')
+  const dirty = status === 'ready' && JSON.stringify(toPayload(rows, safetyFactor)) !== saved
+
+  const phases = useMemo(() => [...new Set([...WORKBOOK_PHASES, ...rows.map((r) => r.phase)])], [rows])
+  const days = useMemo(() => Object.fromEntries(rows.map((r) => [r.key, rowDays(r)])), [rows])
+  // MAX(F28:F32) — the parallel purchased components — plus every other row of the formula.
+  const maxGroup = Math.max(0, ...rows.filter((r) => r.totalGroup === 'max').map((r) => days[r.key]))
+  const sumGroup = rows.filter((r) => r.totalGroup === 'sum').reduce((s, r) => s + days[r.key], 0)
+  const totalDays = maxGroup + sumGroup
+  const factor = Number(safetyFactor) || 0
+  const weeks = (totalDays / 7) * factor
+
+  const invalid =
+    !(factor > 0) ||
+    rows.some((r) => (r.isCustom && !r.label.trim()) || [parseDays(r.std), parseDays(r.override)].some((n) => n !== undefined && (Number.isNaN(n) || n < 0)))
+
+  const update = (key: string, patch: Partial<Row>) => setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+  const remove = (key: string) => setRows((prev) => prev.filter((r) => r.key !== key))
+  // A new row goes at the end of its phase; by default its days are added to the total.
+  const addRow = (phase: string) =>
+    setRows((prev) => {
+      const at = prev.map((r) => r.phase).lastIndexOf(phase) + 1
+      const totalGroup = PHASE_TOTAL_GROUP[phase] ?? 'sum'
+      const row: Row = { isCustom: true, key: `new-${++newRowCounter}`, phase, label: '', sourcing: 'In-house', std: '0', override: '', unit: 'days', notes: '', totalGroup }
+      return [...prev.slice(0, at), row, ...prev.slice(at)]
+    })
+
+  const handleSave = async () => {
+    setBusy(true)
+    try {
+      apply(await api.patch<ScheduleDto>('/delivery-schedule/', toPayload(rows, safetyFactor)))
+      pushToast('Delivery schedule saved.', 'success')
+    } catch (err) {
+      pushToast(err instanceof ApiError ? err.message : 'Failed to save the delivery schedule.', 'error')
+    } finally {
+      setBusy(false)
     }
-    return out
-  }, [state])
+  }
 
-  const maxGroupDays = Math.max(0, ...MAX_GROUP_KEYS.map((k) => days[k] ?? 0))
-  const sumGroupDays = SUM_GROUP_KEYS.reduce((sum, k) => sum + (days[k] ?? 0), 0)
-  const totalCalendarDays = maxGroupDays + sumGroupDays
-  const deliveryWeeks = (totalCalendarDays / 7) * deliverySafetyFactor
-  const expectedDispatchDate = new Date(Date.now() + totalCalendarDays * deliverySafetyFactor * 86400000)
+  const handleReset = async () => {
+    setBusy(true)
+    try {
+      apply(await api.post<ScheduleDto>('/delivery-schedule/reset/', {}))
+      pushToast('Delivery schedule reset to the workbook values.', 'success')
+    } catch (err) {
+      pushToast(err instanceof ApiError ? err.message : 'Failed to reset the delivery schedule.', 'error')
+    } finally {
+      setBusy(false)
+      setResetOpen(false)
+    }
+  }
 
-  const requiredDate = item ? new Date(item.requiredDelivery) : undefined
-  const atRisk = requiredDate ? expectedDispatchDate.getTime() > requiredDate.getTime() : false
-
-  const activitiesByPhase = (phase: string) => DELIVERY_ACTIVITIES.filter((a) => a.phase === phase)
-
-  const updateRow = (key: string, patch: Partial<RowState>) => setState((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }))
+  if (status === 'loading') return <EmptyState title="Loading delivery schedule..." />
 
   return (
     <div>
       <PageHeader
         title="Delivery Schedule"
-        description="Days from order to dispatch, computed for a real RFQ's actual Sourcing decisions — mirrors the client's Delivery Schedule tab."
+        description="Days from order to dispatch — the client workbook's Delivery Schedule sheet. Standalone: not linked to any RFQ or other sheet."
         actions={
-          <Button variant="secondary" icon={<RotateCcw size={14} />} onClick={() => setState(baselineStateForItem(item))}>
-            Reset to RFQ's Sourcing
-          </Button>
+          canEdit && (
+            <>
+              <Button variant="secondary" icon={<RotateCcw size={14} />} onClick={() => setResetOpen(true)} disabled={busy}>
+                Reset to Workbook Values
+              </Button>
+              <Button variant="primary" icon={<Save size={14} />} onClick={handleSave} disabled={!dirty || invalid || busy}>
+                {busy ? 'Saving...' : 'Save'}
+              </Button>
+            </>
+          )
         }
       />
 
-      <Card className="mb-5">
-        <div className="flex flex-wrap items-center gap-3 p-4">
-          <label className="text-xs font-medium text-[var(--color-ink-soft)]">RFQ</label>
-          <select
-            value={rfqId}
-            onChange={(e) => setRfqId(e.target.value)}
-            className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-sm"
-          >
-            <option value="">Select an RFQ with technical data...</option>
-            {rfqsWithTechData.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.rfqNumber} — {r.endCustomer}
-              </option>
+      {status === 'offline' && (
+        <div className="mb-4 rounded-md border border-[var(--color-amber-100)] bg-[var(--color-amber-50)] px-4 py-2.5 text-sm text-[var(--color-amber)]">
+          Backend not reachable — showing the workbook values, read-only. Changes can be made once the backend is running.
+        </div>
+      )}
+      {dirty && (
+        <div className="mb-4 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-4 py-2.5 text-sm text-[var(--color-blue)]">
+          You have unsaved changes — click <b>Save</b> to keep them.
+        </div>
+      )}
+
+      <Card className="overflow-hidden">
+        <div className="bg-[var(--color-navy)] px-4 py-3 text-center text-sm font-bold tracking-wide text-white sm:text-base">
+          DRIVE PULLEY — INDIA DELIVERY SCHEDULE <span className="mx-2 opacity-60">|</span> Days from order to dispatch
+        </div>
+
+        <div className="overflow-x-auto">
+          {/* Fits the page; scrolls only below the COLUMNS minimums added up (narrow screens). */}
+          <div className="min-w-[760px] text-sm">
+            <div className="bg-[var(--color-navy-700)] px-3 py-2 font-semibold text-white">
+              Sourcing selection (<span className="text-[#FDE68A]">Yellow</span> = override) drives delivery time automatically
+            </div>
+
+            <div className="grid bg-[var(--color-blue)] text-xs font-semibold text-white" style={{ gridTemplateColumns: COLUMNS }}>
+              {/* As in the workbook, "Notes" sits over the h/days column; "Model" over the note text. */}
+              {['Process / Activity', 'Sourcing', 'Std. Days', 'Override Days', 'Unit', 'Notes', 'Model', ''].map((h, i) => (
+                <div key={i} className={clsx('border-r border-white/20 px-2 py-2 last:border-r-0', i === 0 || i === 6 ? 'text-left' : 'text-center')}>
+                  {h}
+                </div>
+              ))}
+            </div>
+
+            {phases.map((phase) => (
+              <Fragment key={phase}>
+                <div className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-teal-50)] px-3 py-1 text-sm font-bold text-[var(--color-ink)]">
+                  <span className="py-0.5">— {phase} —</span>
+                  {canEdit && (
+                    <Button size="sm" variant="ghost" icon={<Plus size={12} />} onClick={() => addRow(phase)}>
+                      Add row
+                    </Button>
+                  )}
+                </div>
+                {rows
+                  .filter((r) => r.phase === phase)
+                  .map((r, i) => (
+                    <div
+                      key={r.key}
+                      className={clsx('grid items-center border-b border-[var(--color-border)]', i % 2 === 1 && 'bg-[var(--color-surface)]')}
+                      style={{ gridTemplateColumns: COLUMNS }}
+                    >
+                      <div className="min-w-0 px-2 py-1">
+                        <div className="flex items-center gap-1.5">
+                          {r.isCustom && canEdit ? (
+                            <input
+                              value={r.label}
+                              onChange={(e) => update(r.key, { label: e.target.value })}
+                              placeholder="New activity name"
+                              aria-label="Activity name"
+                              className={clsx(cellInput, 'text-left', !r.label.trim() && 'border-[var(--color-red)]')}
+                            />
+                          ) : (
+                            <span className="px-1">{r.label}</span>
+                          )}
+                          {r.isCustom && <span className="shrink-0 rounded-full bg-[var(--color-green-50)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-green)]">Added</span>}
+                        </div>
+                        {r.isCustom && <p className="px-1 text-[11px] text-[var(--color-ink-faint)]">{COUNT_NOTE[r.totalGroup]}</p>}
+                      </div>
+                      <div className="flex h-full items-center justify-center bg-[var(--color-amber-50)] px-1 py-1">
+                        {canEdit ? (
+                          <select value={r.sourcing} onChange={(e) => update(r.key, { sourcing: e.target.value as DeliverySourcing })} className={cellInput}>
+                            {SOURCING_OPTIONS.map((o) => (
+                              <option key={o} value={o}>
+                                {o}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          r.sourcing
+                        )}
+                      </div>
+                      <div className="flex h-full items-center justify-center px-1 py-1">
+                        {canEdit ? (
+                          <input type="number" min={0} step="any" value={r.std} onChange={(e) => update(r.key, { std: e.target.value })} aria-label={`${r.label} std. days`} className={cellInput} />
+                        ) : (
+                          r.std
+                        )}
+                      </div>
+                      <div className="flex h-full items-center justify-center bg-[var(--color-amber-50)] px-1 py-1">
+                        {canEdit ? (
+                          <input
+                            type="number"
+                            min={0}
+                            step="any"
+                            value={r.override}
+                            onChange={(e) => update(r.key, { override: e.target.value })}
+                            aria-label={`${r.label} override days`}
+                            title="Only used when the row is Outsourced"
+                            className={cellInput}
+                          />
+                        ) : (
+                          r.override
+                        )}
+                      </div>
+                      <div
+                        className="flex h-full items-center justify-center bg-[var(--color-blue-50)] font-semibold text-[var(--color-ink)]"
+                        title="Outsource: Override Days if filled in, else Std. Days · In-house / Logistics: Std. Days · —: 0"
+                      >
+                        {fmtDays(days[r.key])} d
+                      </div>
+                      <div className="flex h-full items-center justify-center border-x border-[var(--color-border)] text-[var(--color-ink-faint)]">{r.unit}</div>
+                      <div className="flex h-full min-w-0 items-center border-r border-[var(--color-border)] px-2 py-1 text-xs italic text-[var(--color-ink-soft)]">
+                        {r.isCustom && canEdit ? (
+                          <input
+                            value={r.notes}
+                            onChange={(e) => update(r.key, { notes: e.target.value })}
+                            placeholder="Notes"
+                            aria-label="Notes"
+                            className={clsx(cellInput, 'text-left text-xs italic')}
+                          />
+                        ) : (
+                          <span className="px-1 leading-snug">{r.notes}</span>
+                        )}
+                      </div>
+                      <div className="flex justify-center">
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => remove(r.key)}
+                            aria-label={`Delete ${r.label || 'new row'}`}
+                            title="Delete this row — its days come out of the total. Reset to Workbook Values brings workbook rows back."
+                            className="rounded p-1 text-[var(--color-ink-faint)] hover:bg-[var(--color-red-50)] hover:text-[var(--color-red)]"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+              </Fragment>
             ))}
-          </select>
-          {items.length > 1 && (
-            <>
-              <label className="text-xs font-medium text-[var(--color-ink-soft)]">Item</label>
-              <select
-                value={itemId}
-                onChange={(e) => setItemId(e.target.value)}
-                className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-sm"
-              >
-                {items.map((it) => (
-                  <option key={it.id} value={it.id}>
-                    {it.productName}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-          {rfq && (
-            <Button size="sm" variant="secondary" onClick={() => navigate(`/rfqs/${rfq.id}`)}>
-              Open RFQ
-            </Button>
-          )}
+          </div>
+        </div>
+
+        <div className="space-y-2 p-4">
+          <div className="flex flex-wrap items-stretch overflow-hidden rounded-md">
+            <div className="flex flex-1 items-center bg-[var(--color-navy)] px-4 py-2.5 text-sm font-bold text-white sm:text-base">
+              TOTAL CALENDAR DAYS (Parallel-path critical items)
+            </div>
+            <div className="flex w-28 items-center justify-center bg-[var(--color-orange)] text-lg font-bold text-white">{fmtDays(totalDays)} d</div>
+            <div className="flex w-24 items-center justify-center border-l border-white/30 bg-[var(--color-orange)] text-xs text-white">calendar</div>
+          </div>
+          <div className="flex flex-wrap items-stretch overflow-hidden rounded-md border border-[var(--color-green-100)]">
+            <div className="flex flex-1 flex-wrap items-center gap-2 bg-[var(--color-green-50)] px-4 py-2.5 text-sm font-bold text-[var(--color-ink)] sm:text-base">
+              → Delivery Weeks (÷7, apply safety factor
+              {canEdit ? (
+                <input
+                  type="number"
+                  min={0}
+                  step="0.05"
+                  value={safetyFactor}
+                  onChange={(e) => setSafetyFactor(e.target.value)}
+                  aria-label="Safety factor"
+                  className="w-16 rounded border border-[var(--color-border)] bg-[var(--color-amber-50)] px-1.5 py-0.5 text-center text-sm font-semibold"
+                />
+              ) : (
+                <span>{safetyFactor}</span>
+              )}
+              )
+            </div>
+            <div className="flex w-52 items-center justify-center bg-[var(--color-green-50)] text-xl font-bold text-[var(--color-ink)]" title={`${weeks.toFixed(2)} weeks`}>
+              {Math.round(weeks)} wks
+            </div>
+          </div>
+          <p className="rounded-md bg-[var(--color-blue-50)] px-4 py-3 text-xs italic text-[var(--color-ink-soft)]">
+            NOTE: Actual lead time is driven by the CRITICAL PATH (longest parallel chain). Typically: Bearing/Housing (98-120 days) or Shaft (84
+            days) determines the schedule. Body manufacturing (81 days) usually runs in parallel. Change sourcing to 'Outsource' to activate
+            outsourced lead times.
+          </p>
         </div>
       </Card>
 
-      {!rfq || !item ? (
-        <EmptyState
-          title="No RFQ selected"
-          description={
-            rfqsWithTechData.length === 0
-              ? 'No RFQ has captured technical data yet. Fill Technical Data on an item while creating an RFQ, then come back here.'
-              : 'Pick an RFQ above to see its actual delivery schedule.'
-          }
-        />
-      ) : (
-        <>
-          <div className="mb-5 flex items-start gap-2 rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-4 py-3 text-sm text-[var(--color-blue)]">
-            <Info size={16} className="mt-0.5 shrink-0" />
-            <p>
-              Rows marked <Badge tone="green">From Sourcing</Badge> use this item's actual In-house/Outsource choice from the Sourcing
-              screen. Everything else keeps the workbook's generic default — the source file doesn't give a per-process day count for
-              those. Override Days only applies when a row is Outsourced. Phase 1 (body manufacturing) is tracked but excluded from the
-              total — it runs in parallel, and Phase 3 procurement is the longer path.
-            </p>
-          </div>
-
-          <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <SummaryStat label="Longest Procurement (Phase 3, parallel)" value={`${maxGroupDays} days`} />
-            <SummaryStat label="Sum of Critical-Path Steps" value={`${sumGroupDays} days`} />
-            <SummaryStat label="Total Calendar Days" value={`${totalCalendarDays} days`} bold />
-            <SummaryStat label="Delivery Weeks (÷7 × safety factor)" value={`${deliveryWeeks.toFixed(1)} weeks`} bold />
-          </div>
-
-          <Card className="mb-5">
-            <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-[var(--color-ink-faint)]">Expected Dispatch</p>
-                <p className="mt-0.5 text-base font-semibold text-[var(--color-ink)]">{formatDate(expectedDispatchDate.toISOString())}</p>
-              </div>
-              {requiredDate && (
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-[var(--color-ink-faint)]">Customer Required Delivery</p>
-                  <p className="mt-0.5 text-base font-semibold text-[var(--color-ink)]">{formatDate(item.requiredDelivery)}</p>
-                </div>
-              )}
-              {requiredDate && (
-                <Badge tone={atRisk ? 'red' : 'green'}>{atRisk ? 'At risk — computed dispatch is after the required date' : 'On track for required delivery'}</Badge>
-              )}
-            </div>
-          </Card>
-
-          <div className="space-y-5">
-            {PHASES.map((phase) => (
-              <Card key={phase}>
-                <CardHeader title={phase} />
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[800px] border-collapse text-sm">
-                    <thead>
-                      <tr className="border-b border-[var(--color-border)] text-left text-xs uppercase text-[var(--color-ink-faint)]">
-                        <th className="px-4 py-2">Process / Activity</th>
-                        <th className="px-4 py-2">Sourcing</th>
-                        <th className="px-4 py-2 text-right">Std. Days</th>
-                        <th className="px-4 py-2 text-right">Override Days</th>
-                        <th className="px-4 py-2 text-right">Days (computed)</th>
-                        <th className="px-4 py-2">Notes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activitiesByPhase(phase).map((a: DeliveryActivity) => {
-                        const s = state[a.key]
-                        const inMaxGroup = MAX_GROUP_KEYS.includes(a.key)
-                        const inSumGroup = SUM_GROUP_KEYS.includes(a.key)
-                        const fromSourcing = a.key in ACTIVITY_TO_SRC_KEY
-                        return (
-                          <tr key={a.key} className={clsx('border-b border-[var(--color-border)] last:border-0', fromSourcing && 'bg-[var(--color-green-50)]')}>
-                            <td className="px-4 py-2.5 font-medium">
-                              {a.label}
-                              {fromSourcing && <Badge tone="green" className="ml-2">From Sourcing</Badge>}
-                              {(inMaxGroup || inSumGroup) && (
-                                <Badge tone={inMaxGroup ? 'purple' : 'blue'} className="ml-2">
-                                  {inMaxGroup ? 'Parallel' : 'Critical path'}
-                                </Badge>
-                              )}
-                            </td>
-                            <td className="px-4 py-2.5">
-                              <select
-                                value={s.sourcing}
-                                onChange={(e) => updateRow(a.key, { sourcing: e.target.value as DeliverySourcing })}
-                                className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs outline-none focus:border-[var(--color-blue)]"
-                              >
-                                {SOURCING_OPTIONS.map((opt) => (
-                                  <option key={opt} value={opt}>
-                                    {opt}
-                                  </option>
-                                ))}
-                              </select>
-                              <Badge tone={TONE[s.sourcing]} className="ml-1.5">
-                                {s.sourcing}
-                              </Badge>
-                            </td>
-                            <td className="px-4 py-2.5 text-right text-[var(--color-ink-faint)]">
-                              {a.stdDays} {a.unit}
-                            </td>
-                            <td className="px-4 py-2.5 text-right">
-                              <input
-                                type="number"
-                                value={s.overrideDays ?? ''}
-                                onChange={(e) => updateRow(a.key, { overrideDays: e.target.value === '' ? undefined : Number(e.target.value) })}
-                                className="w-20 rounded-md border border-[var(--color-border)] px-2 py-1 text-right text-xs outline-none focus:border-[var(--color-blue)]"
-                              />
-                            </td>
-                            <td className="px-4 py-2.5 text-right font-semibold">{days[a.key]} days</td>
-                            <td className="px-4 py-2.5 text-xs text-[var(--color-ink-faint)]">{a.note}</td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            ))}
-          </div>
-        </>
-      )}
+      <ConfirmDialog
+        open={resetOpen}
+        onClose={() => setResetOpen(false)}
+        onConfirm={handleReset}
+        title="Reset Delivery Schedule"
+        description="Put every Sourcing, Std. Days and Override Days value and the safety factor back to the client workbook's values (139 days, factor 1.2), and remove the rows you added? Your changes will be lost."
+        confirmLabel="Reset"
+        danger
+      />
     </div>
-  )
-}
-
-function SummaryStat({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
-  return (
-    <Card className="p-4">
-      <p className="text-xs font-medium text-[var(--color-ink-faint)]">{label}</p>
-      <p className={bold ? 'mt-1.5 text-xl font-bold text-[var(--color-ink)]' : 'mt-1.5 text-lg font-semibold text-[var(--color-ink)]'}>{value}</p>
-    </Card>
   )
 }

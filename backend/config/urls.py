@@ -7,4 +7,5 @@ urlpatterns = [
     path("api/", include("formulas.urls")),
     path("api/reference/", include("reference.urls")),
     path("api/rfq/", include("rfq.urls")),
+    path("api/delivery-schedule/", include("delivery.urls")),
 ]
