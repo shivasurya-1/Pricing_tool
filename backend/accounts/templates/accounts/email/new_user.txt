@@ -1,0 +1,16 @@
+{% autoescape off %}Hello {{ name }},
+
+An account has been created for you on {{ company }}.
+
+Username: {{ username }}
+Password: {{ password }}
+Role: {{ role }}
+{% if login_url %}
+Sign in here: {{ login_url }}
+{% endif %}
+Please sign in and keep these details private.
+{% if contact_line %}
+Questions? Contact us: {{ contact_line }}
+{% endif %}
+{{ company }}
+{% endautoescape %}

@@ -50,28 +50,54 @@ DEFAULT_ACTIVITIES = [
 PHASE_TOTAL_GROUP = {phase: group for phase, *_, group in DEFAULT_ACTIVITIES}
 
 
-# Stable IDs for the "Depends on" column, in DEFAULT_ACTIVITIES order.
-DEFAULT_CODES = [
-    "A1", "A2",
-    "B1", "B2", "B3", "B4", "B5", "B6", "R1", "R2", "H1", "H2", "H3", "H4", "H5",
-    "C1", "C2", "C3", "C4",
-    "PU1", "PU2", "PU3", "PU4", "PU5",
-    "L1", "L2",
-    "F1", "F2", "F3",
-]
+PU = ["PU1", "PU2", "PU3", "PU4", "PU5"]
 
-_PURCHASED = ["PU1", "PU2", "PU3", "PU4", "PU5"]
-# The workbook's own logic: post-weld work waits for the longest purchased item, which gives the
-# same 139 days as the formula above. Phase 1 (body manufacturing) is chained too but has float, so it
-# does not move the total.
-DEFAULT_DEPENDS_ON = {
-    "A1": [], "A2": ["A1"],
-    "B1": ["A2"], "B2": ["B1"], "B3": ["B2"], "B4": ["B3"], "B5": ["B4"], "B6": ["B5"], "R1": ["A2"], "R2": ["R1"],
-    "H1": ["A2"], "H2": ["H1"], "H3": ["H2"], "H4": ["B6", "H3"], "H5": ["H4"],
-    "PU1": ["A2"], "PU2": ["A2"], "PU3": ["A2"], "PU4": ["A2"], "PU5": ["A2"],
-    "C1": _PURCHASED, "C2": ["C1"], "C3": ["C2"], "C4": ["C3"],
-    "L1": ["C4"], "L2": ["L1"], "F1": ["L2"], "F2": ["F1"], "F3": ["F2"],
-}
+# Each workbook row's critical-path inputs, in DEFAULT_ACTIVITIES order: (code, included,
+# depends_on). The codes are the page's (src/data/deliverySchedule.ts ACTIVITY_CODES — keep
+# the two in step): A = planning, B = shell, R = ready tube, H = hub, C = post-weld,
+# PU = purchased, L = lagging, F = final assembly. The links reproduce the workbook's
+# =MAX(F28:F32)+F6+F7+...: BOM → purchasing → the five purchased parts in parallel →
+# post-weld → lagging → final assembly = 139 days. Phase 1 keeps its own shell/hub chains
+# but starts excluded, as in the workbook; the outsourced Ready Tube (R1/R2) is the
+# alternative to B1–B6.
+DEFAULT_LINKS = [
+    ("A1", True, []),
+    ("A2", True, ["A1"]),
+    ("B1", False, ["A2"]),
+    ("B2", False, ["B1"]),
+    ("B3", False, ["B2"]),
+    ("B4", False, ["B3"]),
+    ("B5", False, ["B4"]),
+    ("B6", False, ["B5"]),
+    ("R1", False, ["A2"]),
+    ("R2", False, ["R1"]),
+    ("H1", False, ["A2"]),
+    ("H2", False, ["H1"]),
+    ("H3", False, ["H2"]),
+    ("H4", False, ["B6", "H3"]),
+    ("H5", False, ["H4"]),
+    ("C1", True, PU),
+    ("C2", True, ["C1"]),
+    ("C3", True, ["C2"]),
+    ("C4", True, ["C3"]),
+    ("PU1", True, ["A2"]),
+    ("PU2", True, ["A2"]),
+    ("PU3", True, ["A2"]),
+    ("PU4", True, ["A2"]),
+    ("PU5", True, ["A2"]),
+    ("L1", True, ["C4"]),
+    ("L2", True, ["L1"]),
+    ("F1", True, ["L2"]),
+    ("F2", True, ["F1"]),
+    ("F3", True, ["F2"]),
+]
+assert len(DEFAULT_LINKS) == len(DEFAULT_ACTIVITIES)
+
+# Stable IDs for the "Depends on" column, in DEFAULT_ACTIVITIES order.
+DEFAULT_CODES = [code for code, *_ in DEFAULT_LINKS]
+
+# Workbook label → (code, included, depends_on) — how migration 0004 links existing rows.
+DEFAULT_LINKS_BY_LABEL = {label: links for (_, label, *_), links in zip(DEFAULT_ACTIVITIES, DEFAULT_LINKS)}
 
 
 def default_activity_rows() -> list[dict]:
@@ -79,8 +105,16 @@ def default_activity_rows() -> list[dict]:
         {
             "phase": phase, "label": label, "sourcing": sourcing, "std_days": std, "override_days": override,
             "unit": unit, "notes": notes, "total_group": group, "order": i,
-            "code": DEFAULT_CODES[i], "included": True,
-            "depends_on": DEFAULT_DEPENDS_ON.get(DEFAULT_CODES[i], []),
         }
         for i, (phase, label, sourcing, std, override, unit, notes, group) in enumerate(DEFAULT_ACTIVITIES)
+    ]
+
+
+def default_activity_rows_with_links() -> list[dict]:
+    """default_activity_rows() plus code / included / depends_on — what "Reset" restores.
+    (Kept separate: migration 0002 seeds from default_activity_rows() before those fields
+    exist.)"""
+    return [
+        {**row, "code": code, "included": included, "depends_on": list(deps)}
+        for row, (code, included, deps) in zip(default_activity_rows(), DEFAULT_LINKS)
     ]

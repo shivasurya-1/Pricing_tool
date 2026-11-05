@@ -772,3 +772,44 @@ class RFQMultiPulleyTests(TestCase):
     def test_quantity_must_be_positive(self):
         response = self.sales.post(self.url, {"productId": self.other.id, "quantity": 0}, format="json")
         self.assertEqual(response.status_code, 400)
+
+
+class RFQRolePermissionGridTests(TestCase):
+    """Stage actions follow the Users & Roles grid (STAGE_MODULE), not a fixed role."""
+
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-g", code="CUST-G", name="Grid Co")
+        self.product = Product.objects.create(id="prod-g", code="PROD-G", name="Grid pulley", unit="Nos")
+        self.sales = client_as("Sales")
+        self.operations = client_as("Operations")
+        self.admin = client_as("Admin")
+
+    def _create_rfq(self, client, submit=True):
+        return client.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "actorName": "Grid", "submit": submit,
+             "items": [{"productId": self.product.id, "quantity": 1, "targetPrice": 10}]},
+            format="json",
+        )
+
+    def _save_grid(self, role, permissions):
+        response = self.admin.patch(f"/api/auth/roles/{role}/", {"permissions": permissions}, format="json")
+        self.assertEqual(response.status_code, 200)
+
+    def test_unticking_edit_on_the_stage_module_blocks_the_stage_action(self):
+        rfq_id = self._create_rfq(self.sales).data["id"]
+        self._save_grid("Operations", {"Operations Review": ["view"], "Masters": ["view"]})
+        response = self.operations.post(f"/api/rfq/rfqs/{rfq_id}/approve-operations/", {"actorName": "Ops"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(RFQ.objects.get(id=rfq_id).stage, "Operations Review")
+
+        self._save_grid("Operations", {"Operations Review": ["view", "edit"], "Masters": ["view"]})
+        response = self.operations.post(f"/api/rfq/rfqs/{rfq_id}/approve-operations/", {"actorName": "Ops"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["stage"], "Sourcing")
+
+    def test_ticking_another_stage_module_lets_a_role_act_on_it(self):
+        rfq_id = self._create_rfq(self.sales).data["id"]
+        self._save_grid("Sales", {"Create RFQ": ["view", "create", "edit", "delete"], "Operations Review": ["edit"]})
+        response = self.sales.post(f"/api/rfq/rfqs/{rfq_id}/approve-operations/", {"actorName": "Sales"}, format="json")
+        self.assertEqual(response.status_code, 200)

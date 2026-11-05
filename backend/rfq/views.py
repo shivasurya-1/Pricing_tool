@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from accounts.models import Role
-from accounts.permissions import role_write_permission
+from accounts.permissions import MASTER_DATA_WRITE_MODULES, module_permission
+from accounts.role_permissions import has_any_permission
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
@@ -48,10 +48,11 @@ from .workflow import (
     NEXT_STAGE,
     REJECTABLE_STAGES,
     SEND_BACK_TARGETS,
+    STAGE_MODULE,
     STAGE_OWNER,
     WorkflowError,
+    require_can_act,
     require_rejectable,
-    require_role_can_act,
     require_stage,
     require_valid_send_back,
 )
@@ -140,8 +141,9 @@ FIELD_OVERRIDE_TYPES = ("text", "number", "select")
 
 def validate_field_overrides(raw, user, field_name: str, current: dict | None = None) -> dict:
     """Validates an RFQ item's per-item field type overrides and returns the cleaned
-    dict. Only Controlling/Admin may change them — re-sending the item's existing
-    overrides unchanged (e.g. Sales saving other tech data) is always allowed."""
+    dict. Changing them is a master-data write (Masters or Costing, i.e. Controlling/Admin
+    under the default grids) — re-sending the item's existing overrides unchanged (e.g.
+    Sales saving other tech data) is always allowed."""
     if raw in (None, ""):
         raw = {}
     if not isinstance(raw, dict):
@@ -175,8 +177,8 @@ def validate_field_overrides(raw, user, field_name: str, current: dict | None = 
                 raise ValidationError({field_name: f"'{key}': a select override needs at least one option."})
         cleaned[key] = {"fieldType": override["fieldType"], "options": options}
 
-    if cleaned != (current or {}) and not (user.is_admin or Role.can_edit_reference_data(user.role)):
-        raise PermissionDenied("Only Controlling or Admin can change a field's type for an RFQ.")
+    if cleaned != (current or {}) and not has_any_permission(user, MASTER_DATA_WRITE_MODULES, "edit"):
+        raise PermissionDenied("You don't have permission to change a field's type for an RFQ.")
     return cleaned
 
 
@@ -193,19 +195,23 @@ def validate_attachment_upload(uploaded_file, existing_count: int) -> None:
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all().order_by("-updated_at")
     serializer_class = CustomerSerializer
-    permission_classes = [role_write_permission(("Sales",))]
+    # Sales' (Create RFQ) and Admin's under the default grids; reads stay open — every
+    # stage's RFQ screens show the customer.
+    permission_classes = [module_permission("Create RFQ", "Masters")]
 
 
 class VendorViewSet(viewsets.ModelViewSet):
     queryset = Vendor.objects.all().order_by("name")
     serializer_class = VendorSerializer
-    permission_classes = [role_write_permission(("Sourcing", "Controlling"))]
+    # Sourcing's and Controlling's (Costing) under the default grids.
+    permission_classes = [module_permission("Sourcing", "Costing", "Masters")]
 
 
 class ProductViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all().order_by("name")
     serializer_class = ProductSerializer
-    permission_classes = [role_write_permission(("Controlling",))]
+    # Controlling's (Costing) under the default grids.
+    permission_classes = [module_permission("Costing", "Masters")]
 
     def destroy(self, request, *args, **kwargs):
         try:
@@ -330,6 +336,9 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
 
     # ---- create -----------------------------------------------------------------
     def create(self, request):
+        # Deliberately not gated on the grid: any role can create an RFQ today (the
+        # frontend's RFQ list shows "Create RFQ" to everyone, and Controlling creates
+        # RFQs with field overrides), and the default grids must not change that.
         data = request.data
         customer = get_object_or_404(Customer, pk=data.get("customerId"))
         submit = bool(data.get("submit"))
@@ -395,7 +404,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Draft")
-            require_role_can_act(role, "Draft")
+            require_can_act(request.user, "Draft")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         append_audit(rfq, user=actor_name, role="Sales", module="RFQ", record=rfq.rfq_number,
@@ -412,7 +421,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         _actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Operations Review")
-            require_role_can_act(role, "Operations Review")
+            require_can_act(request.user, "Operations Review")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         rfq.operations_review = request.data.get("review")
@@ -425,7 +434,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Operations Review")
-            require_role_can_act(role, "Operations Review")
+            require_can_act(request.user, "Operations Review")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         append_audit(rfq, user=actor_name, role="Operations", module="RFQ", record=rfq.rfq_number,
@@ -468,11 +477,13 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
     def update_details(self, request, pk=None):
         """Body: any of EDITABLE_DETAIL_FIELDS (camelCase) plus optional customerId — the
         RFQ's customer, project, commercial and notes details, editable at any stage.
-        Allowed for Admin, Sales (who own these details) and the current stage's owner.
+        Needs "edit" on Create RFQ (Sales, who own these details) or on the current
+        stage's module (its owner).
         Only fields that actually change are saved, each listed in the Activity history."""
         rfq = self.get_object()
         actor_name, role = self._actor(request)
-        if role not in ("Admin", "Sales") and STAGE_OWNER.get(rfq.stage) != role:
+        modules = ("Create RFQ", STAGE_MODULE[rfq.stage]) if rfq.stage in STAGE_MODULE else ("Create RFQ",)
+        if not has_any_permission(request.user, modules, "edit"):
             raise PermissionDenied("Only Admin, Sales or the current stage's owner can edit this RFQ's details.")
 
         data = request.data
@@ -526,7 +537,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         rfq = self.get_object()
         _actor_name, role = self._actor(request)
         try:
-            require_role_can_act(role, rfq.stage)
+            require_can_act(request.user, rfq.stage)
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         item = get_object_or_404(RFQItem, pk=request.data.get("itemId"), rfq=rfq)
@@ -547,7 +558,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         _actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Sourcing")
-            require_role_can_act(role, "Sourcing")
+            require_can_act(request.user, "Sourcing")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         item = get_object_or_404(RFQItem, pk=request.data.get("itemId"), rfq=rfq)
@@ -562,7 +573,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         _actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Sourcing")
-            require_role_can_act(role, "Sourcing")
+            require_can_act(request.user, "Sourcing")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         item = get_object_or_404(RFQItem, pk=request.data.get("itemId"), rfq=rfq)
@@ -575,17 +586,17 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         return Response(self._fresh(rfq))
 
     # ---- pulleys (items) on a saved RFQ ---------------------------------------------
-    def _require_items_editable(self, request, rfq: RFQ) -> str:
+    def _require_items_editable(self, request, rfq: RFQ, action: str) -> str:
         """Pulleys can be added/duplicated/removed until a quotation is generated (after
-        that the quotation would no longer match its RFQ), by whoever owns the current
-        stage — same role rule as editing a pulley's technical data. Returns actorName."""
+        that the quotation would no longer match its RFQ), by whoever holds `action`
+        ("create" or "delete") on the current stage's module. Returns actorName."""
         actor_name, role = self._actor(request)
         # A DELETE carries no body, so its actorName comes as a query parameter.
         actor_name = actor_name or request.query_params.get("actorName", "")
         if rfq.stage not in ITEM_EDITABLE_STAGES:
             raise ValidationError({"detail": f"Pulleys can't be changed once the RFQ is at '{rfq.stage}'."})
         try:
-            require_role_can_act(role, rfq.stage)
+            require_can_act(request.user, rfq.stage, action)
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         return actor_name
@@ -602,7 +613,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         a saved RFQ as the next item number. A missing pulleyTag gets the next free
         "pulley_N"."""
         rfq = self.get_object()
-        actor_name = self._require_items_editable(request, rfq)
+        actor_name = self._require_items_editable(request, rfq, "create")
         data = request.data
         product = get_object_or_404(Product, pk=data.get("productId"))
         quantity = require_positive(data.get("quantity", 1), "quantity")
@@ -637,7 +648,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         confirmation and the Controlling cost breakdown aren't copied: they belong to
         the review of that specific item."""
         rfq = self.get_object()
-        actor_name = self._require_items_editable(request, rfq)
+        actor_name = self._require_items_editable(request, rfq, "create")
         source = get_object_or_404(RFQItem, pk=item_id, rfq=rfq)
         technical_data = dict(source.technical_data or {})
         technical_data["pulleyTag"] = next_pulley_tag(rfq)
@@ -663,7 +674,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         """Removes a pulley (and its cost breakdown line) and renumbers the rest 1..n.
         An RFQ always keeps at least one pulley."""
         rfq = self.get_object()
-        actor_name = self._require_items_editable(request, rfq)
+        actor_name = self._require_items_editable(request, rfq, "delete")
         item = get_object_or_404(RFQItem, pk=item_id, rfq=rfq)
         if rfq.items.count() <= 1:
             raise ValidationError({"detail": "An RFQ needs at least one pulley — add another before removing this one."})
@@ -686,7 +697,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         rfq = self.get_object()
         _actor_name, role = self._actor(request)
         try:
-            require_role_can_act(role, rfq.stage)
+            require_can_act(request.user, rfq.stage, "create")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         uploaded_file = request.FILES.get("file")
@@ -705,7 +716,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         rfq = self.get_object()
         _actor_name, role = self._actor(request)
         try:
-            require_role_can_act(role, rfq.stage)
+            require_can_act(request.user, rfq.stage, "delete")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         attachment = get_object_or_404(RFQAttachment, pk=attachment_id, rfq=rfq)
@@ -726,7 +737,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         _actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Sourcing")
-            require_role_can_act(role, "Sourcing")
+            require_can_act(request.user, "Sourcing")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         rfq.sourcing_comments = request.data.get("comment", "")
@@ -739,7 +750,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Sourcing")
-            require_role_can_act(role, "Sourcing")
+            require_can_act(request.user, "Sourcing")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         if not all(item.sourcing_confirmed for item in rfq.items.all()):
@@ -759,7 +770,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         _actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Controlling")
-            require_role_can_act(role, "Controlling")
+            require_can_act(request.user, "Controlling")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         lines = request.data.get("lines", [])
@@ -793,7 +804,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         actor_name, role = self._actor(request)
         try:
             require_stage(rfq, "Controlling")
-            require_role_can_act(role, "Controlling")
+            require_can_act(request.user, "Controlling")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         append_audit(rfq, user=actor_name, role="Controlling", module="RFQ", record=rfq.rfq_number,
@@ -812,7 +823,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         comment = request.data.get("comment")
         try:
             require_stage(rfq, "Approval Pending")
-            require_role_can_act(role, "Approval Pending")
+            require_can_act(request.user, "Approval Pending")
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         append_audit(rfq, user=actor_name, role="Approval Panel", module="RFQ", record=rfq.rfq_number,
@@ -832,7 +843,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         comment = request.data.get("comment", "")
         try:
             require_valid_send_back(rfq.stage, target_stage)
-            require_role_can_act(role, rfq.stage)
+            require_can_act(request.user, rfq.stage)
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         # `role` is the real authenticated role — never trust a client-supplied
@@ -855,7 +866,7 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
         comment = request.data.get("comment", "")
         try:
             require_rejectable(rfq.stage)
-            require_role_can_act(role, rfq.stage)
+            require_can_act(request.user, rfq.stage)
         except WorkflowError as exc:
             self._handle_workflow_error(exc)
         append_audit(rfq, user=actor_name, role=role, module="RFQ", record=rfq.rfq_number,

@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from accounts.permissions import CanEditReferenceData, IsAdminRole
+from accounts.permissions import IsAdminRole, MasterDataPermission
 from reference.models import (
     in_house_operation_codes,
     GlobalParameter,
@@ -219,7 +219,7 @@ class FormulaDefinitionViewSet(
 
     queryset = FormulaDefinition.objects.all()
     serializer_class = FormulaDefinitionSerializer
-    permission_classes = [CanEditReferenceData]
+    permission_classes = [MasterDataPermission]
     lookup_field = "key"
     # DRF's router default lookup regex excludes '.' (reserved for format suffixes
     # like .json) — formula keys like "sectionA.a1" need it, so widen the pattern.
@@ -401,7 +401,7 @@ class TechDataFieldDefinitionViewSet(
 
     queryset = TechDataFieldDefinition.objects.select_related("formula").all()
     serializer_class = TechDataFieldDefinitionSerializer
-    permission_classes = [CanEditReferenceData]
+    permission_classes = [MasterDataPermission]
     lookup_field = "key"
     lookup_value_regex = r"[^/]+"
 
@@ -679,7 +679,7 @@ class SectionViewSet(viewsets.ModelViewSet):
 
     queryset = Section.objects.all()
     serializer_class = SectionSerializer
-    permission_classes = [CanEditReferenceData]
+    permission_classes = [MasterDataPermission]
 
     def get_serializer_class(self):
         if self.action == "create":

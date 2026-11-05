@@ -10,11 +10,6 @@ class Role(models.TextChoices):
     APPROVAL_PANEL = "Approval Panel", "Approval Panel"
     ADMIN = "Admin", "Admin"
 
-    @classmethod
-    def can_edit_reference_data(cls, role: str) -> bool:
-        """Only Controlling and Admin may write formulas, rates, or catalogs."""
-        return role in (cls.CONTROLLING, cls.ADMIN)
-
 
 class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.SALES)
@@ -33,3 +28,16 @@ class User(AbstractUser):
 
     def __str__(self) -> str:
         return f"{self.get_full_name() or self.username} ({self.role})"
+
+
+class RolePermission(models.Model):
+    """One role's saved Users & Roles permission grid, {module: [actions]} — see
+    role_permissions.py. A role with no row uses default_role_permissions(); Admin
+    never gets a row (always full access)."""
+
+    role = models.CharField(max_length=20, choices=Role.choices, unique=True)
+    permissions = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Permissions for {self.role}"

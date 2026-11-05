@@ -1,4 +1,4 @@
-from accounts.permissions import CanEditReferenceData, role_write_permission
+from accounts.permissions import MasterDataPermission, module_permission
 from django.db.models import Q
 from django.utils.text import slugify
 from rest_framework import generics, viewsets
@@ -43,7 +43,7 @@ from .serializers import (
 
 
 class BaseReferenceViewSet(viewsets.ModelViewSet):
-    permission_classes = [CanEditReferenceData]
+    permission_classes = [MasterDataPermission]
     http_method_names = ["get", "patch", "put", "post", "delete", "head", "options"]
 
     def perform_update(self, serializer):
@@ -124,10 +124,11 @@ class InHouseHourRateViewSet(BaseReferenceViewSet):
 
 
 class OrganizationSettingsView(generics.RetrieveUpdateAPIView):
-    """Singleton — GET/PATCH only, no list. Admin-only write, any authenticated read."""
+    """Singleton — GET/PATCH only, no list. Write needs "edit" on Masters (only Admin
+    under the default grids), any authenticated read."""
 
     serializer_class = OrganizationSettingsSerializer
-    permission_classes = [role_write_permission(())]
+    permission_classes = [module_permission("Masters")]
 
     def get_object(self):
         return OrganizationSettings.load()
@@ -240,7 +241,7 @@ class ReferenceDropdownFieldsView(APIView):
     """First dropdown — reference fields (pages), each with its tables, their fixed label
     column and the optional value columns that can be pulled instead."""
 
-    permission_classes = [CanEditReferenceData]
+    permission_classes = [MasterDataPermission]
 
     def get(self, request):
         groups = {}
@@ -265,7 +266,7 @@ class ReferenceDropdownValuesView(APIView):
     in the table's own ordering. `value` comes from value_field on the same row, or
     equals the label when value_field is omitted (it may be null if that cell is blank)."""
 
-    permission_classes = [CanEditReferenceData]
+    permission_classes = [MasterDataPermission]
 
     def get(self, request):
         table = request.query_params.get("table", "")

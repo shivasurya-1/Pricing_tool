@@ -1,22 +1,17 @@
-from rest_framework.permissions import SAFE_METHODS, BasePermission
+from rest_framework.permissions import BasePermission
 
-from .models import Role
+from .role_permissions import has_any_permission
 
-
-class CanEditReferenceData(BasePermission):
-    """Read: any authenticated user. Write: Controlling or Admin only.
-
-    Shared by the formulas app and every reference/master-data endpoint —
-    editing a rate, a catalog entry, or a formula all carry the same risk
-    (every live price depends on it), so they share one gate.
-    """
-
-    def has_permission(self, request, view) -> bool:
-        if not (request.user and request.user.is_authenticated):
-            return False
-        if request.method in SAFE_METHODS:
-            return True
-        return request.user.is_admin or Role.can_edit_reference_data(request.user.role)
+# HTTP method -> permission-grid action.
+METHOD_ACTIONS = {
+    "GET": "view",
+    "HEAD": "view",
+    "OPTIONS": "view",
+    "POST": "create",
+    "PUT": "edit",
+    "PATCH": "edit",
+    "DELETE": "delete",
+}
 
 
 class IsAdminRole(BasePermission):
@@ -27,17 +22,36 @@ class IsAdminRole(BasePermission):
         return bool(request.user and request.user.is_authenticated and request.user.is_admin)
 
 
-def role_write_permission(allowed_roles: tuple[str, ...]):
-    """Factory: read open to any authenticated user, write restricted to the given
-    roles (Admin always allowed). Mirrors the frontend's navConfig.ts role lists for
-    Customers/Vendors/Products, which had no server-side equivalent until now."""
+def module_permission(*modules: str, read_modules=None, actions: dict | None = None):
+    """Factory: gates a view on the Users & Roles grid (Admin always allowed).
 
-    class _RoleWritePermission(BasePermission):
+    The request's action comes from its HTTP method (METHOD_ACTIONS), unless `actions`
+    overrides it — keyed by the viewset action name (e.g. {"reset": "edit"}) or by
+    HTTP method. Holding that action on any one of `modules` is enough.
+
+    `read_modules` decides who may "view": a tuple of modules to check instead of
+    `modules`, or None to leave reads open to any authenticated user — for lookups
+    other stages' screens depend on (RFQ forms read formulas, catalogs, customers...).
+    """
+    overrides = actions or {}
+
+    class _ModulePermission(BasePermission):
         def has_permission(self, request, view) -> bool:
             if not (request.user and request.user.is_authenticated):
                 return False
-            if request.method in SAFE_METHODS:
-                return True
-            return request.user.is_admin or request.user.role in allowed_roles
+            action = overrides.get(getattr(view, "action", None)) or overrides.get(request.method) or METHOD_ACTIONS.get(request.method)
+            if action is None:
+                return False
+            if action == "view":
+                return read_modules is None or has_any_permission(request.user, read_modules, "view")
+            return has_any_permission(request.user, modules, action)
 
-    return _RoleWritePermission
+    _ModulePermission.__name__ = f"ModulePermission({', '.join(modules)})"
+    return _ModulePermission
+
+
+# Formulas, rates, catalogs and other master data. Writes need the action on Masters
+# or on Costing: under the default grids only Controlling (Costing) and Admin hold it —
+# the same pair the old CanEditReferenceData gate allowed. Reads stay open.
+MASTER_DATA_WRITE_MODULES = ("Masters", "Costing")
+MasterDataPermission = module_permission(*MASTER_DATA_WRITE_MODULES)

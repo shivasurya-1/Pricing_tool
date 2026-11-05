@@ -33,7 +33,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.http import HttpResponse
 
-from accounts.permissions import CanEditReferenceData
+from accounts.permissions import MasterDataPermission
 
 from .evaluator import extract_variables
 from .models import TECH_DATA_AUTO_SECTION_LABEL, FormulaDefinition, Section, SectionTab, TechDataFieldDefinition
@@ -343,7 +343,7 @@ class BulkImporter:
 
 
 class BulkImportView(APIView):
-    permission_classes = [CanEditReferenceData]
+    permission_classes = [MasterDataPermission]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):

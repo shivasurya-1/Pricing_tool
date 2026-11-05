@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 
@@ -34,9 +35,10 @@ class DeliveryActivity(models.Model):
     # False for the workbook's own rows (fixed — only their input cells are editable);
     # True for a row added on the page, which can be renamed, re-grouped and deleted.
     is_custom = models.BooleanField(default=False)
-    # Critical-path inputs. `code` is the row's ID in other rows' "Depends on" (A1, PU1, ...;
-    # N1, N2... for added rows); `included` is the In tick (counts in the schedule).
-    code = models.CharField(max_length=12, blank=True)
+    # Critical-path inputs. `code` is the row's ID in other rows' "Depends on" (A1, B1, PU1, ...;
+    # N1, N2... for added rows); `included` is the In tick (counts in the schedule);
+    # `depends_on` is the codes it waits for.
+    code = models.CharField(max_length=20, blank=True)
     included = models.BooleanField(default=True)
     depends_on = models.JSONField(default=list, blank=True)
 
@@ -57,3 +59,25 @@ class DeliveryScheduleSettings(models.Model):
     def load(cls) -> "DeliveryScheduleSettings":
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
+
+
+class DeliveryScheduleVersion(models.Model):
+    """A saved copy of the whole sheet, made on every save, reset and restore — the
+    History screen lists these and "Restore" loads one back into the live sheet."""
+
+    number = models.PositiveIntegerField(unique=True)
+    version_label = models.CharField(max_length=20)
+    saved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    saved_at = models.DateTimeField(auto_now_add=True)
+    change_summary = models.CharField(max_length=500, blank=True)
+    # {"safety_factor": 1.2, "activities": [{code, phase, label, sourcing, std_days, ...}]}
+    snapshot = models.JSONField()
+    total_days = models.FloatField()
+    delivery_weeks = models.FloatField()
+    critical_codes = models.JSONField(default=list)
+
+    class Meta:
+        ordering = ["-number"]
+
+    def __str__(self) -> str:
+        return self.version_label
