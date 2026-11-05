@@ -24,3 +24,20 @@ def schedule_totals(rows: list[dict], safety_factor: float) -> dict:
         "total_days": total,
         "delivery_weeks": total / 7 * safety_factor,
     }
+
+
+def find_cycle(rows: list[dict]) -> list[str]:
+    """Codes stuck in a loop of "Depends on" links (empty when there is none). Only rows that
+    are switched on (`included`) count, and links to unknown, switched-off or the row's own
+    code are ignored — the same rules the page's critical-path calculation uses."""
+    active = {r["code"]: [d for d in r["depends_on"] if d != r["code"]] for r in rows if r["included"]}
+    preds = {c: [d for d in deps if d in active] for c, deps in active.items()}
+    done: set[str] = set()
+    progressed = True
+    while progressed and len(done) < len(preds):
+        progressed = False
+        for code, deps in preds.items():
+            if code not in done and all(d in done for d in deps):
+                done.add(code)
+                progressed = True
+    return [c for c in preds if c not in done]

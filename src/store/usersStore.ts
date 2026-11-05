@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api } from '@/lib/apiClient'
 import type { Role } from '@/types'
+import { useRolePermissionsStore } from '@/store/rolePermissionsStore'
 
 /** Real user administration for the Users & Roles page (Admin-only backend
  * endpoint — see accounts/views.py::UserViewSet). Same loaded/loading/silent-catch
@@ -34,7 +35,9 @@ interface UsersState {
   users: UserAdminDto[]
 
   loadAll: () => Promise<void>
-  createUser: (input: NewUserInput) => Promise<void>
+  /** Resolves with whether the backend managed to email the new user their login details. */
+  createUser: (input: NewUserInput) => Promise<{ emailSent: boolean }>
+  deleteUser: (id: number) => Promise<void>
   updateUser: (id: number, patch: Partial<Pick<UserAdminDto, 'role' | 'is_active' | 'first_name' | 'last_name' | 'email'>>) => Promise<void>
 }
 
@@ -47,7 +50,8 @@ export const useUsersStore = create<UsersState>((set, get) => ({
     if (get().loading) return
     set({ loading: true })
     try {
-      const users = await api.get<UserAdminDto[]>('/auth/users/')
+      // The role grids load alongside the users; a failure there doesn't block the page.
+      const [users] = await Promise.all([api.get<UserAdminDto[]>('/auth/users/'), useRolePermissionsStore.getState().load()])
       set({ users, loaded: true, loading: false })
     } catch {
       set({ loading: false })
@@ -55,8 +59,17 @@ export const useUsersStore = create<UsersState>((set, get) => ({
   },
 
   createUser: async (input) => {
-    const created = await api.post<UserAdminDto>('/auth/users/', input)
-    set((s) => ({ users: [...s.users, created] }))
+    // POST /auth/users/ returns the user plus email_sent; the flag isn't part of the user record.
+    const { email_sent, ...created } = await api.post<Partial<UserAdminDto> & Pick<UserAdminDto, 'id' | 'username' | 'role'> & { email_sent?: boolean }>('/auth/users/', input)
+    // The create response omits the account-status fields; a new account is active and has never logged in.
+    const user: UserAdminDto = { first_name: '', last_name: '', email: '', is_active: true, last_login: null, date_joined: new Date().toISOString(), ...created }
+    set((s) => ({ users: [...s.users, user] }))
+    return { emailSent: email_sent === true }
+  },
+
+  deleteUser: async (id) => {
+    await api.delete<void>(`/auth/users/${id}/`)
+    set((s) => ({ users: s.users.filter((u) => u.id !== id) }))
   },
 
   updateUser: async (id, patch) => {

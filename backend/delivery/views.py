@@ -1,3 +1,5 @@
+import re
+
 from django.db import transaction
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
@@ -7,7 +9,7 @@ from rest_framework.views import APIView
 from accounts.models import Role
 from accounts.permissions import role_write_permission
 
-from .calc import activity_days, schedule_totals
+from .calc import activity_days, find_cycle, schedule_totals
 from .defaults import DEFAULT_SAFETY_FACTOR, PHASE_TOTAL_GROUP, default_activity_rows
 from .models import DeliveryActivity, DeliveryScheduleSettings, Sourcing
 
@@ -27,6 +29,10 @@ class ActivityInputSerializer(serializers.Serializer):
     phase = serializers.CharField(max_length=120, required=False)
     label = serializers.CharField(max_length=200, required=False, allow_blank=True)
     notes = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+    # Critical-path inputs. Left out, a saved row keeps what it has (an added row starts In, no links).
+    code = serializers.CharField(max_length=12, required=False, allow_blank=True)
+    included = serializers.BooleanField(required=False)
+    depends_on = serializers.ListField(child=serializers.CharField(max_length=12), required=False)
 
 
 class ScheduleInputSerializer(serializers.Serializer):
@@ -40,7 +46,7 @@ def schedule_payload() -> dict:
         {
             "id": a.id, "phase": a.phase, "label": a.label, "sourcing": a.sourcing, "std_days": a.std_days,
             "override_days": a.override_days, "unit": a.unit, "notes": a.notes, "total_group": a.total_group,
-            "is_custom": a.is_custom, "days": activity_days(a.sourcing, a.std_days, a.override_days),
+            "is_custom": a.is_custom, "code": a.code, "included": a.included, "depends_on": a.depends_on, "days": activity_days(a.sourcing, a.std_days, a.override_days),
         }
         for a in DeliveryActivity.objects.all()
     ]
@@ -72,6 +78,8 @@ class DeliveryScheduleView(APIView):
 
         with transaction.atomic():
             kept = set()
+            saved = []
+            used_codes = {a.code for a in existing.values() if not a.is_custom and a.code}
             for order, row in enumerate(data["activities"]):
                 activity = existing.get(row.get("id")) or DeliveryActivity(is_custom=True)
                 activity.sourcing = row["sourcing"]
@@ -88,9 +96,35 @@ class DeliveryScheduleView(APIView):
                     activity.phase = row["phase"]
                     activity.notes = row.get("notes", "")
                     activity.total_group = PHASE_TOTAL_GROUP[row["phase"]]
+                    # An added row's ID: the page's own N<number> if it is free, else the next free one.
+                    wanted = (row.get("code") or activity.code or "").upper()
+                    if not re.fullmatch(r"N\d+", wanted) or wanted in used_codes:
+                        n = 1
+                        while f"N{n}" in used_codes:
+                            n += 1
+                        wanted = f"N{n}"
+                    activity.code = wanted
+                    used_codes.add(wanted)
+                if "included" in row:
+                    activity.included = row["included"]
+                if "depends_on" in row:
+                    activity.depends_on = list(dict.fromkeys(c.strip().upper() for c in row["depends_on"] if c.strip()))
                 activity.order = order
                 activity.save()
                 kept.add(activity.id)
+                saved.append(activity)
+            codes = {a.code for a in saved}
+            for a in saved:
+                if a.code in a.depends_on:
+                    raise ValidationError({"detail": f"{a.code} cannot depend on itself."})
+                # A link to a row that was deleted (or never existed) is dropped, like deleting a row on the page.
+                kept_deps = [c for c in a.depends_on if c in codes]
+                if kept_deps != a.depends_on:
+                    a.depends_on = kept_deps
+                    a.save(update_fields=["depends_on"])
+            loop = find_cycle([{"code": a.code, "included": a.included, "depends_on": a.depends_on} for a in saved])
+            if loop:
+                raise ValidationError({"detail": f"Circular dependency between {', '.join(loop)}. Remove one link."})
             # Any row left out was deleted on the page ("Reset" brings workbook rows back).
             DeliveryActivity.objects.exclude(id__in=kept).delete()
             settings = DeliveryScheduleSettings.load()

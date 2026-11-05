@@ -50,11 +50,37 @@ DEFAULT_ACTIVITIES = [
 PHASE_TOTAL_GROUP = {phase: group for phase, *_, group in DEFAULT_ACTIVITIES}
 
 
+# Stable IDs for the "Depends on" column, in DEFAULT_ACTIVITIES order.
+DEFAULT_CODES = [
+    "A1", "A2",
+    "B1", "B2", "B3", "B4", "B5", "B6", "R1", "R2", "H1", "H2", "H3", "H4", "H5",
+    "C1", "C2", "C3", "C4",
+    "PU1", "PU2", "PU3", "PU4", "PU5",
+    "L1", "L2",
+    "F1", "F2", "F3",
+]
+
+_PURCHASED = ["PU1", "PU2", "PU3", "PU4", "PU5"]
+# The workbook's own logic: post-weld work waits for the longest purchased item, which gives the
+# same 139 days as the formula above. Phase 1 (body manufacturing) is chained too but has float, so it
+# does not move the total.
+DEFAULT_DEPENDS_ON = {
+    "A1": [], "A2": ["A1"],
+    "B1": ["A2"], "B2": ["B1"], "B3": ["B2"], "B4": ["B3"], "B5": ["B4"], "B6": ["B5"], "R1": ["A2"], "R2": ["R1"],
+    "H1": ["A2"], "H2": ["H1"], "H3": ["H2"], "H4": ["B6", "H3"], "H5": ["H4"],
+    "PU1": ["A2"], "PU2": ["A2"], "PU3": ["A2"], "PU4": ["A2"], "PU5": ["A2"],
+    "C1": _PURCHASED, "C2": ["C1"], "C3": ["C2"], "C4": ["C3"],
+    "L1": ["C4"], "L2": ["L1"], "F1": ["L2"], "F2": ["F1"], "F3": ["F2"],
+}
+
+
 def default_activity_rows() -> list[dict]:
     return [
         {
             "phase": phase, "label": label, "sourcing": sourcing, "std_days": std, "override_days": override,
             "unit": unit, "notes": notes, "total_group": group, "order": i,
+            "code": DEFAULT_CODES[i], "included": True,
+            "depends_on": DEFAULT_DEPENDS_ON.get(DEFAULT_CODES[i], []),
         }
         for i, (phase, label, sourcing, std, override, unit, notes, group) in enumerate(DEFAULT_ACTIVITIES)
     ]

@@ -7,7 +7,11 @@ def seed(apps, schema_editor):
     DeliveryActivity = apps.get_model("delivery", "DeliveryActivity")
     DeliveryScheduleSettings = apps.get_model("delivery", "DeliveryScheduleSettings")
     if not DeliveryActivity.objects.exists():
-        DeliveryActivity.objects.bulk_create(DeliveryActivity(**row) for row in default_activity_rows())
+        # The critical-path fields don't exist yet at this point in history; 0004 fills them in.
+        later = {"code", "included", "depends_on"}
+        DeliveryActivity.objects.bulk_create(
+            DeliveryActivity(**{k: v for k, v in row.items() if k not in later}) for row in default_activity_rows()
+        )
     DeliveryScheduleSettings.objects.get_or_create(pk=1, defaults={"safety_factor": DEFAULT_SAFETY_FACTOR})
 
 

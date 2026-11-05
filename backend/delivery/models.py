@@ -34,6 +34,11 @@ class DeliveryActivity(models.Model):
     # False for the workbook's own rows (fixed — only their input cells are editable);
     # True for a row added on the page, which can be renamed, re-grouped and deleted.
     is_custom = models.BooleanField(default=False)
+    # Critical-path inputs. `code` is the row's ID in other rows' "Depends on" (A1, PU1, ...;
+    # N1, N2... for added rows); `included` is the In tick (counts in the schedule).
+    code = models.CharField(max_length=12, blank=True)
+    included = models.BooleanField(default=True)
+    depends_on = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ["order", "id"]

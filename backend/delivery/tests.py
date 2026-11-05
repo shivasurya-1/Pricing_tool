@@ -148,3 +148,74 @@ class DeliveryScheduleApiTests(TestCase):
         rows[1]["std_days"] = -1
         res = self.sourcing.put(URL, {"safety_factor": 1.2, "activities": rows}, format="json")
         self.assertEqual(res.status_code, 400)
+
+
+class CriticalPathFieldsTests(DeliveryScheduleApiTests):
+    """Each row's ID, In tick and "Depends on" are stored with the sheet."""
+
+    def put_rows(self, rows, **extra):
+        return self.sourcing.put(URL, {"safety_factor": 1.2, "activities": rows, **extra}, format="json")
+
+    def full_rows(self):
+        return [
+            {k: r[k] for k in ("id", "sourcing", "std_days", "override_days", "included", "depends_on")}
+            for r in self.sales.get(URL).data["activities"]
+        ]
+
+    def test_seed_has_ids_and_the_workbook_dependencies(self):
+        by_code = {r["code"]: r for r in self.sales.get(URL).data["activities"]}
+        self.assertEqual(len(by_code), 29)
+        self.assertEqual(by_code["C1"]["depends_on"], ["PU1", "PU2", "PU3", "PU4", "PU5"])
+        self.assertTrue(by_code["PU1"]["included"])
+        self.assertEqual(by_code["B2"]["depends_on"], ["B1"])  # body manufacturing is chained but has float
+
+    def test_links_and_in_tick_are_saved(self):
+        rows = self.full_rows()
+        by_id = {r["id"]: r for r in self.sales.get(URL).data["activities"]}
+        c1 = next(r for r in rows if by_id[r["id"]]["code"] == "C1")
+        c1.update(depends_on=["H5"], included=True)
+        res = self.put_rows(rows)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(next(a for a in res.data["activities"] if a["code"] == "C1")["depends_on"], ["H5"])
+
+    def test_added_row_keeps_its_id_and_links(self):
+        rows = self.full_rows()
+        new = {"phase": "PHASE 5: FINAL ASSEMBLY & DISPATCH", "label": "Customer Inspection", "sourcing": "In-house", "std_days": 3,
+               "code": "N7", "included": True, "depends_on": ["F2"]}
+        res = self.put_rows(rows + [new])
+        self.assertEqual(res.status_code, 200, res.data)
+        added = res.data["activities"][-1]
+        self.assertEqual((added["code"], added["depends_on"]), ("N7", ["F2"]))
+        again = self.full_rows()
+        again[-1].update(label="Customer Inspection", phase=new["phase"])  # a saved added row is sent with its name
+        clash = self.put_rows(again + [{**new, "code": "A1", "label": "Another"}])  # not an N-number: gets the next free one
+        self.assertEqual(clash.status_code, 200, clash.data)
+        self.assertEqual(clash.data["activities"][-1]["code"], "N1")
+
+    def test_links_to_deleted_rows_are_dropped(self):
+        rows = self.full_rows()
+        by_id = {r["id"]: r for r in self.sales.get(URL).data["activities"]}
+        l1_id = next(i for i, a in by_id.items() if a["code"] == "L1")
+        res = self.put_rows([r for r in rows if r["id"] != l1_id])
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(next(a for a in res.data["activities"] if a["code"] == "L2")["depends_on"], [])
+
+    def test_self_and_circular_links_are_refused(self):
+        rows = self.full_rows()
+        by_id = {r["id"]: r for r in self.sales.get(URL).data["activities"]}
+        row = lambda code: next(r for r in rows if by_id[r["id"]]["code"] == code)
+        row("F1")["depends_on"] = ["F1"]
+        self.assertEqual(self.put_rows(rows).status_code, 400)
+        row("F1")["depends_on"] = ["L2"]
+        row("A2")["depends_on"] = ["F3"]  # A2 -> ... -> F3 -> A2
+        res = self.put_rows(rows)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("Circular", res.data["detail"])
+
+    def test_reset_restores_workbook_links(self):
+        rows = self.full_rows()
+        for r in rows:
+            r["depends_on"] = []
+        self.put_rows(rows)
+        res = self.sourcing.post(URL + "reset/")
+        self.assertEqual(next(a for a in res.data["activities"] if a["code"] == "F1")["depends_on"], ["L2"])

@@ -56,3 +56,4 @@ class UserViewSet(
         if self.action == "create":
             return UserCreateSerializer
         return UserAdminSerializer
+

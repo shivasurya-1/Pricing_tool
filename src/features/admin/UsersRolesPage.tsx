@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Eye, EyeOff, Pencil, Trash2, Plus, Shield, User, Users } from 'lucide-react'
+import { useAuthStore } from '@/store/authStore'
+import { PERMISSION_ACTIONS, PERMISSION_MODULES, sameGrid, useRolePermissionsStore, type PermissionGrid } from '@/store/rolePermissionsStore'
 import { useUsersStore, type UserAdminDto } from '@/store/usersStore'
 import { useUiStore } from '@/store/uiStore'
 import { ApiError } from '@/lib/apiClient'
@@ -16,19 +18,100 @@ import type { Role } from '@/types'
 
 const inputClass = 'w-full rounded-md border border-[var(--color-border)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-blue)]'
 
-const PERMISSION_MATRIX: { module: string; access: Record<string, string> }[] = [
-  { module: 'Create RFQ', access: { Sales: 'Yes', Operations: 'No', Sourcing: 'No', Controlling: 'No', 'Approval Panel': 'No', Admin: 'Yes' } },
-  { module: 'Operations Review', access: { Sales: 'No', Operations: 'Yes', Sourcing: 'No', Controlling: 'No', 'Approval Panel': 'No', Admin: 'Yes' } },
-  { module: 'Sourcing', access: { Sales: 'No', Operations: 'No', Sourcing: 'Yes', Controlling: 'No', 'Approval Panel': 'No', Admin: 'Yes' } },
-  { module: 'Costing', access: { Sales: 'No', Operations: 'No', Sourcing: 'No', Controlling: 'Yes', 'Approval Panel': 'View', Admin: 'Yes' } },
-  { module: 'Approval', access: { Sales: 'No', Operations: 'No', Sourcing: 'No', Controlling: 'No', 'Approval Panel': 'Yes', Admin: 'Yes' } },
-  { module: 'Masters', access: { Sales: 'View', Operations: 'View', Sourcing: 'View', Controlling: 'View', 'Approval Panel': 'View', Admin: 'Full' } },
+const ACTION_LABELS: Record<string, string> = { view: 'View', create: 'Create', edit: 'Edit', delete: 'Delete' }
+
+/** The matrix cell for a module: every action = Full, none = No, anything else lists the granted actions by name. */
+function AccessCell({ acts = [] }: { acts?: string[] }) {
+  if (acts.length === 0) return <Badge tone="neutral">No</Badge>
+  if (acts.length === PERMISSION_ACTIONS.length) return <Badge tone="green">Full</Badge>
+  return (
+    <span className="flex flex-wrap justify-center gap-1">
+      {PERMISSION_ACTIONS.filter((a) => acts.includes(a)).map((a) => (
+        <Badge key={a} tone="blue">
+          {ACTION_LABELS[a]}
+        </Badge>
+      ))}
+    </span>
+  )
+}
+
+const PRESETS: { label: string; icon: typeof Shield; acts: string[] }[] = [
+  { label: 'Full Access', icon: Shield, acts: [...PERMISSION_ACTIONS] },
+  { label: 'View Only', icon: Eye, acts: ['view'] },
+  { label: 'Editor', icon: Users, acts: ['view', 'create', 'edit'] },
+  { label: 'Clear All', icon: User, acts: [] },
 ]
 
+/** Checkbox editor for one role's permissions: presets, a running count, and a card per module
+ * with a tick-all box and one checkbox per action. Controlled by the parent's grid state. */
+function PermissionEditor({ grid, setGrid, disabled }: { grid: PermissionGrid; setGrid: (g: PermissionGrid) => void; disabled?: boolean }) {
+  const total = PERMISSION_MODULES.length * PERMISSION_ACTIONS.length
+  const selected = PERMISSION_MODULES.reduce((n, m) => n + (grid[m]?.length ?? 0), 0)
+  const toggle = (module: string, action: string) => {
+    const cur = grid[module] ?? []
+    setGrid({ ...grid, [module]: cur.includes(action) ? cur.filter((a) => a !== action) : [...cur, action] })
+  }
+  const toggleModule = (module: string) => setGrid({ ...grid, [module]: (grid[module]?.length ?? 0) === PERMISSION_ACTIONS.length ? [] : [...PERMISSION_ACTIONS] })
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap gap-2">
+        {PRESETS.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            disabled={disabled}
+            onClick={() => setGrid(Object.fromEntries(PERMISSION_MODULES.map((m) => [m, [...p.acts]])))}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--color-surface)] disabled:opacity-50"
+          >
+            <p.icon size={14} /> {p.label}
+          </button>
+        ))}
+      </div>
+      <p className="mb-3 text-xs text-[var(--color-ink-soft)]">
+        {selected} of {total} permissions selected
+      </p>
+      <div className="max-h-[40vh] space-y-3 overflow-y-auto pr-1">
+        {PERMISSION_MODULES.map((module) => {
+          const acts = grid[module] ?? []
+          return (
+            <div key={module} className="overflow-hidden rounded-lg border border-[var(--color-border)]">
+              <div className="flex items-center justify-between bg-[var(--color-surface)] px-3 py-2">
+                <label className="flex items-center gap-2 text-sm font-semibold">
+                  <input type="checkbox" disabled={disabled} checked={acts.length === PERMISSION_ACTIONS.length} onChange={() => toggleModule(module)} className="h-4 w-4 accent-[var(--color-navy)]" />
+                  {module}
+                </label>
+                <span className="text-xs font-bold text-[var(--color-navy)]">
+                  {acts.length}/{PERMISSION_ACTIONS.length}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 px-3 py-2.5 sm:grid-cols-4">
+                {PERMISSION_ACTIONS.map((a) => (
+                  <label key={a} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" disabled={disabled} checked={acts.includes(a)} onChange={() => toggle(module, a)} className="h-4 w-4 accent-[var(--color-navy)]" />
+                    {ACTION_LABELS[a]}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export function UsersRolesPage() {
-  const { loaded, loading, users, loadAll, createUser, updateUser } = useUsersStore()
+  const { loaded, loading, users, loadAll, createUser, updateUser, deleteUser } = useUsersStore()
   const pushToast = useUiStore((s) => s.pushToast)
+  const myEmail = useAuthStore((s) => s.email)
+  const gridFor = useRolePermissionsStore((s) => s.gridFor)
+  const saveRole = useRolePermissionsStore((s) => s.saveRole)
+  const rolesLoaded = useRolePermissionsStore((s) => s.loaded)
+  useRolePermissionsStore((s) => s.grids) // re-render when a role's permissions are saved
   const [addOpen, setAddOpen] = useState(false)
+  const [editing, setEditing] = useState<UserAdminDto | null>(null)
+  const [deleting, setDeleting] = useState<UserAdminDto | null>(null)
 
   useEffect(() => {
     loadAll()
@@ -60,51 +143,52 @@ export function UsersRolesPage() {
     },
     { key: 'username', header: 'Username', render: (u) => u.username },
     { key: 'email', header: 'Email', render: (u) => u.email },
-    {
-      key: 'role',
-      header: 'Role',
-      render: (u) => (
-        <select
-          value={u.role}
-          onChange={async (e) => {
-            try {
-              await updateUser(u.id, { role: e.target.value as UserAdminDto['role'] })
-              pushToast(`${u.username}'s role updated.`, 'success')
-            } catch (err) {
-              pushToast(err instanceof ApiError ? err.message : 'Failed to update role.', 'error')
-            }
-          }}
-          className="rounded-md border border-[var(--color-border)] px-2 py-1 text-xs"
-        >
-          {ROLES.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-      ),
-    },
+    { key: 'role', header: 'Role', render: (u) => <Badge tone="blue">{u.role}</Badge> },
     { key: 'status', header: 'Status', render: (u) => <Badge tone={u.is_active ? 'green' : 'neutral'}>{u.is_active ? 'Active' : 'Inactive'}</Badge> },
     { key: 'lastLogin', header: 'Last Login', render: (u) => (u.last_login ? formatDate(u.last_login) : '—') },
     {
-      key: 'action',
-      header: 'Action',
-      render: (u) => (
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={async () => {
-            try {
-              await updateUser(u.id, { is_active: !u.is_active })
-              pushToast(`${u.username} ${u.is_active ? 'deactivated' : 'activated'}.`, 'success')
-            } catch (err) {
-              pushToast(err instanceof ApiError ? err.message : 'Failed to update user.', 'error')
-            }
-          }}
-        >
-          {u.is_active ? 'Deactivate' : 'Activate'}
-        </Button>
-      ),
+      key: 'actions',
+      header: 'Actions',
+      render: (u) => {
+        const isSelf = !!myEmail && u.email.toLowerCase() === myEmail.toLowerCase()
+        return (
+          <span className="flex items-center gap-3">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={u.is_active}
+              aria-label={`${u.is_active ? 'Deactivate' : 'Activate'} ${u.username}`}
+              title={isSelf ? "You can't deactivate your own account" : u.is_active ? 'Active — click to deactivate (blocks sign-in)' : 'Inactive — click to activate'}
+              disabled={isSelf}
+              onClick={async () => {
+                try {
+                  await updateUser(u.id, { is_active: !u.is_active })
+                  pushToast(`${u.username} ${u.is_active ? 'deactivated' : 'activated'}.`, 'success')
+                } catch (err) {
+                  pushToast(err instanceof ApiError ? err.message : 'Failed to update user.', 'error')
+                }
+              }}
+              className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${u.is_active ? 'bg-[var(--color-green)]' : 'bg-[var(--color-border)]'}`}
+            >
+              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-all ${u.is_active ? 'left-[18px]' : 'left-0.5'}`} />
+            </button>
+            <Button size="sm" variant="secondary" icon={<Pencil size={12} />} onClick={() => setEditing(u)}>
+              Edit
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Trash2 size={12} />}
+              disabled={isSelf}
+              title={isSelf ? "You can't delete your own account" : `Delete ${u.username}`}
+              onClick={() => setDeleting(u)}
+              className="text-[var(--color-red)]"
+            >
+              Delete
+            </Button>
+          </span>
+        )
+      },
     },
   ]
 
@@ -126,28 +210,35 @@ export function UsersRolesPage() {
       </Card>
 
       <Card>
-        <CardHeader title="Permission Matrix" description="Visual reference — enforced server-side on every request, not just here" />
+        <CardHeader title="Permission Matrix" description="Edit a user in the Users card to change their role's permissions. Changes apply to every user in that role." />
+        {!rolesLoaded && (
+          <div className="mx-4 mt-4 rounded-md border border-[var(--color-amber-100)] bg-[var(--color-amber-50)] px-4 py-2.5 text-sm text-[var(--color-amber)]">
+            Couldn't load the role permissions from the server, so the matrix below isn't accurate. Reload the page to try again.
+          </div>
+        )}
         <div className="overflow-x-auto p-4">
           <table className="w-full min-w-[700px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-[var(--color-border)] text-left text-xs uppercase text-[var(--color-ink-faint)]">
                 <th className="px-3 py-2">Module</th>
                 {ROLES.map((r) => (
-                  <th key={r} className="px-3 py-2 text-center">
+                  <th key={r} className={`px-3 py-2 text-center ${r === editing?.role ? 'bg-[var(--color-blue-50)] text-[var(--color-blue)]' : ''}`}>
                     {r}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {PERMISSION_MATRIX.map((row) => (
-                <tr key={row.module} className="border-b border-[var(--color-border)]">
-                  <td className="px-3 py-2.5 font-medium">{row.module}</td>
-                  {ROLES.map((r) => (
-                    <td key={r} className="px-3 py-2.5 text-center">
-                      <Badge tone={row.access[r] === 'Yes' || row.access[r] === 'Full' ? 'green' : row.access[r] === 'View' ? 'blue' : 'neutral'}>{row.access[r]}</Badge>
-                    </td>
-                  ))}
+              {PERMISSION_MODULES.map((module) => (
+                <tr key={module} className="border-b border-[var(--color-border)]">
+                  <td className="px-3 py-2.5 font-medium">{module}</td>
+                  {ROLES.map((r) => {
+                    return (
+                      <td key={r} className={`px-3 py-2.5 text-center ${r === editing?.role ? 'bg-[var(--color-blue-50)]' : ''}`}>
+                        <AccessCell acts={gridFor(r)[module]} />
+                      </td>
+                    )
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -155,20 +246,221 @@ export function UsersRolesPage() {
         </div>
       </Card>
 
+      <EditUserModal
+        user={editing}
+        onClose={() => setEditing(null)}
+        onSave={async (id, patch, grid) => {
+          let step = 'update user'
+          try {
+            await updateUser(id, patch)
+            // Permissions belong to the role: only send them when they differ from what the server has.
+            if (patch.role !== 'Admin' && !sameGrid(grid, gridFor(patch.role))) {
+              step = 'save permissions'
+              await saveRole(patch.role, grid)
+            }
+            pushToast('User updated.', 'success')
+            setEditing(null)
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : `Failed to ${step}.`, 'error')
+          }
+        }}
+      />
+
+      <DeleteUserModal
+        user={deleting}
+        onClose={() => setDeleting(null)}
+        onDelete={async (u) => {
+          try {
+            await deleteUser(u.id)
+            pushToast('User deleted.', 'success')
+            setDeleting(null)
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to delete user.', 'error')
+          }
+        }}
+        onDeactivate={async (u) => {
+          try {
+            await updateUser(u.id, { is_active: false })
+            pushToast(`${u.username} deactivated.`, 'success')
+            setDeleting(null)
+          } catch (err) {
+            pushToast(err instanceof ApiError ? err.message : 'Failed to deactivate user.', 'error')
+          }
+        }}
+      />
+
       <AddUserModal
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onCreate={async (input) => {
           try {
-            await createUser(input)
-            pushToast(`${input.username} added.`, 'success')
+            const { emailSent } = await createUser(input)
+            if (emailSent) pushToast(`User created. Login details were emailed to ${input.email}.`, 'success')
+            else pushToast("User created, but the email couldn't be sent. Share the username and password with them directly.", 'warning')
             setAddOpen(false)
+            return { ok: true }
           } catch (err) {
+            // A 400 puts the email problem in {"email": [...]} - show it under the field.
+            if (err instanceof ApiError) {
+              try {
+                const body = JSON.parse(err.message)
+                const emailError = Array.isArray(body.email) ? body.email.join(' ') : body.email
+                if (emailError) return { ok: false, emailError: String(emailError) }
+              } catch {
+                /* not JSON - fall through to the toast */
+              }
+            }
             pushToast(err instanceof ApiError ? err.message : 'Failed to create user.', 'error')
+            return { ok: false }
           }
         }}
       />
     </div>
+  )
+}
+
+/** Confirm a permanent delete; offers deactivating (reversible) instead. */
+function DeleteUserModal({
+  user,
+  onClose,
+  onDelete,
+  onDeactivate,
+}: {
+  user: UserAdminDto | null
+  onClose: () => void
+  onDelete: (u: UserAdminDto) => Promise<void>
+  onDeactivate: (u: UserAdminDto) => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  if (!user) return null
+  const name = `${user.first_name} ${user.last_name}`.trim() || user.username
+  const run = async (fn: (u: UserAdminDto) => Promise<void>) => {
+    setBusy(true)
+    await fn(user)
+    setBusy(false)
+  }
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Delete user"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          {user.is_active && (
+            <Button variant="secondary" onClick={() => run(onDeactivate)} disabled={busy}>
+              Deactivate instead
+            </Button>
+          )}
+          <Button variant="danger" onClick={() => run(onDelete)} disabled={busy}>
+            {busy ? 'Working...' : 'Delete'}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-sm">
+        Delete <b>{name}</b>? This can't be undone. Their account is removed; records they changed are kept. To keep the account, deactivate it instead.
+      </p>
+    </Modal>
+  )
+}
+
+/** Edit name, email, role and the role's permissions (checkboxes). Permissions belong to the role, so saving applies them to every user in it. */
+function EditUserModal({
+  user,
+  onClose,
+  onSave,
+}: {
+  user: UserAdminDto | null
+  onClose: () => void
+  onSave: (id: number, patch: { first_name: string; last_name: string; email: string; role: Role }, grid: PermissionGrid) => Promise<void>
+}) {
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [email, setEmail] = useState('')
+  const [role, setRole] = useState<Role>('Sales')
+  const [saving, setSaving] = useState(false)
+  const gridFor = useRolePermissionsStore((s) => s.gridFor)
+  const [grid, setGrid] = useState<PermissionGrid>({})
+
+  useEffect(() => {
+    if (user) {
+      setFirstName(user.first_name)
+      setLastName(user.last_name)
+      setEmail(user.email)
+      setRole(user.role)
+      setGrid(gridFor(user.role))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user])
+
+  if (!user) return null
+
+  const handleSave = async () => {
+    setSaving(true)
+    await onSave(user.id, { first_name: firstName, last_name: lastName, email, role }, grid)
+    setSaving(false)
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Edit ${user.username}`}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSave} disabled={saving}>
+            {saving ? 'Saving...' : 'Save'}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">First Name</label>
+            <input value={firstName} onChange={(e) => setFirstName(e.target.value)} className={inputClass} />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Last Name</label>
+            <input value={lastName} onChange={(e) => setLastName(e.target.value)} className={inputClass} />
+          </div>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Email</label>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Role</label>
+          <select
+            value={role}
+            onChange={(e) => {
+              setRole(e.target.value as Role)
+              setGrid(gridFor(e.target.value as Role))
+            }}
+            className={inputClass}
+          >
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="rounded-md border border-[var(--color-border)] p-3">
+          <p className="mb-1 text-sm font-semibold">Permissions - {role}</p>
+          <p className="mb-3 text-xs text-[var(--color-ink-soft)]">
+            {role === 'Admin' ? 'Admin always has full access.' : `Saved permissions apply to every user in the ${role} role.`}
+          </p>
+          <PermissionEditor grid={grid} setGrid={setGrid} disabled={role === 'Admin'} />
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -179,7 +471,7 @@ function AddUserModal({
 }: {
   open: boolean
   onClose: () => void
-  onCreate: (input: { username: string; first_name: string; last_name: string; email: string; role: Role; password: string }) => Promise<void>
+  onCreate: (input: { username: string; first_name: string; last_name: string; email: string; role: Role; password: string }) => Promise<{ ok: boolean; emailError?: string }>
 }) {
   const [username, setUsername] = useState('')
   const [firstName, setFirstName] = useState('')
@@ -187,6 +479,8 @@ function AddUserModal({
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('Sales')
   const [password, setPassword] = useState('')
+  const [emailError, setEmailError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const reset = () => {
@@ -196,15 +490,19 @@ function AddUserModal({
     setEmail('')
     setRole('Sales')
     setPassword('')
+    setShowPassword(false)
+    setEmailError('')
   }
 
-  const canSave = username.trim().length > 0 && password.trim().length >= 8
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+  const canSave = username.trim().length > 0 && emailValid && password.trim().length >= 8
 
   const handleSave = async () => {
     setSaving(true)
-    await onCreate({ username: username.trim(), first_name: firstName, last_name: lastName, email, role, password })
+    const res = await onCreate({ username: username.trim(), first_name: firstName, last_name: lastName, email: email.trim(), role, password })
     setSaving(false)
-    reset()
+    if (res.ok) reset()
+    else if (res.emailError) setEmailError(res.emailError)
   }
 
   return (
@@ -244,8 +542,24 @@ function AddUserModal({
           </div>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Email</label>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} className={inputClass} />
+          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">
+            Email <span className="text-[var(--color-red)]">*</span>
+          </label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              setEmailError('')
+            }}
+            className={`${inputClass} ${(email.trim() && !emailValid) || emailError ? 'border-[var(--color-red)]' : ''}`}
+            placeholder="name@company.com"
+          />
+          {emailError ? (
+            <p className="mt-1 text-xs text-[var(--color-red)]">{emailError}</p>
+          ) : (
+            email.trim() && !emailValid && <p className="mt-1 text-xs text-[var(--color-red)]">Enter a valid email address.</p>
+          )}
         </div>
         <div>
           <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Role</label>
@@ -261,7 +575,25 @@ function AddUserModal({
           <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">
             Password <span className="text-[var(--color-red)]">*</span>
           </label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder="At least 8 characters" />
+          <div className="relative">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={`${inputClass} pr-9`}
+              placeholder="At least 8 characters"
+              autoComplete="new-password"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              title={showPassword ? 'Hide password' : 'Show password'}
+              className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
         </div>
       </div>
     </Modal>

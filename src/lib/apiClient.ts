@@ -18,9 +18,12 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** Every message of a save error ({ detail, errors: [...] }), when the backend sends them. */
+  errors: string[]
+  constructor(status: number, message: string, errors: string[] = []) {
     super(message)
     this.status = status
+    this.errors = errors
   }
 }
 
@@ -45,13 +48,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   })
   if (!res.ok) {
     let detail = res.statusText
+    let errors: string[] = []
     try {
       const body = await res.json()
       detail = body.detail || JSON.stringify(body)
+      if (Array.isArray(body.errors)) errors = body.errors.map(String)
     } catch {
       /* response wasn't JSON */
     }
-    throw new ApiError(res.status, detail)
+    throw new ApiError(res.status, detail, errors)
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
