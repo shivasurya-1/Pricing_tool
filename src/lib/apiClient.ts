@@ -1,12 +1,13 @@
 import { useAuthStore } from '@/store/authStore'
+import { navigateTo } from '@/lib/navigation'
 
 /**
- * Talks to the Django backend (see /backend). A real per-person session (token,
- * obtained via a real username/password login) sends `Authorization: Token <token>`.
- * The old instant demo-role bridge (`X-Demo-Role` header, see
- * backend/accounts/authentication.py) only exists as a fallback when running in dev
- * (`import.meta.env.DEV`) without a real token — the production build never sends it,
- * and the backend only accepts it when DEBUG=True either way (belt and suspenders).
+ * Talks to the Django backend (see /backend). Every call sends `Authorization: Token <token>`
+ * from a real username/password login, or no auth header when signed out. The backend no
+ * longer accepts the old X-Demo-Role header, so there is no password-free path.
+ *
+ * A 401 from any call (other than the login/logout calls themselves) means the session is
+ * gone: the store is cleared and the user is sent to /login.
  *
  * If the backend isn't reachable (not running locally, or not deployed yet), every
  * call here rejects and callers fall back to the existing static frontend data —
@@ -28,10 +29,17 @@ export class ApiError extends Error {
 }
 
 function authHeaders(): Record<string, string> {
-  const { token, role } = useAuthStore.getState()
-  if (token) return { Authorization: `Token ${token}` }
-  if (import.meta.env.DEV && role) return { 'X-Demo-Role': role }
-  return {}
+  const { token } = useAuthStore.getState()
+  return token ? { Authorization: `Token ${token}` } : {}
+}
+
+/** A 401 on a call that needed a session: sign out locally and go to the login page. */
+function handleUnauthorized(status: number, path: string) {
+  if (status !== 401 || path.startsWith('/auth/login') || path.startsWith('/auth/logout')) return
+  const { isAuthenticated, logout } = useAuthStore.getState()
+  if (!isAuthenticated) return
+  logout()
+  navigateTo('/login')
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -47,6 +55,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     },
   })
   if (!res.ok) {
+    handleUnauthorized(res.status, path)
     let detail = res.statusText
     let errors: string[] = []
     try {
@@ -77,7 +86,10 @@ export const api = {
  */
 export async function downloadFile(path: string, filename: string): Promise<void> {
   const res = await fetch(`${API_BASE}${path}`, { headers: { ...authHeaders() } })
-  if (!res.ok) throw new ApiError(res.status, res.statusText)
+  if (!res.ok) {
+    handleUnauthorized(res.status, path)
+    throw new ApiError(res.status, res.statusText)
+  }
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { DataTable, type Column } from '@/components/ui/DataTable'
 import { EmptyState } from '@/components/EmptyState'
-import { formatDate, initials } from '@/lib/format'
+import { formatDateTime, initials } from '@/lib/format'
 import { ROLES } from '@/types'
 import type { Role } from '@/types'
 
@@ -145,7 +145,7 @@ export function UsersRolesPage() {
     { key: 'email', header: 'Email', render: (u) => u.email },
     { key: 'role', header: 'Role', render: (u) => <Badge tone="blue">{u.role}</Badge> },
     { key: 'status', header: 'Status', render: (u) => <Badge tone={u.is_active ? 'green' : 'neutral'}>{u.is_active ? 'Active' : 'Inactive'}</Badge> },
-    { key: 'lastLogin', header: 'Last Login', render: (u) => (u.last_login ? formatDate(u.last_login) : '—') },
+    { key: 'lastLogin', header: 'Last Login', render: (u) => (u.last_login ? formatDateTime(u.last_login) : '—') },
     {
       key: 'actions',
       header: 'Actions',

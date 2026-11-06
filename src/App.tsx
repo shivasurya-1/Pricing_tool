@@ -38,7 +38,8 @@ import { SettingsPage } from '@/features/admin/SettingsPage'
 
 function RequireAuth({ children }: { children: ReactElement }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
-  if (!isAuthenticated) return <Navigate to="/login" replace />
+  const token = useAuthStore((s) => s.token)
+  if (!isAuthenticated || !token) return <Navigate to="/login" replace />
   return children
 }
 
@@ -49,6 +50,12 @@ export default function App() {
   useEffect(() => {
     setNavigateRef(navigate)
   }, [navigate])
+
+  useEffect(() => {
+    // Once on start: confirm the stored token with the server and re-apply the account's real
+    // role, so an edited localStorage value can't unlock another role's pages.
+    useAuthStore.getState().restoreSession()
+  }, [])
 
   useEffect(() => {
     // Gated on auth: these calls send a real Authorization header now (see

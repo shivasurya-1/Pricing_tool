@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Boxes, ArrowRight, FileText, Wrench, Truck, Calculator, ShieldCheck, Settings2, Eye, EyeOff } from 'lucide-react'
+import { Boxes, ArrowRight, FileText, Wrench, Truck, Calculator, ShieldCheck, Settings2, Eye, EyeOff, X } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { Button } from '@/components/ui/Button'
 import type { Role } from '@/types'
@@ -17,7 +17,9 @@ const ROLE_CARDS: { role: Role; icon: typeof FileText; blurb: string }[] = [
 export function LoginPage() {
   const navigate = useNavigate()
   const login = useAuthStore((s) => s.login)
-  const loginAs = useAuthStore((s) => s.loginAs)
+  const usernameInput = useRef<HTMLInputElement>(null)
+  // The role card picked: sign-in is then checked against this role on the server.
+  const [pickedRole, setPickedRole] = useState<Role | null>(null)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -28,7 +30,7 @@ export function LoginPage() {
     e.preventDefault()
     setError('')
     setSubmitting(true)
-    const result = await login(username, password)
+    const result = await login(username, password, pickedRole ?? undefined)
     setSubmitting(false)
     if (result.ok) {
       navigate('/dashboard')
@@ -37,9 +39,11 @@ export function LoginPage() {
     }
   }
 
-  const enterAsDemo = (role: Role) => {
-    loginAs(role)
-    navigate('/dashboard')
+  // A card only picks the role; nothing is signed in until a username and password are sent.
+  const pickRole = (role: Role) => {
+    setPickedRole(role)
+    setError('')
+    usernameInput.current?.focus()
   }
 
   return (
@@ -73,12 +77,25 @@ export function LoginPage() {
       <div className="flex w-full flex-col justify-center px-6 py-10 sm:px-12 lg:w-1/2 lg:px-16">
         <div className="mx-auto w-full max-w-sm">
           <h2 className="text-xl font-semibold text-[var(--color-ink)]">Sign in</h2>
-          <p className="mt-1 text-sm text-[var(--color-ink-faint)]">Enter your username and password.</p>
+          <p className="mt-1 text-sm text-[var(--color-ink-faint)]">
+            {pickedRole ? `Enter the username and password of your ${pickedRole} account.` : 'Enter your username and password, or pick a role below.'}
+          </p>
+          {pickedRole && (
+            <div className="mt-3 flex items-center justify-between rounded-md border border-[var(--color-blue-100)] bg-[var(--color-blue-50)] px-3 py-2 text-sm text-[var(--color-blue)]">
+              <span>
+                Signing in as <b>{pickedRole}</b>
+              </span>
+              <button type="button" onClick={() => setPickedRole(null)} aria-label="Clear the picked role" className="rounded p-0.5 hover:bg-white/70">
+                <X size={14} />
+              </button>
+            </div>
+          )}
 
           <form className="mt-6 space-y-3" onSubmit={handleSubmit}>
             <div>
               <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Username</label>
               <input
+                ref={usernameInput}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="your.username"
@@ -113,29 +130,29 @@ export function LoginPage() {
             </Button>
           </form>
 
-          {import.meta.env.DEV && (
-            <>
-              <div className="my-6 flex items-center gap-3">
-                <div className="h-px flex-1 bg-[var(--color-border)]" />
-                <span className="text-xs font-medium text-[var(--color-ink-faint)]">Demo Role Login (dev only)</span>
-                <div className="h-px flex-1 bg-[var(--color-border)]" />
-              </div>
+          <div className="my-6 flex items-center gap-3">
+            <div className="h-px flex-1 bg-[var(--color-border)]" />
+            <span className="text-xs font-medium text-[var(--color-ink-faint)]">Or pick your role</span>
+            <div className="h-px flex-1 bg-[var(--color-border)]" />
+          </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
-                {ROLE_CARDS.map(({ role, icon: Icon, blurb }) => (
-                  <button
-                    key={role}
-                    onClick={() => enterAsDemo(role)}
-                    className="flex flex-col items-start gap-1.5 rounded-lg border border-[var(--color-border)] bg-white p-3 text-left transition-colors hover:border-[var(--color-blue)] hover:bg-[var(--color-blue-50)]"
-                  >
-                    <Icon size={16} className="text-[var(--color-blue)]" />
-                    <span className="text-sm font-medium text-[var(--color-ink)]">{role}</span>
-                    <span className="text-[11px] leading-snug text-[var(--color-ink-faint)]">{blurb}</span>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+          <div className="grid grid-cols-2 gap-2.5">
+            {ROLE_CARDS.map(({ role, icon: Icon, blurb }) => (
+              <button
+                key={role}
+                type="button"
+                aria-pressed={pickedRole === role}
+                onClick={() => pickRole(role)}
+                className={`flex flex-col items-start gap-1.5 rounded-lg border p-3 text-left transition-colors hover:border-[var(--color-blue)] hover:bg-[var(--color-blue-50)] ${
+                  pickedRole === role ? 'border-[var(--color-blue)] bg-[var(--color-blue-50)]' : 'border-[var(--color-border)] bg-white'
+                }`}
+              >
+                <Icon size={16} className="text-[var(--color-blue)]" />
+                <span className="text-sm font-medium text-[var(--color-ink)]">{role}</span>
+                <span className="text-[11px] leading-snug text-[var(--color-ink-faint)]">{blurb}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>

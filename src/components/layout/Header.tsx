@@ -12,7 +12,7 @@ import { startTour } from '@/lib/tour'
 
 export function Header() {
   const navigate = useNavigate()
-  const { role, name, color, switchRole, logout } = useAuthStore()
+  const { role, accountRole, name, color, switchRole, logout } = useAuthStore()
   const notifications = useDataStore((s) => s.notifications)
   const [notifOpen, setNotifOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
@@ -79,16 +79,19 @@ export function Header() {
             <div className="absolute right-0 top-[calc(100%+6px)] z-40 w-56 rounded-md border border-[var(--color-border)] bg-white py-1.5 shadow-lg">
               <div className="border-b border-[var(--color-border)] px-3 pb-2">
                 <p className="text-sm font-medium text-[var(--color-ink)]">{name}</p>
-                <p className="text-xs text-[var(--color-ink-faint)]">{role}</p>
+                <p className="text-xs text-[var(--color-ink-faint)]">
+                  {role}
+                  {accountRole && accountRole !== role && <> · viewing as (account: {accountRole})</>}
+                </p>
               </div>
-              {import.meta.env.DEV && (
+              {accountRole === 'Admin' && (
                 <>
                   <button
                     onClick={() => setRoleMenuOpen((v) => !v)}
                     className="flex w-full items-center justify-between px-3 py-2 text-sm text-[var(--color-ink-soft)] hover:bg-[var(--color-surface)]"
                   >
                     <span className="flex items-center gap-2">
-                      <Repeat size={14} /> Switch role (dev only)
+                      <Repeat size={14} /> View as another role
                     </span>
                     <ChevronDown size={13} className={roleMenuOpen ? 'rotate-180' : ''} />
                   </button>
