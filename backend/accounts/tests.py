@@ -8,53 +8,29 @@ from .models import Role
 User = get_user_model()
 
 
-class DemoRoleAuthenticationTests(TestCase):
-    """This was the one piece of the system with zero test coverage, despite being
-    the riskiest — see the security audit that flagged X-Demo-Role as a real
-    unauthenticated backdoor (any direct API caller, not just the browser app, can
-    claim any role including Admin with no credentials). Closing that gap requires
-    replacing the demo-login model with real per-person auth — tracked separately,
-    not fixed here. These tests instead lock in exactly what today's behavior is, so
-    a future change to it is a deliberate decision, not an accident."""
+class NoPasswordFreeLoginTests(TestCase):
+    """The old X-Demo-Role header let any caller act as any role (Admin included) with no
+    password. It's gone: only a real username/password login (a token) gets in."""
 
-    def test_unknown_role_header_is_rejected(self):
-        # 403, not 401: DRF downgrades AuthenticationFailed to 403 when no configured
-        # authenticator provides a WWW-Authenticate header (none of ours do) — the
-        # same quirk already observed live in production for the no-header case.
-        client = APIClient()
-        client.credentials(HTTP_X_DEMO_ROLE="Superuser")
-        response = client.get("/api/rfq/rfqs/")
-        self.assertEqual(response.status_code, 403)
+    def test_demo_role_header_does_not_authenticate(self):
+        for role in ("Admin", "Sales", "Approval Panel", "Superuser"):
+            client = APIClient()
+            client.credentials(HTTP_X_DEMO_ROLE=role)
+            self.assertIn(client.get("/api/rfq/rfqs/").status_code, (401, 403))
+            self.assertIn(client.get("/api/auth/me/").status_code, (401, 403))
+        self.assertFalse(User.objects.filter(username__startswith="demo-").exists())
 
-    def test_no_role_header_is_unauthenticated(self):
-        client = APIClient()
-        response = client.get("/api/rfq/rfqs/")
-        self.assertIn(response.status_code, (401, 403))
+    def test_no_credentials_is_unauthenticated(self):
+        self.assertIn(APIClient().get("/api/rfq/rfqs/").status_code, (401, 403))
 
-    def test_known_role_header_authenticates_with_zero_credentials(self):
-        """Documents the actual gap: no password, no token, nothing but the header
-        value itself. This is the exact behavior the audit flagged — a passing test
-        here is not an endorsement, it's a tripwire for when auth is redone."""
-        client = APIClient()
-        client.credentials(HTTP_X_DEMO_ROLE="Admin")
-        response = client.get("/api/rfq/rfqs/")
-        self.assertEqual(response.status_code, 200)
-        user = User.objects.get(username="demo-admin")
-        self.assertEqual(user.role, Role.ADMIN)
+    def test_only_token_and_session_authentication_are_configured(self):
+        from django.conf import settings
 
-    def test_same_demo_user_is_reused_across_requests(self):
-        client = APIClient()
-        client.credentials(HTTP_X_DEMO_ROLE="Sales")
-        client.get("/api/rfq/rfqs/")
-        client.get("/api/rfq/rfqs/")
-        self.assertEqual(User.objects.filter(username="demo-sales").count(), 1)
-
-    def test_role_with_space_in_name_produces_a_valid_username(self):
-        client = APIClient()
-        client.credentials(HTTP_X_DEMO_ROLE="Approval Panel")
-        response = client.get("/api/rfq/rfqs/")
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(User.objects.filter(username="demo-approval-panel").exists())
+        self.assertEqual(
+            settings.REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"],
+            ["rest_framework.authentication.TokenAuthentication", "rest_framework.authentication.SessionAuthentication"],
+        )
+        self.assertNotIn("x-demo-role", settings.CORS_ALLOW_HEADERS)
 
 
 class LoginAndMeViewTests(TestCase):
@@ -72,6 +48,49 @@ class LoginAndMeViewTests(TestCase):
         client = APIClient()
         response = client.post("/api/auth/login/", {"username": "realuser", "password": "wrong"}, format="json")
         self.assertEqual(response.status_code, 401)
+
+    def login(self, **body):
+        return APIClient().post("/api/auth/login/", {"username": "realuser", "password": "correct-password-123", **body}, format="json")
+
+    def test_login_through_the_matching_role_card(self):
+        response = self.login(role="Sales")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["user"]["role"], "Sales")
+
+    def test_login_through_another_role_card_is_refused(self):
+        response = self.login(role="Controlling")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["detail"], "This account is not a Controlling account.")
+        self.assertFalse(Token.objects.filter(user=self.user).exists())
+
+    def test_admin_must_use_the_admin_card_too(self):
+        User.objects.create_user("realadmin", password="admin-password-123", role=Role.ADMIN)
+        body = {"username": "realadmin", "password": "admin-password-123"}
+        self.assertEqual(APIClient().post("/api/auth/login/", {**body, "role": "Sales"}, format="json").status_code, 403)
+        self.assertEqual(APIClient().post("/api/auth/login/", {**body, "role": "Admin"}, format="json").status_code, 200)
+
+    def test_unknown_role_card_is_rejected(self):
+        self.assertEqual(self.login(role="Superuser").status_code, 400)
+
+    def test_wrong_password_never_reveals_the_role(self):
+        response = self.login(password="wrong", role="Controlling")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["detail"], "Invalid credentials")
+
+    def test_successful_login_records_last_login(self):
+        self.assertIsNone(self.user.last_login)
+        self.assertEqual(self.login(password="wrong").status_code, 401)
+        self.assertEqual(self.login(role="Controlling").status_code, 403)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.last_login)  # failed sign-ins don't count
+        self.assertEqual(self.login(role="Sales").status_code, 200)
+        self.user.refresh_from_db()
+        self.assertIsNotNone(self.user.last_login)
+
+    def test_inactive_account_cannot_log_in(self):
+        self.user.is_active = False
+        self.user.save()
+        self.assertEqual(self.login(role="Sales").status_code, 401)
 
     def test_me_requires_authentication(self):
         client = APIClient()
@@ -96,25 +115,6 @@ class LoginAndMeViewTests(TestCase):
         # The old token no longer works for anything.
         response = client.get("/api/auth/me/")
         self.assertIn(response.status_code, (401, 403))
-
-
-class AuthenticationClassesSettingsTests(TestCase):
-    """This is the actual fix for the X-Demo-Role security gap — production must
-    never include DemoRoleAuthentication. Tests the pure function directly (see its
-    docstring in config/settings.py) rather than the live settings object, since
-    DEBUG is fixed at process start and can't be flipped mid-test-run."""
-
-    def test_demo_role_authentication_present_only_in_debug(self):
-        from config.settings import build_authentication_classes
-
-        self.assertIn("accounts.authentication.DemoRoleAuthentication", build_authentication_classes(debug=True))
-        self.assertNotIn("accounts.authentication.DemoRoleAuthentication", build_authentication_classes(debug=False))
-
-    def test_token_authentication_present_either_way(self):
-        from config.settings import build_authentication_classes
-
-        for debug in (True, False):
-            self.assertIn("rest_framework.authentication.TokenAuthentication", build_authentication_classes(debug=debug))
 
 
 class UserViewSetTests(TestCase):

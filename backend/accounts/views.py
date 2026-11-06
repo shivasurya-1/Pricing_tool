@@ -1,4 +1,5 @@
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import update_last_login
 from django.http import Http404
 from rest_framework import mixins, status, viewsets
 from rest_framework.exceptions import ValidationError
@@ -17,11 +18,20 @@ from .serializers import RolePermissionUpdateSerializer, UserAdminSerializer, Us
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def login_view(request):
+    """POST /api/auth/login/ — {username, password, role?}. `role` is the role card picked on
+    the login page: the account must hold exactly that role (Admin included), checked only
+    after the password, so a wrong guess never reveals anyone's role."""
     username = request.data.get("username", "")
     password = request.data.get("password", "")
+    role = request.data.get("role")
+    if role is not None and role not in Role.values:
+        return Response({"detail": f"Unknown role: {role}"}, status=status.HTTP_400_BAD_REQUEST)
     user = authenticate(request, username=username, password=password)
     if user is None:
         return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+    if role is not None and user.role != role:
+        return Response({"detail": f"This account is not a {role} account."}, status=status.HTTP_403_FORBIDDEN)
+    update_last_login(None, user)
     token, _ = Token.objects.get_or_create(user=user)
     return Response({"token": token.key, "user": UserSerializer(user).data})
 

@@ -108,26 +108,14 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- DRF ---
-def build_authentication_classes(debug: bool) -> list[str]:
-    """DemoRoleAuthentication trusts a plain header with zero credentials behind it —
-    a real security hole if it's reachable in production (confirmed by audit: any
-    direct API caller, not just the browser app, could claim X-Demo-Role: Admin).
-    Real per-person login (TokenAuthentication, already live via accounts.login_view)
-    is always available; the demo bridge is now local-dev-only, so production
-    accepts only a real token. A plain function (not inline module-level logic) so
-    it's directly unit-testable without needing to reload settings mid-test-run.
-    """
-    classes = [
+# Real per-person login only (username + password → token, accounts.login_view), in dev
+# and production alike. The old X-Demo-Role header login, which needed no password at
+# all, has been removed.
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.TokenAuthentication",
         "rest_framework.authentication.SessionAuthentication",
-    ]
-    if debug:
-        classes.insert(0, "accounts.authentication.DemoRoleAuthentication")
-    return classes
-
-
-REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": build_authentication_classes(DEBUG),
+    ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
@@ -162,5 +150,5 @@ EMAIL_BACKEND = (
 # session; locked to explicit origins (the deployed Vercel frontend) in production.
 CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
-CORS_ALLOW_HEADERS = [*default_headers, "x-demo-role"]
+CORS_ALLOW_HEADERS = [*default_headers]
 CORS_ALLOW_CREDENTIALS = True

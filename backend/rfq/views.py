@@ -327,8 +327,8 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
 
     def _actor(self, request) -> tuple[str, str]:
         """(actorName, role) — actorName still comes from the request body (the
-        frontend already knows the logged-in demo persona's display name); role comes
-        from the authenticated demo-role user, so it can't be spoofed independently."""
+        frontend already knows the signed-in user's display name); role comes from the
+        authenticated user, so it can't be spoofed independently."""
         return request.data.get("actorName", ""), request.user.role
 
     def _handle_workflow_error(self, exc: WorkflowError):
