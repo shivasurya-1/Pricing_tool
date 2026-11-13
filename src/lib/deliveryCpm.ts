@@ -102,3 +102,57 @@ export const parseDeps = (text: string): string[] =>
     .split(/[\s,;]+/)
     .map((x) => x.trim().toUpperCase())
     .filter(Boolean)
+
+export interface ChainTimes {
+  es: number
+  ef: number
+  float: number
+}
+
+/**
+ * The critical chains: runs of zero-float activities where each one starts exactly when the
+ * one before it finishes. Several can tie. Zero-day activities are dropped from the output.
+ * `times` can come from the backend or from computeCpm — only included rows have an entry.
+ */
+export function criticalChains(rows: CpmInput[], times: Record<string, ChainTimes>): { chains: string[][]; count: number } {
+  const byCode = new Map(rows.map((r) => [r.code, r]))
+  const crit = (c: string) => !!times[c] && Math.abs(times[c].float) < 1e-6
+  const order = rows.filter((r) => r.included && times[r.code]).sort((a, b) => times[a.code].es - times[b.code].es)
+
+  const next = new Map<string, string[]>()
+  const hasPrev = new Set<string>()
+  for (const r of order) {
+    if (!crit(r.code)) continue
+    for (const p of activeDeps(r, byCode)) {
+      if (crit(p) && Math.abs(times[p].ef - times[r.code].es) < 1e-6) {
+        next.set(p, [...(next.get(p) ?? []), r.code])
+        hasPrev.add(r.code)
+      }
+    }
+  }
+  const starts = order.filter((r) => crit(r.code) && !hasPrev.has(r.code)).map((r) => r.code)
+
+  const memo = new Map<string, number>()
+  const count = (c: string): number => {
+    if (memo.has(c)) return memo.get(c)!
+    const n = next.get(c)
+    const v = n?.length ? n.reduce((m, s) => m + count(s), 0) : 1
+    memo.set(c, v)
+    return v
+  }
+  const chains: string[][] = []
+  const walk = (c: string, trail: string[]) => {
+    trail.push(c)
+    const n = next.get(c)
+    if (!n?.length) {
+      if (chains.length < 12) chains.push([...trail])
+    } else n.forEach((s) => walk(s, trail))
+    trail.pop()
+  }
+  let total = 0
+  for (const s of starts) {
+    total += count(s)
+    if (chains.length < 12) walk(s, [])
+  }
+  return { chains: chains.map((ch) => ch.filter((c) => (byCode.get(c)?.days ?? 0) > 0)), count: total }
+}

@@ -1,13 +1,15 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, History as HistoryIcon, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
+import { ChevronDown, Plus, RotateCcw, Save, Trash2, X } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Modal } from '@/components/ui/Modal'
+import { Tabs } from '@/components/ui/Tabs'
 import { EmptyState } from '@/components/EmptyState'
+import { DeliveryCriticalPath, type CpRow, type CpTimes } from '@/features/costrates/DeliveryCriticalPath'
 import { api, ApiError } from '@/lib/apiClient'
 import { computeCpm, hasIgnoredDep, type CpmInput } from '@/lib/deliveryCpm'
 import { useAuthStore } from '@/store/authStore'
@@ -195,7 +197,8 @@ const td = 'border-b border-[var(--color-border)] px-1.5 py-1 align-middle'
 export function DeliverySchedulePage() {
   const role = useAuthStore((s) => s.role)
   const pushToast = useUiStore((s) => s.pushToast)
-  const [view, setView] = useState<'schedule' | 'history'>('schedule')
+  const [view, setView] = useState<'schedule' | 'critical' | 'history'>('schedule')
+  const [flash, setFlash] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [safetyFactor, setSafetyFactor] = useState('1.2')
   const [server, setServer] = useState<ScheduleDto | null>(null)
@@ -254,6 +257,26 @@ export function DeliverySchedulePage() {
     if (!cpm.ok) return []
     return rows.filter((r) => cpm.times[r.code]?.critical).sort((a, b) => cpm.times[a.code].es - cpm.times[b.code].es || cpm.times[a.code].ef - cpm.times[b.code].ef)
   }, [useServer, server, rows, cpm])
+
+  // What the Critical Path tab draws: the server's numbers, or the live preview while edits are unsaved.
+  const cpRows: CpRow[] = useMemo(() => rows.map((r) => ({ code: r.code, label: r.label, phase: r.phase, included: r.included, deps: r.deps, days: rowDays(r) })), [rows])
+  const cpTimes = useMemo(() => {
+    const m: Record<string, CpTimes> = {}
+    for (const r of rows) {
+      if (!r.included) continue
+      const x = useServer ? r.srv : cpm.ok ? cpm.times[r.code] : null
+      if (x) m[r.code] = { es: x.es, ef: x.ef, float: x.float }
+    }
+    return m
+  }, [rows, useServer, cpm])
+
+  /** Clicking a bar on the Critical Path tab opens the Schedule tab at that row. */
+  const jumpTo = (code: string) => {
+    setView('schedule')
+    setFlash(code)
+    setTimeout(() => document.getElementById(`dr-${code}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 60)
+    setTimeout(() => setFlash((f) => (f === code ? null : f)), 2000)
+  }
 
   const invalid =
     !cpm.ok ||
@@ -351,11 +374,6 @@ export function DeliverySchedulePage() {
         description="Days from order to dispatch — the client workbook's Delivery Schedule sheet. Standalone: not linked to any RFQ or other sheet."
         actions={
           <>
-            {status === 'ready' && (
-              <Button variant="secondary" icon={<HistoryIcon size={14} />} onClick={() => setView(view === 'history' ? 'schedule' : 'history')}>
-                {view === 'history' ? 'Back to schedule' : 'History'}
-              </Button>
-            )}
             {canEdit && view === 'schedule' && (
               <>
                 <Button variant="secondary" icon={<RotateCcw size={14} />} onClick={() => setResetOpen(true)} disabled={busy}>
@@ -377,9 +395,17 @@ export function DeliverySchedulePage() {
         </p>
       )}
 
+      <div className="mb-4">
+        <Tabs
+          tabs={status === 'ready' ? ['Schedule', 'Critical Path', 'History'] : ['Schedule', 'Critical Path']}
+          active={view === 'schedule' ? 'Schedule' : view === 'critical' ? 'Critical Path' : 'History'}
+          onChange={(tab) => setView(tab === 'Schedule' ? 'schedule' : tab === 'Critical Path' ? 'critical' : 'history')}
+        />
+      </div>
+
       {view === 'history' && status === 'ready' && <HistoryView canRestore={mayEdit} busy={busy} currentId={cv?.id ?? null} onRestore={handleRestore} />}
 
-      {view === 'schedule' && (
+      {view !== 'history' && (
         <>
           {status === 'offline' && (
             <div className="mb-4 rounded-md border border-[var(--color-amber-100)] bg-[var(--color-amber-50)] px-4 py-2.5 text-sm text-[var(--color-amber)]">
@@ -424,7 +450,9 @@ export function DeliverySchedulePage() {
             </div>
           )}
 
-          <Card className="overflow-hidden">
+          {view === 'critical' && <DeliveryCriticalPath rows={cpRows} times={cpTimes} total={total} weeks={weeks} factor={factor} preview={status === 'ready' && !useServer} loop={loop} onJump={jumpTo} />}
+
+          <Card className={clsx('overflow-hidden', view === 'critical' && 'hidden')}>
             <div className="bg-[var(--color-navy)] px-4 py-3 text-center text-sm font-bold tracking-wide text-white sm:text-base">
               DRIVE PULLEY — INDIA DELIVERY SCHEDULE <span className="mx-2 opacity-60">|</span> Days from order to dispatch
             </div>
@@ -476,7 +504,7 @@ export function DeliverySchedulePage() {
                           const crit = !!t?.critical
                           const badDeps = hasIgnoredDep(toCpmInput(r), byCode)
                           return (
-                            <tr key={r.key} className={clsx(r.included ? 'bg-white' : 'bg-[var(--color-surface)] text-[var(--color-ink-soft)]', crit && 'shadow-[inset_3px_0_0_var(--color-orange)]')}>
+                            <tr key={r.key} id={`dr-${r.code}`} className={clsx(r.included ? 'bg-white' : 'bg-[var(--color-surface)] text-[var(--color-ink-soft)]', crit && 'shadow-[inset_3px_0_0_var(--color-orange)]', flash === r.code && '!bg-[var(--color-orange-100)]')}>
                               <td className={clsx(td, 'text-center')}>
                                 <input
                                   type="checkbox"
