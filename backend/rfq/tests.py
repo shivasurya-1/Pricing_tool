@@ -817,3 +817,77 @@ class RFQRolePermissionGridTests(TestCase):
         self._save_grid("Sales", {"Create RFQ": ["view", "create", "edit", "delete"], "Operations Review": ["edit"]})
         response = self.sales.post(f"/api/rfq/rfqs/{rfq_id}/approve-operations/", {"actorName": "Sales"}, format="json")
         self.assertEqual(response.status_code, 200)
+
+
+class SourcingOutsourcedCostTests(TestCase):
+    """Sourcing-entered outsourced process costs (rfq/sourcing_costs.py)."""
+
+    def setUp(self):
+        self.customer = Customer.objects.create(id="cust-oc", code="CUST-OC", name="Acme Pulleys")
+        self.product = Product.objects.create(id="prod-oc", code="PROD-OC", name="6 inch pulley", unit="Nos")
+        self.sales = client_as("Sales")
+        self.sourcing = client_as("Sourcing")
+        create = self.sales.post(
+            "/api/rfq/rfqs/",
+            {"customerId": self.customer.id, "actorName": "Sales", "items": [{"productId": self.product.id, "quantity": 2, "targetPrice": 100}]},
+            format="json",
+        )
+        self.rfq_id = create.data["id"]
+        self.item_id = create.data["items"][0]["id"]
+        RFQ.objects.filter(pk=self.rfq_id).update(stage="Sourcing")
+        RFQItem.objects.filter(pk=self.item_id).update(technical_data={"srcStressRelief": "Outsource", "srcWelding": "In-house"})
+        self.base = f"/api/rfq/rfqs/{self.rfq_id}"
+
+    def _item(self, data):
+        return next(i for i in data["items"] if i["id"] == self.item_id)
+
+    def test_set_and_clear_cost_for_outsourced_process(self):
+        r = self.sourcing.patch(f"{self.base}/item-process-cost/", {"itemId": self.item_id, "processKey": "srcStressRelief", "cost": 1500}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self._item(r.data)["processCosts"], [{"processKey": "srcStressRelief", "cost": 1500.0}])
+        # Setting again replaces, not duplicates.
+        r = self.sourcing.patch(f"{self.base}/item-process-cost/", {"itemId": self.item_id, "processKey": "srcStressRelief", "cost": "2000.5"}, format="json")
+        self.assertEqual(self._item(r.data)["processCosts"], [{"processKey": "srcStressRelief", "cost": 2000.5}])
+        r = self.sourcing.patch(f"{self.base}/item-process-cost/", {"itemId": self.item_id, "processKey": "srcStressRelief", "cost": None}, format="json")
+        self.assertEqual(self._item(r.data)["processCosts"], [])
+
+    def test_cost_rejected_for_in_house_process_and_bad_values(self):
+        r = self.sourcing.patch(f"{self.base}/item-process-cost/", {"itemId": self.item_id, "processKey": "srcWelding", "cost": 100}, format="json")
+        self.assertEqual(r.status_code, 400)
+        for bad in (-1, "abc", True):
+            r = self.sourcing.patch(f"{self.base}/item-process-cost/", {"itemId": self.item_id, "processKey": "srcStressRelief", "cost": bad}, format="json")
+            self.assertEqual(r.status_code, 400, bad)
+
+    def test_add_update_delete_custom_process(self):
+        r = self.sourcing.post(
+            f"{self.base}/item-custom-process/",
+            {"itemId": self.item_id, "label": "Galvanising", "cost": 800, "vendorId": "v1", "vendorName": "Vendor One"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+        [entry] = self._item(r.data)["customProcesses"]
+        self.assertEqual((entry["label"], entry["mode"], entry["cost"], entry["vendorName"]), ("Galvanising", "Outsource", 800.0, "Vendor One"))
+
+        r = self.sourcing.patch(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "id": entry["id"], "cost": 950}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        [updated] = self._item(r.data)["customProcesses"]
+        self.assertEqual((updated["cost"], updated["label"], updated["vendorId"]), (950.0, "Galvanising", "v1"))
+
+        r = self.sourcing.delete(f"{self.base}/item-custom-process/?itemId={self.item_id}&id={entry['id']}")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self._item(r.data)["customProcesses"], [])
+
+    def test_custom_process_validation(self):
+        r = self.sourcing.post(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "label": "  ", "cost": 10}, format="json")
+        self.assertEqual(r.status_code, 400)
+        r = self.sourcing.post(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "label": "X", "cost": -5}, format="json")
+        self.assertEqual(r.status_code, 400)
+        r = self.sourcing.patch(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "id": "nope", "cost": 1}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_only_sourcing_at_sourcing_stage(self):
+        r = self.sales.patch(f"{self.base}/item-process-cost/", {"itemId": self.item_id, "processKey": "srcStressRelief", "cost": 1}, format="json")
+        self.assertEqual(r.status_code, 400)
+        RFQ.objects.filter(pk=self.rfq_id).update(stage="Controlling")
+        r = self.sourcing.post(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "label": "X", "cost": 1}, format="json")
+        self.assertEqual(r.status_code, 400)

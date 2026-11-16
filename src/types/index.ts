@@ -146,10 +146,28 @@ export interface RFQItem {
   sourcingConfirmed?: boolean
   /** Optional vendor tag Sourcing can attach to an outsourced component or process — cost still comes from computePulleyPricing(), this is informational only. */
   processVendors?: ProcessVendorAssignment[]
+  /** Sourcing's manual per-unit cost for an outsourced process (see lib/outsourcedCosts.ts). */
+  processCosts?: ProcessCostOverride[]
+  /** Extra outsourced processes added on the Sourcing screen — each is an extra Section D line. */
+  customProcesses?: CustomProcess[]
 }
 
 export interface ProcessVendorAssignment {
   processKey: string
+  vendorId: string
+  vendorName: string
+}
+
+export interface ProcessCostOverride {
+  processKey: string
+  cost: number
+}
+
+export interface CustomProcess {
+  id: string
+  label: string
+  mode: 'Outsource'
+  cost: number
   vendorId: string
   vendorName: string
 }

@@ -18,6 +18,7 @@ import { PULLEY_COST_RATES } from '@/data/pulleyCostRates'
 import { useFormulaStore } from '@/store/formulaStore'
 import { computeAutoFields, fieldNumericVars, inHouseHoursVars, inHouseOperationCodes, inHouseOperationLabel } from '@/lib/pulleyTechDataCalc'
 import { evaluateFormula } from '@/lib/formulaEval'
+import { applyOutsourcedCostsToSectionD, type SourcingCosts } from '@/lib/outsourcedCosts'
 
 const num = (v: string | number | undefined): number => (typeof v === 'number' ? v : Number(v) || 0)
 
@@ -171,7 +172,7 @@ const SECTION_D_KEYS = ['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8']
 const SECTION_E_KEYS = ['e1', 'e2', 'e3', 'e4', 'e5', 'e6']
 const SECTION_F_KEYS = ['totalDirectCostPerUnit', 'totalDirectCost', 'listPrice', 'netOemPrice', 'priceInclGst', 'netPriceEur', 'grossMarginPercent', 'itemTotal']
 
-function computePulleyPricingDynamic(values: PulleyTechDataValues): PulleyPricingResult {
+function computePulleyPricingDynamic(values: PulleyTechDataValues, sourcing?: SourcingCosts): PulleyPricingResult {
   const { formulas, costRates } = useFormulaStore.getState()
   const qty = num(values.qty) || 1
   const vars = buildPricingVariables(values, costRates)
@@ -188,7 +189,11 @@ function computePulleyPricingDynamic(values: PulleyTechDataValues): PulleyPricin
   const sectionA = SECTION_A_KEYS.map((k) => evalLine('sectionA', k))
   const sectionB = SECTION_B_KEYS.map((k) => evalLine('sectionB', k))
   const { lines: sectionC, missing: missingInHouseRates } = computeSectionC(values, vars)
-  const sectionD = SECTION_D_KEYS.map((k) => evalLine('sectionD', k))
+  const sectionD = applyOutsourcedCostsToSectionD(
+    SECTION_D_KEYS.map((k) => evalLine('sectionD', k)),
+    values,
+    sourcing,
+  )
   const sectionE = SECTION_E_KEYS.map((k) => evalLine('sectionE', k))
 
   const sum = (lines: CostLine[]) => lines.reduce((s, l) => s + l.value, 0)
@@ -232,7 +237,7 @@ function computePulleyPricingDynamic(values: PulleyTechDataValues): PulleyPricin
   }
 }
 
-function computePulleyPricingStatic(values: PulleyTechDataValues): PulleyPricingResult {
+function computePulleyPricingStatic(values: PulleyTechDataValues, sourcing?: SourcingCosts): PulleyPricingResult {
   const r = PULLEY_COST_RATES
   const qty = num(values.qty) || 1
 
@@ -280,7 +285,7 @@ function computePulleyPricingStatic(values: PulleyTechDataValues): PulleyPricing
   // SECTION D — OUTSOURCED PROCESSING
   const laggingCost = num(values.laggingCost)
   const rollingOutsourced = values.srcRollingBending === 'Outsource'
-  const sectionD: CostLine[] = [
+  const formulaSectionD: CostLine[] = [
     { key: 'd1', label: 'D1. Machining / Turning Body (Outsourced)', value: 0, pending: true },
     { key: 'd2', label: 'D2. Stress Relief Annealing (Outsourced)', value: values.srcStressRelief === 'Outsource' ? r.stressReliefInrPerKg * shellPlateWeight : 0 },
     { key: 'd3', label: 'D3. Heat Treatment – Normalising (Outsourced)', value: 0, pending: true },
@@ -290,6 +295,7 @@ function computePulleyPricingStatic(values: PulleyTechDataValues): PulleyPricing
     { key: 'd7', label: 'D7. Rolling / Bending Shell (Outsourced)', value: rollingOutsourced ? r.machiningOutsourcedInrPerKg * shellPlateWeight * 0.5 : 0 },
     { key: 'd8', label: 'D8. Shaft Machining (always at specialty vendor)', value: 0, pending: true },
   ]
+  const sectionD = applyOutsourcedCostsToSectionD(formulaSectionD, values, sourcing)
 
   // SECTION E — PACKING & SHIPMENT
   const sectionE: CostLine[] = [
@@ -344,13 +350,15 @@ function computePulleyPricingStatic(values: PulleyTechDataValues): PulleyPricing
   }
 }
 
-export function computePulleyPricing(values: PulleyTechDataValues): PulleyPricingResult {
+/** `sourcing` (optional): the item's Sourcing-entered outsourced costs — pass
+ * sourcingCostsOf(item) so Section D uses them (see lib/outsourcedCosts.ts). */
+export function computePulleyPricing(values: PulleyTechDataValues, sourcing?: SourcingCosts): PulleyPricingResult {
   if (useFormulaStore.getState().loaded) {
     try {
-      return computePulleyPricingDynamic(values)
+      return computePulleyPricingDynamic(values, sourcing)
     } catch (err) {
       console.warn('[computePulleyPricing] dynamic formula evaluation failed, using static calculation:', err)
     }
   }
-  return computePulleyPricingStatic(values)
+  return computePulleyPricingStatic(values, sourcing)
 }

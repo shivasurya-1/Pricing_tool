@@ -8,6 +8,7 @@ import { CATEGORICAL } from '@/components/charts/palette'
 import { countStages, isOverdue, sortByAgeDesc, stageAge } from '@/lib/dashboardStats'
 import { STAGE_ORDER } from '@/lib/workflow'
 import { computePulleyPricing } from '@/lib/pulleyPricingCalc'
+import { sourcingCostsOf } from '@/lib/outsourcedCosts'
 import { useFormulaStore } from '@/store/formulaStore'
 import { PROCESS_SOURCING_MAP } from '@/data/pulleyTechDataSchema'
 
@@ -30,7 +31,7 @@ export function SourcingDashboard() {
     const map = new Map<string, number[]>()
     reachedSourcing.forEach((r) => {
       r.items.forEach((item) => {
-        const pricing = computePulleyPricing(item.technicalData ?? {})
+        const pricing = computePulleyPricing(item.technicalData ?? {}, sourcingCostsOf(item))
         PROCESS_SOURCING_MAP.forEach((p) => {
           if (!p.dKey || item.technicalData?.[p.srcKey] !== 'Outsource') return
           const line = pricing.sectionD.find((l) => l.key === p.dKey)
@@ -50,7 +51,7 @@ export function SourcingDashboard() {
         let inHouse = 0
         let outsourced = 0
         r.items.forEach((item) => {
-          const p = computePulleyPricing(item.technicalData ?? {})
+          const p = computePulleyPricing(item.technicalData ?? {}, sourcingCostsOf(item))
           const qty = p.qty || 1
           inHouse += p.totalC * qty
           outsourced += p.totalD * qty

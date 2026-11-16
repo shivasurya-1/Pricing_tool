@@ -18,6 +18,7 @@ import { formatCurrency } from '@/lib/format'
 import { SEND_BACK_TARGETS } from '@/lib/workflow'
 import { calculateCostBreakdown, marginStatus, marginStatusColor, summarizeCostBreakdown } from '@/lib/pricing'
 import { computePulleyPricing } from '@/lib/pulleyPricingCalc'
+import { sourcingCostsOf } from '@/lib/outsourcedCosts'
 import { useFormulaStore } from '@/store/formulaStore'
 import type { CostBreakdownLine, RFQItem } from '@/types'
 
@@ -63,7 +64,7 @@ export function ControllingScreen() {
       }))
     }
     return rfq.items.map((item) => {
-      const baseCost = computePulleyPricing(item.technicalData ?? {}).totalDirectCost
+      const baseCost = computePulleyPricing(item.technicalData ?? {}, sourcingCostsOf(item)).totalDirectCost
       return {
         itemId: item.id,
         baseCost,

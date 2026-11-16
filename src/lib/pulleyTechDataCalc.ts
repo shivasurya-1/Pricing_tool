@@ -18,6 +18,7 @@ import { DESIGNATION_TO_PRICE_FIELD, lookupCatalogPrice, IN_HOUSE_OPERATIONS, ty
 import { useFormulaStore } from '@/store/formulaStore'
 import { useReferenceStore } from '@/store/referenceStore'
 import { evaluateFormula } from '@/lib/formulaEval'
+import type { AutoFieldAdjust } from '@/lib/outsourcedCosts'
 
 const isBlank = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v.trim() === '')
 
@@ -132,7 +133,7 @@ export function fieldNumericVars(values: PulleyTechDataValues): Record<string, n
  * Kahn's algorithm; a cycle throws (caught by computeAutoFields(), which falls back to
  * computeAutoFieldsStatic()) rather than ever silently mis-evaluating.
  */
-function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataValues {
+function computeAutoFieldsDynamic(values: PulleyTechDataValues, adjust?: AutoFieldAdjust): PulleyTechDataValues {
   const { techDataFields, costRates } = useFormulaStore.getState()
   // Every Cost Rate Tables key is now insertable directly into an Auto field's
   // expression — spread first so a sheet field sharing the same key still wins.
@@ -217,7 +218,10 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues): PulleyTechDataV
       continue
     }
 
-    const result = evaluateFormula(f.expression as string, vars)
+    let result = evaluateFormula(f.expression as string, vars)
+    // Sourcing's outsourced costs (lib/outsourcedCosts.ts) — applied before dependents run.
+    if (adjust && key in adjust.pinned) result = adjust.pinned[key]
+    if (adjust && key in adjust.add) result += adjust.add[key]
     vars[key] = result
     out[key] = round2(result)
   }
@@ -271,10 +275,12 @@ function computeAutoFieldsStatic(values: PulleyTechDataValues): PulleyTechDataVa
   }
 }
 
-export function computeAutoFields(values: PulleyTechDataValues): PulleyTechDataValues {
+/** `adjust` (optional): Sourcing's outsourced costs to force onto Section D Auto fields —
+ * see outsourcedAutoFieldAdjust() in lib/outsourcedCosts.ts. */
+export function computeAutoFields(values: PulleyTechDataValues, adjust?: AutoFieldAdjust): PulleyTechDataValues {
   if (useFormulaStore.getState().loaded) {
     try {
-      return computeAutoFieldsDynamic(values)
+      return computeAutoFieldsDynamic(values, adjust)
     } catch (err) {
       console.warn('[computeAutoFields] dynamic formula evaluation failed, using static calculation:', err)
     }

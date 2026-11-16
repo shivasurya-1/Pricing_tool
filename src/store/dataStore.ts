@@ -33,6 +33,7 @@ export type RfqDetailsInput = Partial<
 >
 import { api, ApiError } from '@/lib/apiClient'
 import { useUiStore } from '@/store/uiStore'
+import { useAuthStore } from '@/store/authStore'
 
 /**
  * RFQs, Quotations, Customers, Vendors, Products, the audit log, and notifications are
@@ -118,6 +119,16 @@ interface DataState {
   removeRfqItem: (id: string, itemId: string, actorName: string) => Promise<RFQ>
   confirmItemSourcing: (id: string, itemId: string, confirmed: boolean) => Promise<void>
   assignProcessVendor: (id: string, itemId: string, processKey: string, vendorId: string, vendorName: string) => Promise<void>
+  /** Manual per-unit cost for an outsourced process; null clears it (back to the formula value). */
+  setProcessCost: (id: string, itemId: string, processKey: string, cost: number | null) => Promise<void>
+  addCustomProcess: (id: string, itemId: string, input: { label: string; cost: number; vendorId?: string; vendorName?: string }) => Promise<void>
+  updateCustomProcess: (
+    id: string,
+    itemId: string,
+    customId: string,
+    patch: { label?: string; cost?: number; vendorId?: string; vendorName?: string },
+  ) => Promise<void>
+  deleteCustomProcess: (id: string, itemId: string, customId: string) => Promise<void>
   saveSourcingComment: (id: string, comment: string) => Promise<void>
   /** The RFQ's customer, project, commercial and notes details — editable at any stage. */
   updateRfqDetails: (id: string, details: RfqDetailsInput, actorName: string) => Promise<RFQ>
@@ -302,6 +313,34 @@ export const useDataStore = create<DataState>()((set, get) => ({
   assignProcessVendor: (id, itemId, processKey, vendorId, vendorName) =>
     withErrorToast(async () => {
       const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-process-vendor/`, { itemId, processKey, vendorId, vendorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  setProcessCost: (id, itemId, processKey, cost) =>
+    withErrorToast(async () => {
+      const actorName = useAuthStore.getState().name
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-process-cost/`, { itemId, processKey, cost, actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  addCustomProcess: (id, itemId, input) =>
+    withErrorToast(async () => {
+      const actorName = useAuthStore.getState().name
+      const rfq = await api.post<RFQ>(`/rfq/rfqs/${id}/item-custom-process/`, { itemId, ...input, actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  updateCustomProcess: (id, itemId, customId, patch) =>
+    withErrorToast(async () => {
+      const actorName = useAuthStore.getState().name
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-custom-process/`, { itemId, id: customId, ...patch, actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  deleteCustomProcess: (id, itemId, customId) =>
+    withErrorToast(async () => {
+      const params = new URLSearchParams({ itemId, id: customId, actorName: useAuthStore.getState().name })
+      const rfq = await api.delete<RFQ>(`/rfq/rfqs/${id}/item-custom-process/?${params}`)
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
     }),
 

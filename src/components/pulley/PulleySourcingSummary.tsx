@@ -1,6 +1,7 @@
 import type { RFQItem } from '@/types'
 import { BOUGHT_OUT_COMPONENTS, PROCESS_SOURCING_MAP } from '@/data/pulleyTechDataSchema'
 import { computePulleyPricing } from '@/lib/pulleyPricingCalc'
+import { extraLineKey, manualOutsourcedCost, sourcingCostsOf } from '@/lib/outsourcedCosts'
 import { useFormulaStore } from '@/store/formulaStore'
 import { formatCurrency } from '@/lib/format'
 import { Badge } from '@/components/ui/Badge'
@@ -15,7 +16,7 @@ export function PulleySourcingSummary({ item }: { item: RFQItem }) {
   const values = item.technicalData
   if (!values) return <p className="text-sm text-[var(--color-ink-faint)]">No technical data captured for this item.</p>
 
-  const pricing = computePulleyPricing(values)
+  const pricing = computePulleyPricing(values, sourcingCostsOf(item))
   const lineByKey = (key?: string) => (key ? [...pricing.sectionC, ...pricing.sectionD].find((l) => l.key === key) : undefined)
   const vendorFor = (processKey: string) => item.processVendors?.find((p) => p.processKey === processKey)
 
@@ -65,11 +66,15 @@ export function PulleySourcingSummary({ item }: { item: RFQItem }) {
           <tbody>
             {PROCESS_SOURCING_MAP.map((p) => {
               const mode = String(values[p.srcKey] ?? '—')
-              const line = mode === 'Outsource' ? lineByKey(p.dKey) : lineByKey(p.cKey)
+              const line = mode === 'Outsource' ? lineByKey(p.dKey ?? extraLineKey(p.srcKey)) : lineByKey(p.cKey)
               const vendor = vendorFor(p.srcKey)
+              const manual = manualOutsourcedCost(values, sourcingCostsOf(item), p.srcKey) !== undefined
               return (
                 <tr key={p.srcKey} className="border-b border-[var(--color-border)]">
-                  <td className="px-2 py-1.5 font-medium">{p.label}</td>
+                  <td className="px-2 py-1.5 font-medium">
+                    {p.label}
+                    {manual && <span className="ml-1.5 text-[10px] font-normal text-[var(--color-purple)]">manual cost</span>}
+                  </td>
                   <td className="px-2 py-1.5">
                     <Badge tone={mode === 'In-house' ? 'teal' : mode === 'Outsource' ? 'purple' : 'blue'}>{mode}</Badge>
                   </td>
@@ -78,6 +83,19 @@ export function PulleySourcingSummary({ item }: { item: RFQItem }) {
                 </tr>
               )
             })}
+            {(item.customProcesses ?? []).map((c) => (
+              <tr key={c.id} className="border-b border-[var(--color-border)]">
+                <td className="px-2 py-1.5 font-medium">
+                  {c.label}
+                  <span className="ml-1.5 text-[10px] font-normal text-[var(--color-ink-faint)]">added</span>
+                </td>
+                <td className="px-2 py-1.5">
+                  <Badge tone="purple">Outsource</Badge>
+                </td>
+                <td className="px-2 py-1.5 text-[var(--color-ink-faint)]">{c.vendorName || '—'}</td>
+                <td className="px-2 py-1.5 text-right">{formatCurrency(c.cost)}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>

@@ -44,6 +44,7 @@ from .serializers import (
     RFQSerializer,
     VendorSerializer,
 )
+from .sourcing_costs import SourcingCostsMixin
 from .workflow import (
     NEXT_STAGE,
     REJECTABLE_STAGES,
@@ -320,7 +321,7 @@ class QuotationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewset
         return Response(self.get_serializer(quotation).data)
 
 
-class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class RFQViewSet(SourcingCostsMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     queryset = RFQ.objects.select_related("customer").prefetch_related("items", "items__cost_breakdown").all()
     serializer_class = RFQSerializer
     permission_classes = [IsAuthenticated]
@@ -659,7 +660,8 @@ class RFQViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Gene
                 product_name=source.product_name, description=source.description, quantity=source.quantity, unit=source.unit,
                 specification=source.specification, required_delivery=source.required_delivery, target_price=source.target_price,
                 remarks=source.remarks, technical_data=technical_data, field_overrides=source.field_overrides,
-                process_vendors=source.process_vendors,
+                process_vendors=source.process_vendors, process_costs=source.process_costs,
+                custom_processes=source.custom_processes,
             )
             recompute_rfq_value(rfq)
             touch(rfq)

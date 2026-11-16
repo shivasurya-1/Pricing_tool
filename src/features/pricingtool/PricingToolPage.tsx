@@ -10,6 +10,7 @@ import { useReferenceStore } from '@/store/referenceStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { computePulleyPricing, type CostLine, type PulleyPricingResult } from '@/lib/pulleyPricingCalc'
 import { computeAutoFields } from '@/lib/pulleyTechDataCalc'
+import { extraOutsourcedLines, outsourcedAutoFieldAdjust, sourcingCostsOf } from '@/lib/outsourcedCosts'
 import { catalogDisplayValue, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
 import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
 import './PricingToolSheet.css'
@@ -70,6 +71,16 @@ interface Column {
   values: Values
   autoValues: Values
   pricing: PulleyPricingResult
+  /** Sourcing-added outsourced lines with no Formulas-page Section D field (custom processes, Welding). */
+  extraD: CostLine[]
+}
+
+/** Union of line keys across pulleys, in first-seen order — pulleys can have different
+ * Section D lines (Sourcing-added outsourced processes). */
+function unionLines(lists: CostLine[][]): CostLine[] {
+  const seen = new Map<string, CostLine>()
+  for (const list of lists) for (const l of list) if (!seen.has(l.key)) seen.set(l.key, l)
+  return [...seen.values()]
 }
 
 /** Mixes `hex` with white — `amount` is the share of the colour (0.055 = 5.5%). */
@@ -289,7 +300,14 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     () =>
       items.map((item) => {
         const values = item.technicalData ?? {}
-        return { item, values, autoValues: computeAutoFields(values), pricing: computePulleyPricing(values) }
+        const sourcing = sourcingCostsOf(item)
+        return {
+          item,
+          values,
+          autoValues: computeAutoFields(values, outsourcedAutoFieldAdjust(values, sourcing)),
+          pricing: computePulleyPricing(values, sourcing),
+          extraD: extraOutsourcedLines(values, sourcing),
+        }
       }),
     // formulas/costRates/techDataFields/inHouseHourRates: recompute when they change, though read via getState().
     [items, formulas, costRates, techDataFields, inHouseHourRates],
@@ -366,8 +384,8 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     for (const list of Object.values(byLetter)) list.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
     return byLetter as Record<string, TechDataField[]>
   }, [techDataFields])
-  const formulaRows = (letter: string) =>
-    formulaSections[letter]?.map((f) =>
+  const formulaRows = (letter: string, only?: (f: TechDataField) => boolean) =>
+    formulaSections[letter]?.filter((f) => !only || only(f)).map((f) =>
       row(f.label, columns.map((c) => fmtFormulaValue(fieldValue(f, c, rfq), f.unit)), { unit: f.unit, total: /^total\b/i.test(f.label) }),
     )
   const extraValue = (field: TechDataFieldDto, c: Column) =>
@@ -454,13 +472,23 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
           {COST_SECTIONS.map((s) => (
             <SheetSection key={s.code} code={s.code} title={s.title} color={s.color}>
               {formulaSections[s.code]?.length ? (
-                formulaRows(s.code)
+                s.code === 'D' ? (
+                  <>
+                    {formulaRows('D', (f) => !/^total\b/i.test(f.label))}
+                    {unionLines(columns.map((c) => c.extraD)).map((line) =>
+                      row(line.label, columns.map((c) => fmtCost(c.extraD.find((l) => l.key === line.key))), { unit: 'INR' }),
+                    )}
+                    {formulaRows('D', (f) => /^total\b/i.test(f.label))}
+                  </>
+                ) : (
+                  formulaRows(s.code)
+                )
               ) : (
                 <>
-                  {first.pricing[s.lines].map((line, i) =>
+                  {unionLines(columns.map((c) => c.pricing[s.lines])).map((line) =>
                     row(
                       line.label,
-                      columns.map((c) => fmtCost(c.pricing[s.lines][i])),
+                      columns.map((c) => fmtCost(c.pricing[s.lines].find((l) => l.key === line.key))),
                       { unit: 'INR' },
                     ),
                   )}

@@ -208,6 +208,11 @@ class RFQItem(models.Model):
     )
     sourcing_confirmed = models.BooleanField(default=False)
     process_vendors = models.JSONField(default=list, blank=True)
+    # Sourcing-entered outsourced costs (per unit, INR) — see rfq/sourcing_costs.py.
+    process_costs = models.JSONField(default=list, blank=True, help_text='[{"processKey": "srcStressRelief", "cost": 1200.0}]')
+    custom_processes = models.JSONField(
+        default=list, blank=True, help_text='[{"id", "label", "mode": "Outsource", "cost", "vendorId", "vendorName"}]'
+    )
 
     class Meta:
         ordering = ["item_no"]
