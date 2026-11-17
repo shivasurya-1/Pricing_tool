@@ -14,7 +14,7 @@ export function ChangePasswordModal({ open, onClose }: { open: boolean; onClose:
 }
 
 function Form({ onClose }: { onClose: () => void }) {
-  const setToken = useAuthStore((s) => s.setToken)
+  const setTokens = useAuthStore((s) => s.setTokens)
   const pushToast = useUiStore((s) => s.pushToast)
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
@@ -37,8 +37,8 @@ function Form({ onClose }: { onClose: () => void }) {
     setErrors([])
     setSaving(true)
     try {
-      const res = await api.post<{ token: string }>('/auth/change-password/', { current_password: current, new_password: next })
-      setToken(res.token) // the old session key was retired; keep this browser signed in
+      const res = await api.post<{ access: string; refresh: string }>('/auth/change-password/', { current_password: current, new_password: next })
+      setTokens(res.access, res.refresh) // the old pair was retired; keep this browser signed in
       pushToast('Password changed. Other devices have been signed out.', 'success')
       onClose()
     } catch (err) {

@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
-from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.test import APIClient
 
 from .models import (
@@ -27,9 +27,9 @@ class ReferenceApiTests(TestCase):
         self.admin = User.objects.create_superuser("refadmin", "refadmin@example.com", "adminpass123", role="Admin")
         self.sales = User.objects.create_user("refsales", password="salespass123", role="Sales")
         self.admin_client = APIClient()
-        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
         self.sales_client = APIClient()
-        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.sales)}")
 
         self.rate = GlobalParameter.objects.create(key="testRate", parameter="Test Rate", value=5, unit="INR")
 
@@ -301,9 +301,9 @@ class OrganizationSettingsApiTests(TestCase):
         self.admin = User.objects.create_superuser("orgadmin", "orgadmin@example.com", "adminpass123", role="Admin")
         self.sales = User.objects.create_user("orgsales", password="salespass123", role="Sales")
         self.admin_client = APIClient()
-        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
         self.sales_client = APIClient()
-        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.sales)}")
 
     def test_get_creates_the_singleton_with_defaults_on_first_call(self):
         self.assertEqual(OrganizationSettings.objects.count(), 0)
@@ -360,7 +360,7 @@ class ReferenceDropdownApiTests(TestCase):
     def setUp(self):
         sales = User.objects.create_user("ddsales", password="salespass123", role="Sales")
         self.client = APIClient()
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=sales).key}")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(sales)}")
 
         self.bearing = BearingCatalogEntry.objects.create(designation="22220 E", bore_mm=100, price_inr=30000, price_eur=320, delivery_days=1)
         self.sleeve = SleeveCatalogEntry.objects.create(for_bearing="22220 E", sleeve_code="H 320", price_eur=1, price_inr=1)

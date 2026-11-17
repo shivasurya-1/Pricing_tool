@@ -1,11 +1,14 @@
 import re
+import threading
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
-from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 
@@ -29,12 +32,12 @@ class NoPasswordFreeLoginTests(TestCase):
     def test_no_credentials_is_unauthenticated(self):
         self.assertIn(APIClient().get("/api/rfq/rfqs/").status_code, (401, 403))
 
-    def test_only_token_and_session_authentication_are_configured(self):
+    def test_only_jwt_and_session_authentication_are_configured(self):
         from django.conf import settings
 
         self.assertEqual(
             settings.REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"],
-            ["rest_framework.authentication.TokenAuthentication", "rest_framework.authentication.SessionAuthentication"],
+            ["rest_framework_simplejwt.authentication.JWTAuthentication", "rest_framework.authentication.SessionAuthentication"],
         )
         self.assertNotIn("x-demo-role", settings.CORS_ALLOW_HEADERS)
 
@@ -43,12 +46,13 @@ class LoginAndMeViewTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("realuser", password="correct-password-123", role=Role.SALES)
 
-    def test_login_with_valid_credentials_returns_a_token(self):
+    def test_login_with_valid_credentials_returns_access_and_refresh_tokens(self):
         client = APIClient()
         response = client.post("/api/auth/login/", {"username": "realuser", "password": "correct-password-123"}, format="json")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("token", response.data)
-        self.assertEqual(Token.objects.get(user=self.user).key, response.data["token"])
+        self.assertNotIn("token", response.data)
+        self.assertEqual(str(AccessToken(response.data["access"])["user_id"]), str(self.user.pk))
+        self.assertEqual(OutstandingToken.objects.filter(user=self.user).count(), 1)
 
     def test_login_with_wrong_password_is_rejected(self):
         client = APIClient()
@@ -67,7 +71,8 @@ class LoginAndMeViewTests(TestCase):
         response = self.login(role="Controlling")
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["detail"], "This account is not a Controlling account.")
-        self.assertFalse(Token.objects.filter(user=self.user).exists())
+        self.assertNotIn("access", response.data)
+        self.assertFalse(OutstandingToken.objects.filter(user=self.user).exists())
 
     def test_admin_must_use_the_admin_card_too(self):
         User.objects.create_user("realadmin", password="admin-password-123", role=Role.ADMIN)
@@ -105,22 +110,100 @@ class LoginAndMeViewTests(TestCase):
 
     def test_me_returns_the_authenticated_users_data(self):
         client = APIClient()
-        token = Token.objects.create(user=self.user)
-        client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.user)}")
         response = client.get("/api/auth/me/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["username"], "realuser")
 
-    def test_logout_deletes_the_token(self):
-        client = APIClient()
-        token = Token.objects.create(user=self.user)
-        client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
-        response = client.post("/api/auth/logout/")
-        self.assertEqual(response.status_code, 204)
-        self.assertFalse(Token.objects.filter(user=self.user).exists())
-        # The old token no longer works for anything.
-        response = client.get("/api/auth/me/")
-        self.assertIn(response.status_code, (401, 403))
+
+class JwtSessionTests(TestCase):
+    """Access token (15 min) + refresh token (7 days), one pair per sign-in."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("jwtuser", password="correct-password-123", role=Role.SALES)
+
+    def sign_in(self):
+        res = APIClient().post("/api/auth/login/", {"username": "jwtuser", "password": "correct-password-123"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        return res.data["access"], res.data["refresh"]
+
+    @staticmethod
+    def me(access):
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+        return c.get("/api/auth/me/").status_code
+
+    @staticmethod
+    def refresh(token):
+        return APIClient().post("/api/auth/refresh/", {"refresh": token}, format="json")
+
+    def test_lifetimes_are_15_minutes_and_7_days(self):
+        from datetime import timedelta
+
+        self.assertEqual(settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"], timedelta(minutes=15))
+        self.assertEqual(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"], timedelta(days=7))
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        access, refresh = self.sign_in()
+        a, r = AccessToken(access), RefreshToken(refresh)
+        self.assertEqual(a["exp"] - a["iat"], 15 * 60)
+        self.assertEqual(r["exp"] - r["iat"], 7 * 24 * 3600)
+
+    def test_the_old_token_header_is_not_accepted(self):
+        access, _ = self.sign_in()
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Token {access}")
+        self.assertIn(c.get("/api/auth/me/").status_code, (401, 403))
+
+    def test_an_expired_access_token_is_a_401(self):
+        from datetime import timedelta
+
+        token = AccessToken.for_user(self.user)
+        token.set_exp(lifetime=-timedelta(seconds=1))
+        self.assertEqual(self.me(str(token)), 401)
+
+    def test_refresh_gives_a_new_pair_and_the_old_refresh_token_works_once(self):
+        _, refresh = self.sign_in()
+        res = self.refresh(refresh)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.me(res.data["access"]), 200)
+        self.assertNotEqual(res.data["refresh"], refresh)
+        self.assertEqual(self.refresh(refresh).status_code, 401)  # already used
+        self.assertEqual(self.refresh(res.data["refresh"]).status_code, 200)
+
+    def test_refresh_ignores_an_expired_access_token_in_the_header(self):
+        from datetime import timedelta
+
+        _, refresh = self.sign_in()
+        stale = AccessToken.for_user(self.user)
+        stale.set_exp(lifetime=-timedelta(seconds=1))
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Bearer {stale}")
+        self.assertEqual(c.post("/api/auth/refresh/", {"refresh": refresh}, format="json").status_code, 200)
+
+    def test_bad_or_missing_refresh_token_is_refused(self):
+        self.assertEqual(self.refresh("not-a-token").status_code, 401)
+        self.assertEqual(APIClient().post("/api/auth/refresh/", {}, format="json").status_code, 400)
+
+    def test_deactivated_account_cannot_refresh(self):
+        _, refresh = self.sign_in()
+        self.user.is_active = False
+        self.user.save()
+        self.assertEqual(self.refresh(refresh).status_code, 401)
+
+    def test_logout_signs_out_only_this_browser(self):
+        _, refresh_a = self.sign_in()
+        _, refresh_b = self.sign_in()  # same account on a second computer
+        self.assertEqual(APIClient().post("/api/auth/logout/", {"refresh": refresh_a}, format="json").status_code, 204)
+        self.assertEqual(self.refresh(refresh_a).status_code, 401)
+        self.assertEqual(self.refresh(refresh_b).status_code, 200)
+
+    def test_logout_never_fails(self):
+        for body in ({}, {"refresh": ""}, {"refresh": "garbage"}):
+            self.assertEqual(APIClient().post("/api/auth/logout/", body, format="json").status_code, 204)
+        _, refresh = self.sign_in()
+        APIClient().post("/api/auth/logout/", {"refresh": refresh}, format="json")
+        self.assertEqual(APIClient().post("/api/auth/logout/", {"refresh": refresh}, format="json").status_code, 204)
 
 
 class UserViewSetTests(TestCase):
@@ -128,9 +211,9 @@ class UserViewSetTests(TestCase):
         self.admin = User.objects.create_superuser("realadmin", "admin@example.com", "adminpass123", role=Role.ADMIN)
         self.sales = User.objects.create_user("realsales", password="salespass123", role=Role.SALES)
         self.admin_client = APIClient()
-        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
         self.sales_client = APIClient()
-        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.sales)}")
 
     def test_non_admin_cannot_list_users(self):
         response = self.sales_client.get("/api/auth/users/")
@@ -179,7 +262,7 @@ class UserViewSetTests(TestCase):
 
 def token_client(user):
     client = APIClient()
-    client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.get_or_create(user=user)[0].key}")
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
     return client
 
 
@@ -429,7 +512,7 @@ class UserDeleteTests(TestCase):
         self.assertEqual(self.admin_client.delete("/api/auth/users/999999/").status_code, 404)
 
 
-@override_settings(FRONTEND_URL="https://app.example.test")
+@override_settings(FRONTEND_URL="https://app.example.test", PASSWORD_RESET_EMAIL_IN_BACKGROUND=False)
 class PasswordResetTests(TestCase):
     """Forgot password -> emailed link -> choose a new password."""
 
@@ -502,13 +585,42 @@ class PasswordResetTests(TestCase):
             self.assertEqual(self.client.post(self.FORGOT, body, format="json").status_code, 400)
 
     def test_a_stale_token_in_the_request_does_not_break_it(self):
-        self.client.credentials(HTTP_AUTHORIZATION="Token not-a-real-token")
+        self.client.credentials(HTTP_AUTHORIZATION="Bearer not-a-real-token")
         self.assertEqual(self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json").status_code, 200)
 
     def test_requests_are_rate_limited(self):
         with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"password_reset": "2/hour"}):
             codes = [self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json").status_code for _ in range(3)]
         self.assertEqual(codes, [200, 200, 429])
+
+    def test_a_forged_forwarded_header_does_not_get_round_the_limit(self):
+        # Behind one proxy the real client IP is the LAST X-Forwarded-For entry (the one the
+        # proxy adds); whatever the client puts before it must not count as a new address.
+        rest = {**settings.REST_FRAMEWORK, "NUM_PROXIES": 1}
+        with override_settings(REST_FRAMEWORK=rest), patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"password_reset": "2/hour"}):
+            codes = [
+                self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json", HTTP_X_FORWARDED_FOR=f"10.0.0.{i}, 203.0.113.7").status_code
+                for i in range(3)
+            ]
+        self.assertEqual(codes, [200, 200, 429])
+
+    def test_the_reply_says_how_long_a_link_works(self):
+        for email in ("rita@example.test", "nobody@example.test"):
+            self.assertEqual(self.client.post(self.FORGOT, {"email": email}, format="json").data["valid_minutes"], 60)
+        with override_settings(PASSWORD_RESET_TIMEOUT=1800):
+            self.assertEqual(self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json").data["valid_minutes"], 30)
+
+    @override_settings(PASSWORD_RESET_EMAIL_IN_BACKGROUND=True)
+    def test_the_email_is_sent_from_a_background_thread(self):
+        threads = []
+        self.sent.clear()
+        with patch("accounts.views.send_password_reset_email", side_effect=lambda *a: threads.append(threading.current_thread().name)):
+            res = self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json")
+            self.assertEqual(res.status_code, 200)
+            for t in threading.enumerate():
+                if t.name == "password-reset-email":
+                    t.join(timeout=10)
+        self.assertEqual(threads, ["password-reset-email"])
 
     # --- the link ---
 
@@ -538,10 +650,13 @@ class PasswordResetTests(TestCase):
         self.assertEqual(again.status_code, 400)  # the link died with the old password
 
     def test_reset_signs_out_every_existing_session(self):
-        old_token = Token.objects.create(user=self.user)
+        from .tokens import issue_tokens
+
+        refreshes = [issue_tokens(self.user)["refresh"] for _ in range(2)]
         uid, token = self.request_link()
         self.client.post(self.RESET, {"uid": uid, "token": token, "password": "Brand-new-pass-77"}, format="json")
-        self.assertFalse(Token.objects.filter(key=old_token.key).exists())
+        for refresh in refreshes:
+            self.assertEqual(APIClient().post("/api/auth/refresh/", {"refresh": refresh}, format="json").status_code, 401)
 
     def test_weak_passwords_are_refused_with_every_reason(self):
         uid, token = self.request_link()
@@ -585,9 +700,11 @@ class ChangePasswordTests(TestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user("carl", email="carl@example.test", password="Old-pass-1234", role=Role.SALES)
-        self.token = Token.objects.create(user=self.user)
+        from .tokens import issue_tokens
+
+        self.tokens = issue_tokens(self.user)
         self.client = APIClient()
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.tokens['access']}")
 
     def change(self, current="Old-pass-1234", new="Brand-new-pass-77"):
         return self.client.post(self.URL, {"current_password": current, "new_password": new}, format="json")
@@ -607,12 +724,15 @@ class ChangePasswordTests(TestCase):
 
     def test_this_browser_stays_signed_in_and_other_sessions_end(self):
         res = self.change()
-        self.assertFalse(Token.objects.filter(key=self.token.key).exists())  # the old key is dead
-        new_key = res.data["token"]
-        self.assertTrue(Token.objects.filter(key=new_key, user=self.user).exists())
+
+        def refresh(t):
+            return APIClient().post("/api/auth/refresh/", {"refresh": t}, format="json").status_code
+
+        self.assertEqual(refresh(self.tokens["refresh"]), 401)  # other sessions can't renew
         fresh = APIClient()
-        fresh.credentials(HTTP_AUTHORIZATION=f"Token {new_key}")
+        fresh.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
         self.assertEqual(fresh.get("/api/auth/me/").status_code, 200)
+        self.assertEqual(refresh(res.data["refresh"]), 200)  # this browser keeps going
 
     def test_wrong_current_password_is_a_400_not_a_401(self):
         res = self.change(current="Not-my-password-1")

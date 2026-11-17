@@ -38,22 +38,26 @@ real PostgreSQL instance — required for production.
 
 ## API
 
-- `POST /api/auth/login/` — `{username, password}` → `{token, user}`
+- `POST /api/auth/login/` — `{username, password}` → `{access, refresh, user}`. The access token (15 min, `JWT_ACCESS_MINUTES`) goes in `Authorization: Bearer <access>`; the refresh token (7 days from last use, `JWT_REFRESH_DAYS`) renews it. Each sign-in gets its own pair
+- `POST /api/auth/refresh/` — `{refresh}` → `{access, refresh}`; the refresh token sent is retired (works once). 401 if expired, used, signed out or the account is inactive
+- `POST /api/auth/logout/` — `{refresh}` → 204; signs out this browser only (no access token needed)
 - `GET /api/auth/me/`
 - `POST /api/auth/forgot-password/` — `{email}` → always 200 for a well-formed address (never says whether an account exists); emails a one-time link to `{FRONTEND_URL}/reset-password?uid=…&token=…`
 - `POST /api/auth/reset-password/check/` — `{uid, token}` → 200 if the link is still good, else 400
 - `POST /api/auth/reset-password/` — `{uid, token, password}` → sets the new password and signs the account out everywhere; 400 with `errors[]` if the password is too weak
 
-- `POST /api/auth/change-password/` — signed-in users only; `{current_password, new_password}` → `{token}`. A wrong current password is a 400 (not a 401); other devices are signed out and the response carries the fresh token for this one (`PASSWORD_CHANGE_RATE`, default 10/hour)
+- `POST /api/auth/change-password/` — signed-in users only; `{current_password, new_password}` → `{access, refresh}`. A wrong current password is a 400 (not a 401); other devices are signed out (their refresh tokens are retired) and the response carries a fresh pair for this one (`PASSWORD_CHANGE_RATE`, default 10/hour)
 
-The three password-reset endpoints need no login, are rate limited (`PASSWORD_RESET_RATE`, default 10/hour per address), and the link lasts `PASSWORD_RESET_TIMEOUT` seconds (default 1 hour). Set `FRONTEND_URL` in `.env` for production; without SMTP credentials the email prints to the server log instead of sending.
+The three password-reset endpoints need no login, are rate limited (`PASSWORD_RESET_RATE`, default 10/hour per client IP), and the link lasts `PASSWORD_RESET_TIMEOUT` seconds (default 1 hour; the forgot-password reply returns it as `valid_minutes`). Set `FRONTEND_URL` in `.env` for production; without SMTP credentials the email prints to the server log instead of sending. The reset email is sent from a background thread so the reply time doesn't reveal whether an account exists.
+
+Rate-limit counters live in a database cache table (`django_cache`, created by `migrate`), shared by all workers. Behind a proxy the client IP is read from the last `X-Forwarded-For` entry; `NUM_PROXIES` (default 1 with `DEBUG=false`, 0 with `DEBUG=true`) must match the number of proxies in front of Django.
 
 - `GET /api/formulas/` · `GET/PATCH /api/formulas/{key}/` · `POST /api/formulas/{key}/preview/` · `GET /api/formulas/{key}/history/`
 - `GET/PATCH /api/reference/cost-rates/`
 - `GET/POST/PATCH/DELETE /api/reference/raw-forging/{shaft-bands|shell-bands}/` — Raw Forging Prices page
 - `GET/PATCH/POST/DELETE /api/reference/catalogs/{bearings|sleeves|lag-data|lcd-data|housings|locking-devices}/`
 
-All endpoints require a `Token <key>` auth header. Reads: any authenticated user.
+All endpoints require an `Authorization: Bearer <access token>` header. Reads: any authenticated user.
 Writes: `Controlling` or `Admin` role only (`accounts/permissions.py`).
 
 ## Formula expression syntax

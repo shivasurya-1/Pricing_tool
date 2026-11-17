@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase
-from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.test import APIClient
 
 from .calc import activity_days, critical_path, find_cycle, reroute_links
@@ -91,7 +91,7 @@ class DeliveryScheduleApiTests(TestCase):
         def client_for(username, role):
             user = User.objects.create_user(username, password="pass12345", role=role)
             client = APIClient()
-            client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=user).key}")
+            client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
             return client
 
         self.sourcing = client_for("sourcing-ds", "Sourcing")

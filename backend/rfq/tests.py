@@ -3,7 +3,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
 from django.test import TestCase
 
-from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.tokens import AccessToken
 
 from accounts.models import User
 from reference.models import OrganizationSettings
@@ -14,7 +14,7 @@ def client_as(role: str) -> APIClient:
     """A client signed in (real token) as a user holding `role` — one user per role."""
     user, _ = User.objects.get_or_create(username=f"test-{role.lower().replace(' ', '-')}", defaults={"role": role})
     c = APIClient()
-    c.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.get_or_create(user=user)[0].key}")
+    c.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
     return c
 
 

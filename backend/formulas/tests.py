@@ -2,7 +2,7 @@ import math
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
-from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.test import APIClient
 
 from .evaluator import FormulaError, evaluate_formula
@@ -69,11 +69,11 @@ class FormulaApiTests(TestCase):
         self.sales = User.objects.create_user("sales2", password="salespass123", role="Sales")
         self.controlling = User.objects.create_user("controlling2", password="controllingpass123", role="Controlling")
         self.admin_client = APIClient()
-        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
         self.sales_client = APIClient()
-        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.sales)}")
         self.controlling_client = APIClient()
-        self.controlling_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.controlling).key}")
+        self.controlling_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.controlling)}")
         Section.objects.get_or_create(key="test-section-b", defaults={"label": "SectionB"})
 
         self.formula = FormulaDefinition.objects.create(
@@ -229,9 +229,9 @@ class TechDataFieldDefinitionApiTests(TestCase):
         self.admin = User.objects.create_superuser("admin3", "admin3@example.com", "adminpass123", role="Admin")
         self.sales = User.objects.create_user("sales3", password="salespass123", role="Sales")
         self.admin_client = APIClient()
-        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
         self.sales_client = APIClient()
-        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.sales)}")
         Section.objects.create(key="test-project-info", label="1. PROJECT INFORMATION", tab="tech_sheet")
         Section.objects.create(key="test-body-dims", label="2. PULLEY BODY DIMENSIONS", tab="tech_sheet")
 
@@ -637,7 +637,7 @@ class TechDataFieldDefinitionApiTests(TestCase):
     def test_only_admin_can_change_core_field_type(self):
         controlling = User.objects.create_user("controlling3", password="ctrlpass123", role="Controlling")
         client = APIClient()
-        client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=controlling).key}")
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(controlling)}")
         response = client.patch(f"/api/formulas/tech-data-fields/{self.core_field.key}/", {"field_type": "text"}, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertIn("field_type", response.data)
@@ -725,7 +725,7 @@ class TechDataFieldDefinitionApiTests(TestCase):
     def test_core_field_cannot_be_deleted_by_non_admin(self):
         self.controlling = User.objects.create_user("controlling3", password="controllingpass123", role="Controlling")
         controlling_client = APIClient()
-        controlling_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.controlling).key}")
+        controlling_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.controlling)}")
         response = controlling_client.delete(f"/api/formulas/tech-data-fields/{self.core_field.key}/")
         self.assertEqual(response.status_code, 400)
         self.assertTrue(TechDataFieldDefinition.objects.filter(key=self.core_field.key).exists())
@@ -803,9 +803,9 @@ class SectionApiTests(TestCase):
         self.admin = User.objects.create_superuser("admin4", "admin4@example.com", "adminpass123", role="Admin")
         self.sales = User.objects.create_user("sales4", password="salespass123", role="Sales")
         self.admin_client = APIClient()
-        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.admin_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
         self.sales_client = APIClient()
-        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.sales).key}")
+        self.sales_client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.sales)}")
 
         self.section = Section.objects.create(key="raw-materials", label="Raw Materials", order=1)
 
@@ -877,7 +877,7 @@ class SheetAssignmentTests(TestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser("admin5", "admin5@example.com", "adminpass123", role="Admin")
         self.client_ = APIClient()
-        self.client_.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=self.admin).key}")
+        self.client_.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
         self.pricing = Section.objects.create(key="custom-pricing", label="Custom Pricing", tab="pricing_tool")
         self.tech = Section.objects.create(key="custom-tech", label="Custom Tech", tab="tech_sheet")
 

@@ -19,9 +19,11 @@ const colorFor = (role: Role) => DEMO_PERSONA[role]?.color ?? '#2563eb'
 
 interface AuthState {
   isAuthenticated: boolean
-  /** The session token from POST /auth/login/. Every API call needs it; there is no
-   * password-free sign-in. */
+  /** The access token from POST /auth/login/ (15 minutes). Every API call needs it; there is
+   * no password-free sign-in. apiClient renews it with refreshToken when it runs out. */
   token: string | null
+  /** The refresh token (7 days, from last use). Gets a new access + refresh pair. */
+  refreshToken: string | null
   /** The signed-in account's own role, as the backend reports it. Only an 'Admin' account may
    * view as another role. */
   accountRole: Role | null
@@ -37,8 +39,8 @@ interface AuthState {
   logout: () => void
   /** On app start: check the stored token with GET /auth/me/ and re-apply the account's real role. */
   restoreSession: () => Promise<void>
-  /** Swap in a fresh session token (after a password change the old one is retired). */
-  setToken: (token: string) => void
+  /** Swap in a fresh pair (after a refresh, or a password change retiring the old ones). */
+  setTokens: (access: string, refresh: string) => void
   /** "View as" — Admin accounts only; changes what is shown, never the token or the account. */
   switchRole: (role: Role) => void
 
@@ -50,6 +52,7 @@ export const useAuthStore = create<AuthState>()(
     (set, get) => ({
       isAuthenticated: false,
       token: null,
+      refreshToken: null,
       accountRole: null,
       role: 'Sales',
       name: '',
@@ -59,11 +62,12 @@ export const useAuthStore = create<AuthState>()(
 
       login: async (username, password, role) => {
         try {
-          const res = await api.post<{ token: string; user: MeResponse }>('/auth/login/', { username, password, ...(role && { role }) })
+          const res = await api.post<{ access: string; refresh: string; user: MeResponse }>('/auth/login/', { username, password, ...(role && { role }) })
           const u = res.user
           set({
             isAuthenticated: true,
-            token: res.token,
+            token: res.access,
+            refreshToken: res.refresh,
             accountRole: u.role,
             role: u.role,
             name: fullName(u),
@@ -77,13 +81,12 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
-        // Fire the invalidation request WHILE the token is still in the store —
-        // apiClient reads it synchronously when building this call, so clearing
-        // state first would send the request with no Authorization header at all
-        // and the token would never actually get deleted server-side. Best-effort:
-        // the user is logged out locally either way; nothing downstream waits on this.
-        if (get().token) api.post('/auth/logout/', {}).catch(() => {})
-        set({ isAuthenticated: false, token: null, accountRole: null })
+        // Retire this browser's refresh token on the server (other browsers signed in to the
+        // same account stay signed in). Best-effort: the user is logged out locally either
+        // way; nothing downstream waits on this.
+        const refresh = get().refreshToken
+        if (refresh) api.post('/auth/logout/', { refresh }).catch(() => {})
+        set({ isAuthenticated: false, token: null, refreshToken: null, accountRole: null })
       },
 
       restoreSession: async () => {
@@ -110,7 +113,7 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      setToken: (token) => set({ token }),
+      setTokens: (access, refresh) => set({ token: access, refreshToken: refresh }),
 
       switchRole: (role) => {
         if (get().accountRole !== 'Admin') return
@@ -121,9 +124,30 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'rfq-prototype-auth',
-      version: 2,
-      // Sessions saved before real sign-in was required (no token, role picked by a card) are signed out.
-      migrate: (persisted) => ({ ...(persisted as object), isAuthenticated: false, token: null, accountRole: null }),
+      version: 3,
+      // Older saved sessions are signed out: v1 had no token (role picked by a card), v2 kept
+      // the old never-expiring login token, which the backend no longer accepts.
+      migrate: (persisted) => ({ ...(persisted as object), isAuthenticated: false, token: null, refreshToken: null, accountRole: null }),
     },
   ),
 )
+
+// Keep the tokens in step across browser tabs. A refresh or password change in one tab retires
+// the old refresh token on the server; without this, another open tab would keep using the old
+// one, be refused, sign out and wipe the new pair from storage. Only a NEW pair is taken over;
+// signing out stays per tab, as before.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== useAuthStore.persist.getOptions().name || !e.newValue) return
+    try {
+      const state = JSON.parse(e.newValue)?.state
+      const { token, refreshToken } = state ?? {}
+      const cur = useAuthStore.getState()
+      if (typeof token === 'string' && token && typeof refreshToken === 'string' && refreshToken && (token !== cur.token || refreshToken !== cur.refreshToken)) {
+        useAuthStore.setState({ token, refreshToken })
+      }
+    } catch {
+      /* not a value this store wrote */
+    }
+  })
+}

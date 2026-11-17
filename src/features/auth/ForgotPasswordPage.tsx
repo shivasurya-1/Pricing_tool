@@ -5,11 +5,22 @@ import { AuthLayout } from '@/features/auth/AuthLayout'
 import { Button } from '@/components/ui/Button'
 import { api, ApiError } from '@/lib/apiClient'
 
+/** "60" -> "1 hour", "90" -> "90 minutes": how long the emailed link works, as the server set it. */
+function describeMinutes(minutes: number | null): string {
+  if (!minutes || minutes < 1) return 'after a short time'
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60
+    return `in ${hours} hour${hours === 1 ? '' : 's'}`
+  }
+  return `in ${minutes} minute${minutes === 1 ? '' : 's'}`
+}
+
 /** Step 1 of resetting a password: ask for the account's email; the backend emails a one-time link. */
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [sentTo, setSentTo] = useState<string | null>(null)
+  const [validMinutes, setValidMinutes] = useState<number | null>(null)
   const [error, setError] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -18,7 +29,8 @@ export function ForgotPasswordPage() {
     setError('')
     setSubmitting(true)
     try {
-      await api.post('/auth/forgot-password/', { email: address })
+      const res = await api.post<{ valid_minutes?: number }>('/auth/forgot-password/', { email: address })
+      setValidMinutes(typeof res?.valid_minutes === 'number' ? res.valid_minutes : null)
       setSentTo(address)
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) setError('Too many requests. Please wait a while and try again.')
@@ -36,7 +48,7 @@ export function ForgotPasswordPage() {
         </div>
         <h2 className="mt-4 text-xl font-semibold text-[var(--color-ink)]">Check your email</h2>
         <p className="mt-2 text-sm text-[var(--color-ink-soft)]">
-          If an account uses <b>{sentTo}</b>, we've sent a link to choose a new password. It works once and expires in about an hour.
+          If an account uses <b>{sentTo}</b>, we've sent a link to choose a new password. It works once and expires {describeMinutes(validMinutes)}.
         </p>
         <p className="mt-2 text-xs text-[var(--color-ink-faint)]">Nothing in your inbox? Check spam, or make sure you typed the address your administrator registered.</p>
         <div className="mt-6 space-y-2">

@@ -3,6 +3,7 @@ Django settings for config project.
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import dj_database_url
@@ -36,7 +37,8 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
-    "rest_framework.authtoken",
+    "rest_framework.authtoken",  # old never-expiring login tokens; no longer accepted, table kept
+    "rest_framework_simplejwt.token_blacklist",  # signed-out / used refresh tokens
     "corsheaders",
     "accounts",
     "formulas",
@@ -108,22 +110,54 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- DRF ---
-# Real per-person login only (username + password → token, accounts.login_view), in dev
-# and production alike. The old X-Demo-Role header login, which needed no password at
-# all, has been removed.
+# Real per-person login only (username + password → access + refresh token,
+# accounts.login_view), in dev and production alike. The old X-Demo-Role header login, which
+# needed no password at all, has been removed, and so has the old never-expiring
+# "Authorization: Token ..." login: calls now send "Authorization: Bearer <access token>".
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
-    # Forgot/reset password: limits how fast one address can request or try reset links.
+    # Forgot/reset password: limits how fast one client IP can request or try reset links
+    # (password_reset) and how often one user can try to change their password (password_change).
     "DEFAULT_THROTTLE_RATES": {
         "password_reset": os.environ.get("PASSWORD_RESET_RATE", "10/hour"),
         "password_change": os.environ.get("PASSWORD_CHANGE_RATE", "10/hour"),
     },
+    # How many proxies sit in front of Django. The rate limits key on the client IP; with a
+    # proxy, that IP is the one the proxy adds at the END of X-Forwarded-For, so DRF must be
+    # told to take it from there. Left unset, DRF trusts the whole header, which any client can
+    # forge to get round the limits. 0 = no proxy (use the connection's own address).
+    "NUM_PROXIES": int(os.environ.get("NUM_PROXIES", "0" if DEBUG else "1")),
+}
+
+# Sign-in tokens (accounts/tokens.py). The access token goes with every call and lasts
+# 15 minutes; the refresh token gets a new access token from POST /api/auth/refresh/ and lasts
+# 7 days. Each refresh hands out a new refresh token and retires the old one, so the 7 days
+# count from the last time the app was used: someone using it at least weekly stays signed in.
+# Both lifetimes can be changed in .env (minutes / days).
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.environ.get("JWT_ACCESS_MINUTES", "15"))),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.environ.get("JWT_REFRESH_DAYS", "7"))),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": False,  # login_view records it itself
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
+# --- Cache ---
+# Holds the rate-limit counters. A database table (created by accounts migration 0004) so every
+# worker process shares one count and restarts don't reset it; Django's default in-memory cache
+# would give each worker its own count.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache",
+    }
 }
 
 # --- Production hardening (no-ops locally, since DEBUG defaults true there) ---
@@ -151,6 +185,10 @@ DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@example.com")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173" if DEBUG else "").rstrip("/")
 # How long a password-reset link works, in seconds (Django's own setting; 1 hour here).
 PASSWORD_RESET_TIMEOUT = int(os.environ.get("PASSWORD_RESET_TIMEOUT", "3600"))
+# Send password-reset emails from a background thread, so the forgot-password reply takes the
+# same time whether or not the address has an account (waiting for the mail server would give
+# that away). Tests switch it off to check the email synchronously.
+PASSWORD_RESET_EMAIL_IN_BACKGROUND = True
 EMAIL_BACKEND = (
     "django.core.mail.backends.smtp.EmailBackend"
     if EMAIL_HOST_USER

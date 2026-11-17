@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from openpyxl import Workbook, load_workbook
-from rest_framework.authtoken.models import Token
+from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework.test import APIClient
 
 from .models import TECH_DATA_AUTO_SECTION_LABEL, FormulaDefinition, Section, TechDataFieldDefinition
@@ -45,9 +45,9 @@ class BulkImportTests(TestCase):
         controlling = User.objects.create_user("controlling-bulk", password="controllingpass123", role="Controlling")
         sales = User.objects.create_user("sales-bulk", password="salespass123", role="Sales")
         self.client_ = APIClient()
-        self.client_.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=controlling).key}")
+        self.client_.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(controlling)}")
         self.sales = APIClient()
-        self.sales.credentials(HTTP_AUTHORIZATION=f"Token {Token.objects.create(user=sales).key}")
+        self.sales.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(sales)}")
 
     def upload(self, sections=None, fields=None, dry_run=False, client=None, file=None):
         return (client or self.client_).post(
