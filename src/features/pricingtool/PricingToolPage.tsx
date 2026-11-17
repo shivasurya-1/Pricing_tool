@@ -9,8 +9,7 @@ import { useFormulaStore, type TechDataFieldDto } from '@/store/formulaStore'
 import { useReferenceStore } from '@/store/referenceStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
 import { computePulleyPricing, type CostLine, type PulleyPricingResult } from '@/lib/pulleyPricingCalc'
-import { computeAutoFields } from '@/lib/pulleyTechDataCalc'
-import { extraOutsourcedLines, outsourcedAutoFieldAdjust, sourcingCostsOf } from '@/lib/outsourcedCosts'
+import { computeWithSourcing, fieldLabelFor, HOME_MODE, isFieldHidden, sourcingFields, type CostSection, type ExtraLine } from '@/lib/outsourcedCosts'
 import { catalogDisplayValue, PROCESS_SOURCING_MAP, useTechDataSections, type TechDataField } from '@/data/pulleyTechDataSchema'
 import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
 import './PricingToolSheet.css'
@@ -71,16 +70,8 @@ interface Column {
   values: Values
   autoValues: Values
   pricing: PulleyPricingResult
-  /** Sourcing-added outsourced lines with no Formulas-page Section D field (custom processes, Welding). */
-  extraD: CostLine[]
-}
-
-/** Union of line keys across pulleys, in first-seen order — pulleys can have different
- * Section D lines (Sourcing-added outsourced processes). */
-function unionLines(lists: CostLine[][]): CostLine[] {
-  const seen = new Map<string, CostLine>()
-  for (const list of lists) for (const l of list) if (!seen.has(l.key)) seen.set(l.key, l)
-  return [...seen.values()]
+  /** Sourcing rows shown in Section C/D/E beyond those sections' own fields. */
+  extraLines: Record<CostSection, ExtraLine[]>
 }
 
 /** Mixes `hex` with white — `amount` is the share of the colour (0.055 = 5.5%). */
@@ -163,23 +154,6 @@ function fieldValue(field: TechDataField, col: Column, rfq: RFQ): string | numbe
   if (/number\s*of\s*pulleys|\bqty\b|quantity/i.test(id)) return col.values.qty ?? col.item.quantity
   if (/quote\s*ref|project\s*\/\s*quote|quotereference/i.test(id)) return rfq.quoteReference || rfq.projectName || undefined
   return undefined
-}
-
-/**
- * A process's In-house / Outsource choice for one pulley. Same resolution the Pricing Tool
- * sheet's own fields use: the saved value, else the auto-computed one, else the field's
- * fixed value — looked up by the process's key, or by its label on a customised sheet
- * where the field is keyed differently.
- */
-function sourcingValue(p: { srcKey: string; label: string }, col: Column, techDataFields: Record<string, TechDataFieldDto>): string | number | undefined {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
-  const field = techDataFields[p.srcKey] ?? Object.values(techDataFields).find((f) => norm(f.label) === norm(p.label))
-  const keys = field && field.key !== p.srcKey ? [p.srcKey, field.key] : [p.srcKey]
-  for (const key of keys) {
-    const v = col.values[key] ?? col.autoValues[key]
-    if (v !== undefined && v !== null && v !== '') return v
-  }
-  return field?.fixed_value || undefined
 }
 
 export function PricingToolPage() {
@@ -300,13 +274,15 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     () =>
       items.map((item) => {
         const values = item.technicalData ?? {}
-        const sourcing = sourcingCostsOf(item)
+        // Sourcing rows (Pricing Section D fields + added rows): their costs and modes are
+        // applied here, so Sections C/D/E totals and Section F (totals, prices) follow.
+        const sourcing = computeWithSourcing(values, item)
         return {
           item,
-          values,
-          autoValues: computeAutoFields(values, outsourcedAutoFieldAdjust(values, sourcing)),
-          pricing: computePulleyPricing(values, sourcing),
-          extraD: extraOutsourcedLines(values, sourcing),
+          values: sourcing.values,
+          autoValues: sourcing.autoValues,
+          pricing: computePulleyPricing(values),
+          extraLines: sourcing.extraLines,
         }
       }),
     // formulas/costRates/techDataFields/inHouseHourRates: recompute when they change, though read via getState().
@@ -384,9 +360,20 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     for (const list of Object.values(byLetter)) list.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
     return byLetter as Record<string, TechDataField[]>
   }, [techDataFields])
+  // A row's name as renamed on the Sourcing screen — used when every pulley showing it has the
+  // same name (a single pulley, or all renamed alike); otherwise the Formulas page name.
+  const sharedLabel = (f: { key: string; label: string }) => {
+    const names = new Set(columns.filter((c) => !isFieldHidden(c.item, f.key)).map((c) => fieldLabelFor(c.item, f)))
+    return names.size === 1 ? [...names][0] : f.label
+  }
   const formulaRows = (letter: string, only?: (f: TechDataField) => boolean) =>
     formulaSections[letter]?.filter((f) => !only || only(f)).map((f) =>
-      row(f.label, columns.map((c) => fmtFormulaValue(fieldValue(f, c, rfq), f.unit)), { unit: f.unit, total: /^total\b/i.test(f.label) }),
+      row(
+        sharedLabel(f),
+        // A row removed from a pulley on the Sourcing screen shows "—" for that pulley.
+        columns.map((c) => (isFieldHidden(c.item, f.key) ? '—' : fmtFormulaValue(fieldValue(f, c, rfq), f.unit))),
+        { unit: f.unit, total: /^total\b/i.test(f.label) },
+      ),
     )
   const extraValue = (field: TechDataFieldDto, c: Column) =>
     fmtValue(
@@ -404,6 +391,14 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
     <ValueRow key={label} label={label} cells={cells} gridStyle={gridStyle} {...opts} />
   )
   const first = columns[0]
+  // Union across pulleys of a section's Sourcing rows (a D field moved to C on one pulley only
+  // still gets one row; other pulleys show "—").
+  const extraLinesFor = (code: string): ExtraLine[] => {
+    if (code !== 'C' && code !== 'D' && code !== 'E') return []
+    const byKey = new Map<string, ExtraLine>()
+    for (const c of columns) for (const l of c.extraLines[code]) if (!byKey.has(l.key)) byKey.set(l.key, l)
+    return [...byKey.values()]
+  }
 
   const head = (
     <PulleyHeaderRow
@@ -457,7 +452,28 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
           })}
 
           <SheetSection code={inputSections.sourcingCode} title="Sourcing selection" color={INPUT_COLORS[8]}>
-            {PROCESS_SOURCING_MAP.map((p) => row(p.label, columns.map((c) => <SourcingPill key={c.item.id} value={sourcingValue(p, c, techDataFields)} />)))}
+            {/* The Sourcing step's rows and the mode chosen there (In-house / Outsource / Logistics):
+                Formulas-page Section C and D fields, then rows added on the Sourcing screen. */}
+            {sourcingFields(techDataFields)
+              .filter(({ field }) => columns.some((c) => !isFieldHidden(c.item, field.key)))
+              .map(({ field, home }) =>
+                row(
+                  sharedLabel(field),
+                  columns.map((c) =>
+                    isFieldHidden(c.item, field.key) ? '—' : <SourcingPill key={c.item.id} value={c.item.outsourcedFieldModes?.[field.key] ?? HOME_MODE[home]} />,
+                  ),
+                ),
+              )}
+            {columns.flatMap((owner) =>
+              (owner.item.customProcesses ?? []).map((p) => (
+                <ValueRow
+                  key={`added-${p.id}`}
+                  label={p.label}
+                  cells={columns.map((c) => (c === owner ? <SourcingPill key={c.item.id} value={p.mode} /> : '—'))}
+                  gridStyle={gridStyle}
+                />
+              )),
+            )}
           </SheetSection>
         </div>
       </div>
@@ -472,23 +488,31 @@ function PricingSheet({ rfq, items }: { rfq: RFQ; items: RFQItem[] }) {
           {COST_SECTIONS.map((s) => (
             <SheetSection key={s.code} code={s.code} title={s.title} color={s.color}>
               {formulaSections[s.code]?.length ? (
-                s.code === 'D' ? (
+                extraLinesFor(s.code).length ? (
                   <>
-                    {formulaRows('D', (f) => !/^total\b/i.test(f.label))}
-                    {unionLines(columns.map((c) => c.extraD)).map((line) =>
-                      row(line.label, columns.map((c) => fmtCost(c.extraD.find((l) => l.key === line.key))), { unit: 'INR' }),
+                    {formulaRows(s.code, (f) => !/^\s*total\b/i.test(f.label))}
+                    {/* Sourcing rows in this section by their mode (moved D fields / added rows) — already in the total. */}
+                    {extraLinesFor(s.code).map((line) =>
+                      row(
+                        line.label,
+                        columns.map((c) => {
+                          const l = c.extraLines[s.code as CostSection]?.find((x) => x.key === line.key)
+                          return l ? fmtNumber(l.value, 0) : '—'
+                        }),
+                        { unit: 'INR' },
+                      ),
                     )}
-                    {formulaRows('D', (f) => /^total\b/i.test(f.label))}
+                    {formulaRows(s.code, (f) => /^\s*total\b/i.test(f.label))}
                   </>
                 ) : (
                   formulaRows(s.code)
                 )
               ) : (
                 <>
-                  {unionLines(columns.map((c) => c.pricing[s.lines])).map((line) =>
+                  {first.pricing[s.lines].map((line, i) =>
                     row(
                       line.label,
-                      columns.map((c) => fmtCost(c.pricing[s.lines].find((l) => l.key === line.key))),
+                      columns.map((c) => fmtCost(c.pricing[s.lines][i])),
                       { unit: 'INR' },
                     ),
                   )}
@@ -629,6 +653,7 @@ function SourcingPill({ value }: { value: string | number | undefined }) {
   if (!text) return <>—</>
   if (/out/i.test(text)) return <span className="pts-tag pts-out">{text}</span>
   if (/in[\s-]?house/i.test(text)) return <span className="pts-tag pts-in">{text}</span>
+  if (/logistic/i.test(text)) return <span className="pts-tag pts-log">{text}</span>
   return <>{text}</>
 }
 

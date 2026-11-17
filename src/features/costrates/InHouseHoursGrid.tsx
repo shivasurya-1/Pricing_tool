@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react'
+import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { RotateCcw, Save } from 'lucide-react'
 import clsx from 'clsx'
 import { useDataStore } from '@/store/dataStore'
@@ -8,7 +8,7 @@ import { useUiStore } from '@/store/uiStore'
 import { Button } from '@/components/ui/Button'
 import { applyFieldChange, inHouseHoursVars } from '@/lib/pulleyTechDataCalc'
 import { canRoleActOnStage } from '@/lib/workflow'
-import type { PulleyTechDataValues, RFQ, RFQItem } from '@/types'
+import type { CustomProcess, PulleyTechDataValues, RFQ, RFQItem } from '@/types'
 
 const fmt = (n: number) => n.toLocaleString('en-IN', { maximumFractionDigits: 0 })
 const head = 'border-b border-r border-[var(--color-border)] px-2 py-1.5'
@@ -100,6 +100,20 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
   const valuesOf = (item: RFQItem) => drafts[item.id] ?? item.technicalData ?? {}
   const dirtyItems = rfq.items.filter((item) => drafts[item.id] !== undefined)
 
+  // Rows added on the Sourcing screen with mode In-house — one pulley each. Their MHR rate /
+  // run / setup are saved on the added row (backend item-custom-process), which only
+  // Sourcing can change while the RFQ is at the Sourcing stage.
+  const updateCustomProcess = useDataStore((s) => s.updateCustomProcess)
+  const addedEditable = editable && rfq.stage === 'Sourcing'
+  const [addedDrafts, setAddedDrafts] = useState<Record<string, AddedHoursDraft>>({})
+  const addedRows = rfq.items.flatMap((item) =>
+    (item.customProcesses ?? []).filter((c) => c.mode === 'In-house').map((c) => ({ item, c, draftKey: `${item.id}:${c.id}` })),
+  )
+  const addedHours = (draftKey: string, c: CustomProcess) => addedHoursOf(c, addedDrafts[draftKey])
+  const setAdded = (draftKey: string, c: CustomProcess, key: keyof AddedHoursDraft, raw: string) =>
+    setAddedDrafts((prev) => ({ ...prev, [draftKey]: { ...(prev[draftKey] ?? savedAddedDraft(c)), [key]: raw } }))
+  const dirtyAdded = addedRows.filter((r) => addedDrafts[r.draftKey] !== undefined)
+
   const columns = useMemo(
     () => rfq.items.map((item) => ({ item, hours: inHouseHoursVars(drafts[item.id] ?? item.technicalData ?? {}) })),
     // inHouseHourRates: recompute when the rates/defaults change, though read via getState().
@@ -145,10 +159,14 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
       // stays empty (and keeps showing the row's default in grey).
       for (const item of dirtyItems) await saveItemTechData(rfq.id, item.id, drafts[item.id])
       setDrafts({})
-      pushToast(
-        dirtyItems.length ? `In-house hours saved for ${dirtyItems.length} ${dirtyItems.length === 1 ? 'model' : 'models'}.` : 'Nothing to save — no minutes were changed.',
-        'success',
-      )
+      // Added rows: the backend recalculates their cost = rate x (run + setup).
+      for (const { item, c, draftKey } of dirtyAdded) {
+        const d = addedDrafts[draftKey]
+        await updateCustomProcess(rfq.id, item.id, c.id, { mhrRate: toNum(d.mhrRate), runMin: toNum(d.runMin), setupMin: toNum(d.setupMin) })
+      }
+      setAddedDrafts({})
+      const changed = dirtyItems.length + dirtyAdded.length
+      pushToast(changed ? 'In-house hours saved.' : 'Nothing to save — no minutes were changed.', 'success')
     } catch {
       // withErrorToast already showed the error; keep the unsaved edits.
     } finally {
@@ -173,8 +191,17 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
           </label>
           {editable && (
             <div className="flex gap-1.5">
-              {dirtyItems.length > 0 && (
-                <Button size="sm" variant="secondary" icon={<RotateCcw size={12} />} onClick={() => setDrafts({})} disabled={saving}>
+              {dirtyItems.length + dirtyAdded.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<RotateCcw size={12} />}
+                  onClick={() => {
+                    setDrafts({})
+                    setAddedDrafts({})
+                  }}
+                  disabled={saving}
+                >
                   Discard
                 </Button>
               )}
@@ -259,6 +286,67 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
                 })}
               </tr>
             ))}
+            {addedRows.map(({ item: owner, c, draftKey }) => {
+              const h = addedHours(draftKey, c)
+              const d = addedDrafts[draftKey] ?? savedAddedDraft(c)
+              return (
+                <tr key={draftKey} className="border-b border-[var(--color-border)] bg-[var(--color-purple-50)]/40">
+                  {frozenCols.map((col) => {
+                    const f = frozenCell(frozenCols, col.key, 'bg-white')
+                    let content: ReactNode = '—'
+                    if (col.key === 'costHead') content = <span className="text-[var(--color-purple)]">Added in Sourcing</span>
+                    if (col.key === 'activity') content = c.label
+                    if (col.key === 'rate')
+                      content = addedEditable ? (
+                        <input
+                          type="number"
+                          min={0}
+                          value={d.mhrRate}
+                          placeholder="0"
+                          onChange={(e) => setAdded(draftKey, c, 'mhrRate', e.target.value)}
+                          onWheel={(e) => e.currentTarget.blur()}
+                          title="MHR rate for this added row"
+                          className="w-14 rounded border border-[var(--color-border)] px-1 py-1 text-right text-xs tabular-nums outline-none focus:border-[var(--color-blue)]"
+                        />
+                      ) : (
+                        h.rate.toFixed(1)
+                      )
+                    return (
+                      <td
+                        key={col.key}
+                        className={clsx(
+                          'border-r border-[var(--color-border)] px-2 py-1.5 text-xs',
+                          f.className,
+                          col.key === 'activity' && 'font-medium',
+                          col.key === 'rate' && 'text-right tabular-nums',
+                        )}
+                        style={f.style}
+                      >
+                        {content}
+                      </td>
+                    )
+                  })}
+                  {columns.map(({ item }) =>
+                    item.id !== owner.id ? (
+                      <BlankGroup key={item.id} />
+                    ) : (
+                      <MinutesGroup
+                        key={item.id}
+                        run={d.runMin}
+                        setup={d.setupMin}
+                        runDefault=""
+                        setupDefault=""
+                        total={h.run + h.setup}
+                        cost={h.cost}
+                        editable={addedEditable}
+                        onRun={(v) => setAdded(draftKey, c, 'runMin', v)}
+                        onSetup={(v) => setAdded(draftKey, c, 'setupMin', v)}
+                      />
+                    ),
+                  )}
+                </tr>
+              )
+            })}
             <tr className="bg-[var(--color-surface-alt)] font-semibold">
               {frozenCols.map((c) => {
                 const f = frozenCell(frozenCols, c.key, 'bg-[var(--color-surface-alt)]')
@@ -270,7 +358,16 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
               })}
               {columns.map(({ item, hours }) => {
                 const sum = (suffix: string) => shownCodes.reduce((s, code) => s + hours.vars[`${code}${suffix}`], 0)
-                return <TotalsGroup key={item.id} run={sum('RunMin')} setup={sum('SetupMin')} cost={sum('InHouseCost')} />
+                const added = addedRows.filter((r) => r.item.id === item.id).map((r) => addedHours(r.draftKey, r.c))
+                const addedSum = (k: 'run' | 'setup' | 'cost') => added.reduce((s, h) => s + h[k], 0)
+                return (
+                  <TotalsGroup
+                    key={item.id}
+                    run={sum('RunMin') + addedSum('run')}
+                    setup={sum('SetupMin') + addedSum('setup')}
+                    cost={sum('InHouseCost') + addedSum('cost')}
+                  />
+                )
               })}
             </tr>
           </tbody>
@@ -278,6 +375,36 @@ export function InHouseHoursGrid({ rfq }: { rfq: RFQ }) {
       </div>
     </div>
   )
+}
+
+/** Unsaved MHR rate / run / setup of an added row, as typed ('' = not set). */
+interface AddedHoursDraft {
+  mhrRate: string
+  runMin: string
+  setupMin: string
+}
+
+const toNum = (raw: string): number | null => (raw.trim() === '' ? null : Math.max(0, Number(raw) || 0))
+const savedAddedDraft = (c: CustomProcess): AddedHoursDraft => ({
+  mhrRate: c.mhrRate == null ? '' : String(c.mhrRate),
+  runMin: c.runMin == null ? '' : String(c.runMin),
+  setupMin: c.setupMin == null ? '' : String(c.setupMin),
+})
+
+/** An added row's figures: once any of rate / run / setup is set, cost = rate x (run + setup)
+ * (as the other rows); before that, the cost entered on the Sourcing screen. */
+function addedHoursOf(c: CustomProcess, draft: AddedHoursDraft | undefined) {
+  const d = draft ?? savedAddedDraft(c)
+  const rate = toNum(d.mhrRate)
+  const run = toNum(d.runMin)
+  const setup = toNum(d.setupMin)
+  const fromHours = rate !== null || run !== null || setup !== null
+  return {
+    rate: rate ?? 0,
+    run: run ?? 0,
+    setup: setup ?? 0,
+    cost: fromHours ? (rate ?? 0) * ((run ?? 0) + (setup ?? 0)) : Number(c.cost) || 0,
+  }
 }
 
 function SubHeads() {

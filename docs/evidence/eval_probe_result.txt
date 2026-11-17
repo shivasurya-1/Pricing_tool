@@ -1,0 +1,17 @@
+attribute access         | (1).__class__                                | REJECTED Invalid expression: Sorry, access to __attributes  or func_ attributes is not available. ( 0.0
+dunder name              | __builtins__                                 | RESULT 0.0 0.0
+import                   | __import__('os')                             | REJECTED Invalid expression: Function '__import__' not defined, for expression '__import__('os')'. 0.0
+eval / exec              | eval('1')                                    | REJECTED Invalid expression: Function 'eval' not defined, for expression 'eval('1')'. 0.0
+open file                | open('x')                                    | REJECTED Invalid expression: Function 'open' not defined, for expression 'open('x')'. 0.0
+lambda                   | (lambda: 1)()                                | REJECTED Invalid expression: Lambda Functions not implemented 0.0
+string result            | 'abc'                                        | REJECTED Formula must evaluate to a number 0.0
+list comprehension       | [x*2 for x in [1,2,3]][2]                    | RESULT 6.0 0.0
+big list by multiply     | len([1]*10)                                  | REJECTED Invalid expression: Function 'len' not defined, for expression 'len([1]*10)'. 0.0
+list multiply 10**7      | ([0]*10000000)[0]                            | REJECTED Invalid expression: Sorry, I will not evaluate something that long. 0.0
+nested comprehension     | [[0 for a in [0,0,0,0,0,0,0,0,0,0]] for b in | RESULT 0.0 0.0
+pow() huge (blocked?)    | pow(10, 10000000)                            | REJECTED Invalid expression: Sorry! I don't want to evaluate 10 ** 10000000 0.0
+** at simpleeval limit   | 9**3999999 > 0                               | RESULT 1.0 1.73
+** both near limit       | 3999999**3999999 > 0                         | TIMEOUT after 20 s (worker would be blocked)
+chained ** near limit    | (3999999**3999)**999 > 0                     | REJECTED Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_dig 0.0
+division by zero         | 1/0                                          | REJECTED Division by zero 0.0
+iff short-circuit        | iff(0, 1/0, 5)                               | RESULT 5.0 0.0

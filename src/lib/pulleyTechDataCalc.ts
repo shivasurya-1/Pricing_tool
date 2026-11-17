@@ -189,6 +189,17 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues, adjust?: AutoFie
   for (const key of order) {
     const f = byKey.get(key)!
 
+    // Sourcing's costs (lib/outsourcedCosts.ts) also apply to copy fields — e.g. the Formulas
+    // page's C1–C7 are copies of c#InHouseCost — before dependents (the C total, Section F) run.
+    if (f.copy_from && adjust && (key in adjust.pinned || (adjust.add && key in adjust.add))) {
+      const copiedNum = autoKeys.has(f.copy_from) ? Number(out[f.copy_from]) : Number(values[f.copy_from] ?? vars[f.copy_from])
+      let result = key in adjust.pinned ? adjust.pinned[key] : Number.isFinite(copiedNum) ? copiedNum : 0
+      if (adjust.add && key in adjust.add) result += adjust.add[key]
+      vars[key] = result
+      out[key] = round2(result)
+      continue
+    }
+
     if (f.copy_from) {
       // Copy the source's raw value as-is (text, number or selected option) — no
       // calculation, no rounding. The source may itself be an Auto field already
@@ -221,7 +232,7 @@ function computeAutoFieldsDynamic(values: PulleyTechDataValues, adjust?: AutoFie
     let result = evaluateFormula(f.expression as string, vars)
     // Sourcing's outsourced costs (lib/outsourcedCosts.ts) — applied before dependents run.
     if (adjust && key in adjust.pinned) result = adjust.pinned[key]
-    if (adjust && key in adjust.add) result += adjust.add[key]
+    if (adjust?.add && key in adjust.add) result += adjust.add[key]
     vars[key] = result
     out[key] = round2(result)
   }
@@ -276,7 +287,7 @@ function computeAutoFieldsStatic(values: PulleyTechDataValues): PulleyTechDataVa
 }
 
 /** `adjust` (optional): Sourcing's outsourced costs to force onto Section D Auto fields —
- * see outsourcedAutoFieldAdjust() in lib/outsourcedCosts.ts. */
+ * see withOutsourcedFieldCosts() in lib/outsourcedCosts.ts. */
 export function computeAutoFields(values: PulleyTechDataValues, adjust?: AutoFieldAdjust): PulleyTechDataValues {
   if (useFormulaStore.getState().loaded) {
     try {

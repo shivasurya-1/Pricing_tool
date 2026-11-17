@@ -13,6 +13,7 @@ import type {
   RFQ,
   RFQItem,
   Role,
+  SourcingMode,
   Stage,
   TechDataFieldOverride,
   User,
@@ -119,14 +120,21 @@ interface DataState {
   removeRfqItem: (id: string, itemId: string, actorName: string) => Promise<RFQ>
   confirmItemSourcing: (id: string, itemId: string, confirmed: boolean) => Promise<void>
   assignProcessVendor: (id: string, itemId: string, processKey: string, vendorId: string, vendorName: string) => Promise<void>
-  /** Manual per-unit cost for an outsourced process; null clears it (back to the formula value). */
-  setProcessCost: (id: string, itemId: string, processKey: string, cost: number | null) => Promise<void>
-  addCustomProcess: (id: string, itemId: string, input: { label: string; cost: number; vendorId?: string; vendorName?: string }) => Promise<void>
+  /** Per-unit cost for a Formulas-page "Pricing Section D" field on one pulley; null clears it
+   * (back to the field's formula). See lib/outsourcedCosts.ts. */
+  setOutsourcedFieldCost: (id: string, itemId: string, fieldKey: string, cost: number | null) => Promise<void>
+  /** In-house / Outsource / Logistics for a Pricing Section D field on one pulley. */
+  setOutsourcedFieldMode: (id: string, itemId: string, fieldKey: string, mode: SourcingMode) => Promise<void>
+  /** Rename (label; '' = back to the Formulas page name) or remove/restore (hidden) a Pricing
+   * Section C / D row for one pulley. */
+  setOutsourcedFieldMeta: (id: string, itemId: string, fieldKey: string, meta: { label?: string; hidden?: boolean }) => Promise<void>
+  /** Outsourced rows added on the Sourcing screen for one pulley (backend item-custom-process). */
+  addCustomProcess: (id: string, itemId: string, input: CustomProcessInput) => Promise<void>
   updateCustomProcess: (
     id: string,
     itemId: string,
     customId: string,
-    patch: { label?: string; cost?: number; vendorId?: string; vendorName?: string },
+    patch: Partial<CustomProcessInput> & { mhrRate?: number | null; runMin?: number | null; setupMin?: number | null },
   ) => Promise<void>
   deleteCustomProcess: (id: string, itemId: string, customId: string) => Promise<void>
   saveSourcingComment: (id: string, comment: string) => Promise<void>
@@ -168,6 +176,8 @@ async function withErrorToast<T>(action: () => Promise<T>): Promise<T> {
     throw err
   }
 }
+
+type CustomProcessInput = { label: string; cost: number; mode?: SourcingMode; vendorId?: string; vendorName?: string }
 
 function replaceRfq(rfqs: RFQ[], updated: RFQ): RFQ[] {
   return rfqs.map((r) => (r.id === updated.id ? updated : r))
@@ -316,10 +326,24 @@ export const useDataStore = create<DataState>()((set, get) => ({
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
     }),
 
-  setProcessCost: (id, itemId, processKey, cost) =>
+  setOutsourcedFieldCost: (id, itemId, fieldKey, cost) =>
     withErrorToast(async () => {
       const actorName = useAuthStore.getState().name
-      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-process-cost/`, { itemId, processKey, cost, actorName })
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-outsourced-field-cost/`, { itemId, fieldKey, cost, actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  setOutsourcedFieldMeta: (id, itemId, fieldKey, meta) =>
+    withErrorToast(async () => {
+      const actorName = useAuthStore.getState().name
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-outsourced-field-meta/`, { itemId, fieldKey, ...meta, actorName })
+      set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
+    }),
+
+  setOutsourcedFieldMode: (id, itemId, fieldKey, mode) =>
+    withErrorToast(async () => {
+      const actorName = useAuthStore.getState().name
+      const rfq = await api.patch<RFQ>(`/rfq/rfqs/${id}/item-outsourced-field-mode/`, { itemId, fieldKey, mode, actorName })
       set((s) => ({ rfqs: replaceRfq(s.rfqs, rfq) }))
     }),
 

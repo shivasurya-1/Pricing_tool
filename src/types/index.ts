@@ -146,10 +146,32 @@ export interface RFQItem {
   sourcingConfirmed?: boolean
   /** Optional vendor tag Sourcing can attach to an outsourced component or process — cost still comes from computePulleyPricing(), this is informational only. */
   processVendors?: ProcessVendorAssignment[]
-  /** Sourcing's manual per-unit cost for an outsourced process (see lib/outsourcedCosts.ts). */
-  processCosts?: ProcessCostOverride[]
-  /** Extra outsourced processes added on the Sourcing screen — each is an extra Section D line. */
+  /** Sourcing-entered per-unit cost for Formulas-page "Pricing Section D" fields, by field key
+   * — replaces that field's formula on the Pricing Tool page (see lib/outsourcedCosts.ts). */
+  outsourcedFieldCosts?: Record<string, number>
+  /** Mode of a Pricing Section D field on this pulley when not Outsource — In-house moves its
+   * cost to Section C on the Pricing Tool page, Logistics to Section E. */
+  outsourcedFieldModes?: Record<string, SourcingMode>
+  /** Per-pulley rename / removal of a Pricing Section C or D row on the Sourcing screen. */
+  outsourcedFieldMeta?: Record<string, { label?: string; hidden?: boolean }>
+  /** Outsourced rows added on the Sourcing screen for this pulley only — each cost is added
+   * to the Pricing Tool's Section D total (see lib/outsourcedCosts.ts). */
   customProcesses?: CustomProcess[]
+}
+
+export type SourcingMode = 'In-house' | 'Outsource' | 'Logistics'
+
+export interface CustomProcess {
+  id: string
+  label: string
+  mode: SourcingMode
+  cost: number
+  /** Set on the In-House Hours page (In-house rows): cost = mhrRate x (runMin + setupMin). */
+  mhrRate?: number | null
+  runMin?: number | null
+  setupMin?: number | null
+  vendorId: string
+  vendorName: string
 }
 
 export interface ProcessVendorAssignment {
@@ -158,19 +180,6 @@ export interface ProcessVendorAssignment {
   vendorName: string
 }
 
-export interface ProcessCostOverride {
-  processKey: string
-  cost: number
-}
-
-export interface CustomProcess {
-  id: string
-  label: string
-  mode: 'Outsource'
-  cost: number
-  vendorId: string
-  vendorName: string
-}
 
 export interface CostBreakdownLine {
   itemId: string

@@ -213,6 +213,21 @@ class RFQItem(models.Model):
     custom_processes = models.JSONField(
         default=list, blank=True, help_text='[{"id", "label", "mode": "Outsource", "cost", "vendorId", "vendorName"}]'
     )
+    outsourced_field_costs = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Sourcing-entered per-unit cost for Formulas-page "Pricing Section D" fields: {"d2StressReliefAnnealing": 1500.0}',
+    )
+    outsourced_field_modes = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Mode of a "Pricing Section D" field on this pulley when not Outsource: {"d2StressReliefAnnealing": "In-house"}',
+    )
+    outsourced_field_meta = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Per-pulley name / removal of a Pricing Section C or D row on the Sourcing screen: {"c1Cost": {"label": "Rolling", "hidden": true}}',
+    )
 
     class Meta:
         ordering = ["item_no"]

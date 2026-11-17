@@ -61,6 +61,7 @@ class RFQItemSerializer(CamelCaseSerializer):
             "id", "item_no", "product_code", "product_name", "description", "quantity", "unit",
             "specification", "required_delivery", "target_price", "remarks", "technical_data",
             "field_overrides", "sourcing_confirmed", "process_vendors", "process_costs", "custom_processes",
+            "outsourced_field_costs", "outsourced_field_modes", "outsourced_field_meta",
         ]
 
     def to_representation(self, instance):

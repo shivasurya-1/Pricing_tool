@@ -891,3 +891,102 @@ class SourcingOutsourcedCostTests(TestCase):
         RFQ.objects.filter(pk=self.rfq_id).update(stage="Controlling")
         r = self.sourcing.post(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "label": "X", "cost": 1}, format="json")
         self.assertEqual(r.status_code, 400)
+
+    # ---- costs for Formulas-page "Pricing Section D" fields -------------------------
+
+    def _make_d_fields(self):
+        from formulas.models import TechDataFieldDefinition as T
+
+        T.objects.update_or_create(key="dTestGalvanising", defaults={"label": "D9. Galvanising (Outsourced)", "section": "Pricing Section D — Outsourced Processing", "field_type": "number"})
+        T.objects.update_or_create(key="dTestTotal", defaults={"label": "TOTAL OUTSOURCED PROCESSING COST (D)", "section": "Pricing Section D — Outsourced Processing", "field_type": "number"})
+        T.objects.update_or_create(key="aTestShell", defaults={"label": "A1. Shell", "section": "Pricing Section A — Raw Materials", "field_type": "number"})
+
+    def test_set_and_clear_outsourced_field_cost(self):
+        self._make_d_fields()
+        url = f"{self.base}/item-outsourced-field-cost/"
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "cost": 750}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self._item(r.data)["outsourcedFieldCosts"], {"dTestGalvanising": 750.0})
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "cost": None}, format="json")
+        self.assertEqual(self._item(r.data)["outsourcedFieldCosts"], {})
+
+    def test_outsourced_field_cost_rejects_non_section_d_total_and_bad_cost(self):
+        self._make_d_fields()
+        url = f"{self.base}/item-outsourced-field-cost/"
+        for key in ("aTestShell", "dTestTotal", "noSuchField"):
+            r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": key, "cost": 1}, format="json")
+            self.assertEqual(r.status_code, 400, key)
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "cost": -1}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_admin_can_set_outsourced_field_cost(self):
+        self._make_d_fields()
+        r = client_as("Admin").patch(
+            f"{self.base}/item-outsourced-field-cost/", {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "cost": 5}, format="json"
+        )
+        self.assertEqual(r.status_code, 200, r.data)
+
+    # ---- mode (In-house / Outsource / Logistics) ------------------------------------
+
+    def test_set_outsourced_field_mode(self):
+        self._make_d_fields()
+        url = f"{self.base}/item-outsourced-field-mode/"
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "mode": "In-house"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self._item(r.data)["outsourcedFieldModes"], {"dTestGalvanising": "In-house"})
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "mode": "Outsource"}, format="json")
+        self.assertEqual(self._item(r.data)["outsourcedFieldModes"], {})
+        for body in ({"fieldKey": "dTestGalvanising", "mode": "Teleport"}, {"fieldKey": "dTestTotal", "mode": "In-house"}):
+            r = self.sourcing.patch(url, {"itemId": self.item_id, **body}, format="json")
+            self.assertEqual(r.status_code, 400, body)
+
+    def test_custom_process_mode(self):
+        r = self.sourcing.post(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "label": "Crating", "cost": 50, "mode": "Logistics"}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        [entry] = self._item(r.data)["customProcesses"]
+        self.assertEqual(entry["mode"], "Logistics")
+        r = self.sourcing.patch(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "id": entry["id"], "mode": "In-house"}, format="json")
+        self.assertEqual(self._item(r.data)["customProcesses"][0]["mode"], "In-house")
+        r = self.sourcing.patch(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "id": entry["id"], "mode": "x"}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_section_c_field_cost_and_mode(self):
+        from formulas.models import TechDataFieldDefinition as T
+
+        T.objects.update_or_create(key="cTestRolling", defaults={"label": "C1. Rolling", "section": "Pricing Section C — In-House Processing", "field_type": "number"})
+        r = self.sourcing.patch(f"{self.base}/item-outsourced-field-cost/", {"itemId": self.item_id, "fieldKey": "cTestRolling", "cost": 900}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self._item(r.data)["outsourcedFieldCosts"], {"cTestRolling": 900.0})
+        url = f"{self.base}/item-outsourced-field-mode/"
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "cTestRolling", "mode": "Outsource"}, format="json")
+        self.assertEqual(self._item(r.data)["outsourcedFieldModes"], {"cTestRolling": "Outsource"})
+        # In-house is a Section C field's default, so it isn't stored.
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "cTestRolling", "mode": "In-house"}, format="json")
+        self.assertEqual(self._item(r.data)["outsourcedFieldModes"], {})
+
+    def test_custom_process_in_house_hours(self):
+        r = self.sourcing.post(f"{self.base}/item-custom-process/", {"itemId": self.item_id, "label": "Galvanising", "cost": 10, "mode": "In-house"}, format="json")
+        cid = self._item(r.data)["customProcesses"][0]["id"]
+        url = f"{self.base}/item-custom-process/"
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "id": cid, "mhrRate": 50, "runMin": 120, "setupMin": 30}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        entry = self._item(r.data)["customProcesses"][0]
+        self.assertEqual((entry["mhrRate"], entry["runMin"], entry["setupMin"], entry["cost"]), (50.0, 120.0, 30.0, 7500.0))
+        # A cost typed on the Sourcing screen replaces the minutes.
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "id": cid, "cost": 99}, format="json")
+        entry = self._item(r.data)["customProcesses"][0]
+        self.assertEqual(entry["cost"], 99.0)
+        self.assertNotIn("runMin", entry)
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "id": cid, "runMin": -1}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_field_meta_rename_and_remove(self):
+        self._make_d_fields()
+        url = f"{self.base}/item-outsourced-field-meta/"
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "label": "Zinc coat", "hidden": True}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(self._item(r.data)["outsourcedFieldMeta"], {"dTestGalvanising": {"label": "Zinc coat", "hidden": True}})
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestGalvanising", "label": "", "hidden": False}, format="json")
+        self.assertEqual(self._item(r.data)["outsourcedFieldMeta"], {})
+        r = self.sourcing.patch(url, {"itemId": self.item_id, "fieldKey": "dTestTotal", "hidden": True}, format="json")
+        self.assertEqual(r.status_code, 400)

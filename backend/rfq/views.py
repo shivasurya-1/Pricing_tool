@@ -661,7 +661,8 @@ class RFQViewSet(SourcingCostsMixin, mixins.ListModelMixin, mixins.RetrieveModel
                 specification=source.specification, required_delivery=source.required_delivery, target_price=source.target_price,
                 remarks=source.remarks, technical_data=technical_data, field_overrides=source.field_overrides,
                 process_vendors=source.process_vendors, process_costs=source.process_costs,
-                custom_processes=source.custom_processes,
+                custom_processes=source.custom_processes, outsourced_field_costs=source.outsourced_field_costs,
+                outsourced_field_modes=source.outsourced_field_modes, outsourced_field_meta=source.outsourced_field_meta,
             )
             recompute_rfq_value(rfq)
             touch(rfq)

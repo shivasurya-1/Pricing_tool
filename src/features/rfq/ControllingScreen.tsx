@@ -18,7 +18,7 @@ import { formatCurrency } from '@/lib/format'
 import { SEND_BACK_TARGETS } from '@/lib/workflow'
 import { calculateCostBreakdown, marginStatus, marginStatusColor, summarizeCostBreakdown } from '@/lib/pricing'
 import { computePulleyPricing } from '@/lib/pulleyPricingCalc'
-import { sourcingCostsOf } from '@/lib/outsourcedCosts'
+import { formulaCostSummary } from '@/lib/outsourcedCosts'
 import { useFormulaStore } from '@/store/formulaStore'
 import type { CostBreakdownLine, RFQItem } from '@/types'
 
@@ -31,6 +31,31 @@ interface EditableLine {
   discount: number
   marginPercent: number
   taxPercent: number
+}
+
+// Default freight / duties / other charges as a share of the base cost.
+const FREIGHT_RATE = 0.02
+const DUTIES_RATE = 0.05
+const OTHER_RATE = 0.01
+
+/** A pulley's base cost = the Pricing Tool page's TOTAL DIRECT COST (Formulas-page totals,
+ * Sourcing changes included); the built-in calculation only if those fields aren't loaded. */
+function pulleyBaseCost(item: RFQItem): number {
+  return formulaCostSummary(item)?.totalDirectCost ?? computePulleyPricing(item.technicalData ?? {}).totalDirectCost
+}
+
+function defaultLine(item: RFQItem, targetMarginPercent: number): EditableLine {
+  const baseCost = pulleyBaseCost(item)
+  return {
+    itemId: item.id,
+    baseCost,
+    freight: Math.round(baseCost * FREIGHT_RATE),
+    duties: Math.round(baseCost * DUTIES_RATE),
+    otherCharges: Math.round(baseCost * OTHER_RATE),
+    discount: 0,
+    marginPercent: targetMarginPercent,
+    taxPercent: 18,
+  }
 }
 
 export function ControllingScreen() {
@@ -63,19 +88,7 @@ export function ControllingScreen() {
         taxPercent: l.taxPercent,
       }))
     }
-    return rfq.items.map((item) => {
-      const baseCost = computePulleyPricing(item.technicalData ?? {}, sourcingCostsOf(item)).totalDirectCost
-      return {
-        itemId: item.id,
-        baseCost,
-        freight: Math.round(baseCost * 0.02),
-        duties: Math.round(baseCost * 0.05),
-        otherCharges: Math.round(baseCost * 0.01),
-        discount: 0,
-        marginPercent: rfq.targetMarginPercent,
-        taxPercent: 18,
-      }
-    })
+    return rfq.items.map((item) => defaultLine(item, rfq.targetMarginPercent))
   }, [rfq, formulas, costRates])
 
   const [lines, setLines] = useState<EditableLine[]>(initialLines)
@@ -86,6 +99,28 @@ export function ControllingScreen() {
   if (!rfq) return <EmptyState title="RFQ not found" />
   if (rfq.stage !== 'Controlling') {
     return <EmptyState title="This RFQ is not awaiting Controlling" description={`Current stage: ${rfq.stage}`} action={<Button onClick={() => navigate(`/rfqs/${rfq.id}`)}>View RFQ</Button>} />
+  }
+
+  // Re-reads each pulley's base cost from the Pricing Tool (it may have changed since the
+  // breakdown was saved). Freight / duties / other still at their default % of the old base
+  // follow the new base; values typed by hand, discount, margin and tax are kept.
+  const recalculate = () => {
+    setLines(
+      rfq.items.map((item) => {
+        const prev = lines.find((l) => l.itemId === item.id)
+        if (!prev) return defaultLine(item, rfq.targetMarginPercent)
+        const baseCost = pulleyBaseCost(item)
+        const follow = (value: number, rate: number) => (value === Math.round(prev.baseCost * rate) ? Math.round(baseCost * rate) : value)
+        return {
+          ...prev,
+          baseCost,
+          freight: follow(prev.freight, FREIGHT_RATE),
+          duties: follow(prev.duties, DUTIES_RATE),
+          otherCharges: follow(prev.otherCharges, OTHER_RATE),
+        }
+      }),
+    )
+    pushToast('Base cost updated from the Pricing Tool. Save to keep it.', 'success')
   }
 
   const updateLine = (itemId: string, patch: Partial<EditableLine>) => {
@@ -122,7 +157,7 @@ export function ControllingScreen() {
       <div className="space-y-5">
         <Card>
           <CardHeader title="Cost Breakdown" action={
-            <Button size="sm" variant="secondary" icon={<RefreshCw size={13} />} onClick={() => setLines(initialLines)}>
+            <Button size="sm" variant="secondary" icon={<RefreshCw size={13} />} onClick={recalculate}>
               Recalculate
             </Button>
           } />

@@ -1,0 +1,24 @@
+%% D7a — Login and session restore.
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant LP as LoginPage (React)
+    participant AS as authStore (Zustand, persisted)
+    participant API as Django /api/auth
+    participant DB as Database
+    U->>LP: username, password, role card
+    LP->>AS: login(username, password, role)
+    AS->>API: POST /api/auth/login/
+    API->>DB: authenticate(username, password)
+    alt wrong password
+        API-->>AS: 401 Invalid credentials
+    else role differs from card
+        API-->>AS: 403 Not an account of that role
+    else ok
+        API->>DB: update last_login, Token.get_or_create
+        API-->>AS: 200 token + user + permission grid
+        AS->>AS: save token and role in localStorage
+        AS-->>LP: ok
+        LP->>API: load formulas, reference data, RFQs (Authorization: Token)
+    end
+    Note over AS,API: On every page reload restoreSession() calls GET /api/auth/me/ and re-applies the real role. A 401 on any call clears the session.

@@ -1,0 +1,27 @@
+%% D7c — Stage action: approve, and send back.
+sequenceDiagram
+    autonumber
+    actor A as Approval Panel user
+    participant UI as ApprovalScreen
+    participant API as RFQViewSet
+    participant WF as workflow.py
+    participant G as role_permissions (grid in DB)
+    participant DB as Database
+    A->>UI: Approve (optional comment)
+    UI->>API: POST /rfqs/{id}/approve-final/
+    API->>WF: require_stage(rfq, Approval Pending)
+    API->>WF: require_can_act(user, stage)
+    WF->>G: has_any_permission(user, Approval, edit)
+    alt check fails
+        API-->>UI: 400 detail
+    else allowed
+        API->>DB: audit event, notification for Sales, stage = Approved
+        API-->>UI: 200 RFQ
+    end
+    A->>UI: Send Back (target, comment)
+    Note right of UI: Comment is required by the screen only
+    UI->>API: POST /rfqs/{id}/send-back/ targetStage, comment
+    API->>WF: require_valid_send_back(stage, target)
+    API->>WF: require_can_act(user, current stage)
+    API->>DB: audit (real role), notification for target owner, stage = target
+    API-->>UI: 200 RFQ

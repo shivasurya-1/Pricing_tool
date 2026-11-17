@@ -1,0 +1,39 @@
+%% D8 — Formula evaluation flow: save-time validation (server) and run-time evaluation (browser).
+flowchart TB
+    classDef server fill:#1168bd,stroke:#0b4884,color:#ffffff
+    classDef browser fill:#2f855a,stroke:#22543d,color:#ffffff
+    classDef stop fill:#c53030,stroke:#822727,color:#ffffff
+
+    subgraph S["Save time: server (formulas/views.py, evaluator.py)"]
+        E1["Admin or Controlling edits an expression<br/>on the Formulas page"]:::server
+        E2["extract_variables(): every identifier<br/>except min max round abs sqrt pow iff PI"]:::server
+        E3{"Each name a known key?<br/>sheet field, formula, cost rate,<br/>c#RateInrPerHour, c#RunMin, catalog price"}:::server
+        E4{"Self-reference, or a text select<br/>used in arithmetic?"}:::server
+        E5["Dry run with simpleeval:<br/>every variable = 1"]:::server
+        E6["Save expression, derived input_variables<br/>and a FormulaVersion audit row"]:::server
+        X1["400 with message"]:::stop
+        E1 --> E2 --> E3
+        E3 -- no --> X1
+        E3 -- yes --> E4
+        E4 -- yes --> X1
+        E4 -- no --> E5
+        E5 -- error --> X1
+        E5 -- ok --> E6
+    end
+
+    subgraph B["Run time: browser (pulleyTechDataCalc.ts, formulaEval.ts)"]
+        R1["Variables: cost rates, numeric fields of the item,<br/>fixed values, catalog prices, In-House Hours variables"]:::browser
+        R2["Order Auto fields by input_variables<br/>(topological sort; a cycle is an error)"]:::browser
+        R3{"Copy formula?<br/>(expression is one key)"}:::browser
+        R4["Copy source value as-is"]:::browser
+        R5["Tokenize and parse (recursive descent):<br/>+ - * / comparisons, parentheses,<br/>whitelisted functions; iff evaluates one branch;<br/>missing variable = 0"]:::browser
+        R6["Round to 2 decimals and keep as a variable<br/>for later fields"]:::browser
+        R7["Any error: console warning,<br/>use hardcoded static calculation"]:::stop
+        R1 --> R2 --> R3
+        R3 -- yes --> R4 --> R6
+        R3 -- no --> R5 --> R6
+        R2 -- cycle --> R7
+        R5 -- parse or math error --> R7
+    end
+
+    E6 -. "GET /api/formulas/tech-data-fields/" .-> R1

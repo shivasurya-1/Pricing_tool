@@ -49,6 +49,7 @@
 .pts-tag { display: inline-block; padding: 1px 12px; border-radius: 10px; font-size: 9.5pt; font-weight: 700; }
 .pts-tag.pts-in { background: #dcf3e6; color: #176b3a; }
 .pts-tag.pts-out { background: #fde4d3; color: #a2410c; }
+.pts-tag.pts-log { background: #dbeafe; color: #1e40af; }
 
 /* All pulleys side by side (one value column per pulley, like the client's Excel):
    the card widens, each part scrolls sideways, and the label column stays put. */
