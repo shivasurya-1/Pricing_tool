@@ -32,3 +32,7 @@ dist-ssr
 # Contains infrastructure details for other, unrelated client projects on the
 # shared VPS — never belongs in this project's repo.
 vps_server_setup.md
+
+# Exported copies of the docs (.docx / .pdf) and Word's temporary "~$" lock files.
+docs/export/
+~$*
