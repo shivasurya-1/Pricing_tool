@@ -119,6 +119,11 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    # Forgot/reset password: limits how fast one address can request or try reset links.
+    "DEFAULT_THROTTLE_RATES": {
+        "password_reset": os.environ.get("PASSWORD_RESET_RATE", "10/hour"),
+        "password_change": os.environ.get("PASSWORD_CHANGE_RATE", "10/hour"),
+    },
 }
 
 # --- Production hardening (no-ops locally, since DEBUG defaults true there) ---
@@ -139,6 +144,13 @@ EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@example.com")
+
+# Where the React app lives. Used for the "Sign in" link in new-account emails and for the
+# link in password-reset emails ({FRONTEND_URL}/reset-password?uid=...&token=...). Defaults
+# to the Vite dev server only when DEBUG is on; in production it must be set in .env.
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173" if DEBUG else "").rstrip("/")
+# How long a password-reset link works, in seconds (Django's own setting; 1 hour here).
+PASSWORD_RESET_TIMEOUT = int(os.environ.get("PASSWORD_RESET_TIMEOUT", "3600"))
 EMAIL_BACKEND = (
     "django.core.mail.backends.smtp.EmailBackend"
     if EMAIL_HOST_USER

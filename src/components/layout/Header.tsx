@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, HelpCircle, ChevronDown, LogOut, Repeat, Compass } from 'lucide-react'
+import { Bell, HelpCircle, ChevronDown, KeyRound, LogOut, Repeat, Compass } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
 import { GlobalSearch } from '@/components/layout/GlobalSearch'
 import { Drawer } from '@/components/ui/Drawer'
 import { NotificationList } from '@/components/NotificationList'
+import { ChangePasswordModal } from '@/features/auth/ChangePasswordModal'
 import { ROLES } from '@/types'
 import { initials } from '@/lib/format'
 import { startTour } from '@/lib/tour'
@@ -17,6 +18,7 @@ export function Header() {
   const [notifOpen, setNotifOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [roleMenuOpen, setRoleMenuOpen] = useState(false)
+  const [passwordOpen, setPasswordOpen] = useState(false)
 
   const relevant = notifications.filter((n) => !n.targetRole || n.targetRole === role)
   const unreadCount = relevant.filter((n) => !n.read).length
@@ -117,6 +119,15 @@ export function Header() {
               )}
               <button
                 onClick={() => {
+                  setPasswordOpen(true)
+                  setProfileOpen(false)
+                }}
+                className="flex w-full items-center gap-2 border-t border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-ink-soft)] hover:bg-[var(--color-surface)]"
+              >
+                <KeyRound size={14} /> Change password
+              </button>
+              <button
+                onClick={() => {
                   logout()
                   navigate('/login')
                 }}
@@ -128,6 +139,8 @@ export function Header() {
           )}
         </div>
       </div>
+
+      <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
 
       <Drawer open={notifOpen} onClose={() => setNotifOpen(false)} title="Notifications" width="max-w-md">
         <NotificationList notifications={relevant} onNavigate={() => setNotifOpen(false)} />

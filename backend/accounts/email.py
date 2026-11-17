@@ -53,3 +53,27 @@ def send_new_user_email(user, password: str) -> bool:
         logger.exception("Couldn't send the new-account email to user %s", user.pk)
         return False
     return True
+
+
+def send_password_reset_email(user, reset_url: str, valid_minutes: int) -> bool:
+    """Emails the password-reset link. Best-effort like send_new_user_email: returns False
+    (and logs) on a mail-server failure, and the caller still answers the request the same
+    way, so nothing here can reveal whether an account exists."""
+    context = {
+        **email_branding(),
+        "name": user.get_full_name() or user.username,
+        "username": user.username,
+        "reset_url": reset_url,
+        "valid_minutes": valid_minutes,
+    }
+    subject = render_to_string(f"{TEMPLATE_DIR}/password_reset_subject.txt", context).strip()
+    text_body = render_to_string(f"{TEMPLATE_DIR}/password_reset.txt", context)
+    html_body = render_to_string(f"{TEMPLATE_DIR}/password_reset.html", context)
+    try:
+        message = EmailMultiAlternatives(subject=subject, body=text_body, from_email=settings.DEFAULT_FROM_EMAIL, to=[user.email])
+        message.attach_alternative(html_body, "text/html")
+        message.send(fail_silently=False)
+    except Exception:
+        logger.exception("Couldn't send the password-reset email to user %s", user.pk)
+        return False
+    return True

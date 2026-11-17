@@ -1,7 +1,13 @@
+import re
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core import mail
+from django.core.cache import cache
+from django.test import TestCase, override_settings
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
 
 from .models import Role
 
@@ -421,3 +427,212 @@ class UserDeleteTests(TestCase):
 
     def test_unknown_user_is_404(self):
         self.assertEqual(self.admin_client.delete("/api/auth/users/999999/").status_code, 404)
+
+
+@override_settings(FRONTEND_URL="https://app.example.test")
+class PasswordResetTests(TestCase):
+    """Forgot password -> emailed link -> choose a new password."""
+
+    FORGOT = "/api/auth/forgot-password/"
+    CHECK = "/api/auth/reset-password/check/"
+    RESET = "/api/auth/reset-password/"
+
+    def setUp(self):
+        cache.clear()  # the reset endpoints are rate limited per address; keep tests independent
+        self.user = User.objects.create_user("rita", email="rita@example.test", password="Old-pass-1234", role=Role.SALES)
+        self.client = APIClient()
+        # Capture what the view would email. (Rendering the email templates inside a test-client
+        # request trips a Django/Python 3.14 template-copy bug that only the test client has, so
+        # the email itself is tested separately in test_the_email_renders_with_the_link.)
+        self.sent = []
+        patcher = patch("accounts.views.send_password_reset_email", side_effect=lambda user, url, minutes: self.sent.append((user, url, minutes)) or True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def link_from_outbox(self):
+        self.assertEqual(len(self.sent), 1)
+        match = re.search(r"/reset-password\?uid=([^&\s]+)&token=([^\s]+)", self.sent[0][1])
+        self.assertIsNotNone(match, self.sent[0][1])
+        return match.group(1), match.group(2)
+
+    def request_link(self):
+        self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json")
+        return self.link_from_outbox()
+
+    # --- forgot password ---
+
+    def test_known_email_gets_a_link(self):
+        res = self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        user, url, minutes = self.sent[0]
+        self.assertEqual(user.pk, self.user.pk)
+        self.assertTrue(url.startswith("https://app.example.test/reset-password?uid="), url)
+        self.assertEqual(minutes, 60)
+
+    def test_the_email_renders_with_the_link(self):
+        from .email import send_password_reset_email
+
+        url = "https://app.example.test/reset-password?uid=abc&token=def"
+        self.assertTrue(send_password_reset_email(self.user, url, 60))
+        message = mail.outbox[0]
+        self.assertEqual(message.to, ["rita@example.test"])
+        self.assertIn("Reset your", message.subject)
+        self.assertIn(url, message.body)
+        self.assertIn("rita", message.body)
+        self.assertIn("60 minutes", message.body)
+        self.assertIn(url.replace("&", "&amp;"), message.alternatives[0][0])  # the HTML version carries the link too (& escaped)
+
+    def test_answer_is_the_same_for_unknown_and_known_emails(self):
+        known = self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json")
+        unknown = self.client.post(self.FORGOT, {"email": "nobody@example.test"}, format="json")
+        self.assertEqual((known.status_code, known.data), (unknown.status_code, unknown.data))
+        self.assertEqual(len(self.sent), 1)  # only the real account got an email
+
+    def test_email_match_ignores_case_and_inactive_accounts_get_nothing(self):
+        self.client.post(self.FORGOT, {"email": "RITA@Example.TEST"}, format="json")
+        self.assertEqual(len(self.sent), 1)
+        self.sent.clear()
+        self.user.is_active = False
+        self.user.save()
+        self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json")
+        self.assertEqual(len(self.sent), 0)
+
+    def test_missing_or_malformed_email_is_a_400(self):
+        for body in ({}, {"email": ""}, {"email": "not-an-email"}):
+            self.assertEqual(self.client.post(self.FORGOT, body, format="json").status_code, 400)
+
+    def test_a_stale_token_in_the_request_does_not_break_it(self):
+        self.client.credentials(HTTP_AUTHORIZATION="Token not-a-real-token")
+        self.assertEqual(self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json").status_code, 200)
+
+    def test_requests_are_rate_limited(self):
+        with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"password_reset": "2/hour"}):
+            codes = [self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json").status_code for _ in range(3)]
+        self.assertEqual(codes, [200, 200, 429])
+
+    # --- the link ---
+
+    def test_a_fresh_link_checks_out_and_a_bad_one_does_not(self):
+        uid, token = self.request_link()
+        self.assertEqual(self.client.post(self.CHECK, {"uid": uid, "token": token}, format="json").status_code, 200)
+        for bad in ({"uid": uid, "token": "wrong"}, {"uid": "zzzz", "token": token}, {"uid": "", "token": ""}, {}):
+            self.assertEqual(self.client.post(self.CHECK, bad, format="json").status_code, 400)
+
+    def test_a_link_expires(self):
+        uid, token = self.request_link()
+        with override_settings(PASSWORD_RESET_TIMEOUT=-1):
+            res = self.client.post(self.CHECK, {"uid": uid, "token": token}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("expired", res.data["detail"])
+
+    # --- choosing the new password ---
+
+    def test_reset_sets_the_new_password_and_the_link_works_once(self):
+        uid, token = self.request_link()
+        res = self.client.post(self.RESET, {"uid": uid, "token": token, "password": "Brand-new-pass-77"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        login = lambda pw: self.client.post("/api/auth/login/", {"username": "rita", "password": pw}, format="json").status_code
+        self.assertEqual(login("Brand-new-pass-77"), 200)
+        self.assertEqual(login("Old-pass-1234"), 401)
+        again = self.client.post(self.RESET, {"uid": uid, "token": token, "password": "Another-pass-88"}, format="json")
+        self.assertEqual(again.status_code, 400)  # the link died with the old password
+
+    def test_reset_signs_out_every_existing_session(self):
+        old_token = Token.objects.create(user=self.user)
+        uid, token = self.request_link()
+        self.client.post(self.RESET, {"uid": uid, "token": token, "password": "Brand-new-pass-77"}, format="json")
+        self.assertFalse(Token.objects.filter(key=old_token.key).exists())
+
+    def test_weak_passwords_are_refused_with_every_reason(self):
+        uid, token = self.request_link()
+        res = self.client.post(self.RESET, {"uid": uid, "token": token, "password": "12345678"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertTrue(res.data["errors"])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("Old-pass-1234"))  # nothing changed
+        # the link still works after a refused password
+        ok = self.client.post(self.RESET, {"uid": uid, "token": token, "password": "Brand-new-pass-77"}, format="json")
+        self.assertEqual(ok.status_code, 200)
+
+    def test_reset_needs_a_valid_link_and_a_password(self):
+        uid, token = self.request_link()
+        self.assertEqual(self.client.post(self.RESET, {"uid": uid, "token": "wrong", "password": "Brand-new-pass-77"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post(self.RESET, {"uid": uid, "token": token}, format="json").status_code, 400)
+
+    def test_a_link_for_one_account_cannot_reset_another(self):
+        other = User.objects.create_user("omar", email="omar@example.test", password="Omar-pass-1234")
+        _, token = self.request_link()
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+        other_uid = urlsafe_base64_encode(force_bytes(other.pk))
+        res = self.client.post(self.RESET, {"uid": other_uid, "token": token, "password": "Brand-new-pass-77"}, format="json")
+        self.assertEqual(res.status_code, 400)
+        other.refresh_from_db()
+        self.assertTrue(other.check_password("Omar-pass-1234"))
+
+    @override_settings(FRONTEND_URL="")
+    def test_without_a_frontend_url_no_email_is_sent_but_the_answer_is_unchanged(self):
+        res = self.client.post(self.FORGOT, {"email": "rita@example.test"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(self.sent), 0)
+
+
+class ChangePasswordTests(TestCase):
+    """A signed-in user changing their own password (no email link involved)."""
+
+    URL = "/api/auth/change-password/"
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("carl", email="carl@example.test", password="Old-pass-1234", role=Role.SALES)
+        self.token = Token.objects.create(user=self.user)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+
+    def change(self, current="Old-pass-1234", new="Brand-new-pass-77"):
+        return self.client.post(self.URL, {"current_password": current, "new_password": new}, format="json")
+
+    def login_status(self, password):
+        return APIClient().post("/api/auth/login/", {"username": "carl", "password": password}, format="json").status_code
+
+    def test_requires_sign_in(self):
+        res = APIClient().post(self.URL, {"current_password": "x", "new_password": "y"}, format="json")
+        self.assertIn(res.status_code, (401, 403))
+
+    def test_changes_the_password(self):
+        res = self.change()
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(self.login_status("Brand-new-pass-77"), 200)
+        self.assertEqual(self.login_status("Old-pass-1234"), 401)
+
+    def test_this_browser_stays_signed_in_and_other_sessions_end(self):
+        res = self.change()
+        self.assertFalse(Token.objects.filter(key=self.token.key).exists())  # the old key is dead
+        new_key = res.data["token"]
+        self.assertTrue(Token.objects.filter(key=new_key, user=self.user).exists())
+        fresh = APIClient()
+        fresh.credentials(HTTP_AUTHORIZATION=f"Token {new_key}")
+        self.assertEqual(fresh.get("/api/auth/me/").status_code, 200)
+
+    def test_wrong_current_password_is_a_400_not_a_401(self):
+        res = self.change(current="Not-my-password-1")
+        self.assertEqual(res.status_code, 400)  # a 401 would sign the user out in the frontend
+        self.assertIn("current password", res.data["detail"])
+        self.assertEqual(self.login_status("Old-pass-1234"), 200)  # nothing changed
+
+    def test_weak_and_unchanged_passwords_are_refused(self):
+        weak = self.change(new="12345678")
+        self.assertEqual(weak.status_code, 400)
+        self.assertTrue(weak.data["errors"])
+        same = self.change(new="Old-pass-1234")
+        self.assertEqual(same.status_code, 400)
+        self.assertEqual(self.login_status("Old-pass-1234"), 200)
+
+    def test_missing_fields_are_a_400(self):
+        self.assertEqual(self.client.post(self.URL, {}, format="json").status_code, 400)
+        self.assertEqual(self.client.post(self.URL, {"current_password": "Old-pass-1234"}, format="json").status_code, 400)
+
+    def test_attempts_are_rate_limited(self):
+        with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"password_change": "2/hour"}):
+            codes = [self.change(current="wrong-one-1").status_code for _ in range(3)]
+        self.assertEqual(codes, [400, 400, 429])

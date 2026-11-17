@@ -7,6 +7,8 @@ import { useReferenceStore } from '@/store/referenceStore'
 import { setNavigateRef } from '@/lib/navigation'
 import { AppShell } from '@/components/layout/AppShell'
 import { LoginPage } from '@/features/auth/LoginPage'
+import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage'
+import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage'
 import { DashboardPage } from '@/features/dashboard/DashboardPage'
 import { RFQListPage } from '@/features/rfq/RFQListPage'
 import { RFQCreatePage } from '@/features/rfq/RFQCreatePage'
@@ -79,6 +81,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route
         element={
           <RequireAuth>

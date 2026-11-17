@@ -37,6 +37,8 @@ interface AuthState {
   logout: () => void
   /** On app start: check the stored token with GET /auth/me/ and re-apply the account's real role. */
   restoreSession: () => Promise<void>
+  /** Swap in a fresh session token (after a password change the old one is retired). */
+  setToken: (token: string) => void
   /** "View as" — Admin accounts only; changes what is shown, never the token or the account. */
   switchRole: (role: Role) => void
 
@@ -107,6 +109,8 @@ export const useAuthStore = create<AuthState>()(
           if (err instanceof ApiError && (err.status === 401 || err.status === 403)) get().logout()
         }
       },
+
+      setToken: (token) => set({ token }),
 
       switchRole: (role) => {
         if (get().accountRole !== 'Admin') return

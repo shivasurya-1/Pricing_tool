@@ -40,6 +40,14 @@ real PostgreSQL instance — required for production.
 
 - `POST /api/auth/login/` — `{username, password}` → `{token, user}`
 - `GET /api/auth/me/`
+- `POST /api/auth/forgot-password/` — `{email}` → always 200 for a well-formed address (never says whether an account exists); emails a one-time link to `{FRONTEND_URL}/reset-password?uid=…&token=…`
+- `POST /api/auth/reset-password/check/` — `{uid, token}` → 200 if the link is still good, else 400
+- `POST /api/auth/reset-password/` — `{uid, token, password}` → sets the new password and signs the account out everywhere; 400 with `errors[]` if the password is too weak
+
+- `POST /api/auth/change-password/` — signed-in users only; `{current_password, new_password}` → `{token}`. A wrong current password is a 400 (not a 401); other devices are signed out and the response carries the fresh token for this one (`PASSWORD_CHANGE_RATE`, default 10/hour)
+
+The three password-reset endpoints need no login, are rate limited (`PASSWORD_RESET_RATE`, default 10/hour per address), and the link lasts `PASSWORD_RESET_TIMEOUT` seconds (default 1 hour). Set `FRONTEND_URL` in `.env` for production; without SMTP credentials the email prints to the server log instead of sending.
+
 - `GET /api/formulas/` · `GET/PATCH /api/formulas/{key}/` · `POST /api/formulas/{key}/preview/` · `GET /api/formulas/{key}/history/`
 - `GET/PATCH /api/reference/cost-rates/`
 - `GET/POST/PATCH/DELETE /api/reference/raw-forging/{shaft-bands|shell-bands}/` — Raw Forging Prices page
