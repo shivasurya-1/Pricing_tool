@@ -1,6 +1,8 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .custom_fields import MasterTableFieldViewSet
+
 from .views import (
     BearingCatalogViewSet,
     GlobalParameterViewSet,
@@ -38,6 +40,8 @@ router.register("catalogs/lcd-data", LcdDataViewSet, basename="lcd-data")
 router.register("catalogs/housings", HousingCatalogViewSet, basename="housing-catalog")
 router.register("catalogs/locking-devices", LockingDeviceCatalogViewSet, basename="locking-device-catalog")
 router.register("in-house-hours", InHouseHourRateViewSet, basename="in-house-hour-rate")
+# "Manage Fields" on every master table: user-added fields and built-in column renames.
+router.register("table-fields", MasterTableFieldViewSet, basename="master-table-field")
 
 urlpatterns = [
     # Dependent-dropdown lookups — listed before the router so they never collide with catalogs/* routes.

@@ -6,6 +6,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .custom_fields import builtin_labels, extra_value_fields, query_columns, read_value
 from .models import (
     BearingCatalogEntry,
     GlobalParameter,
@@ -336,12 +337,19 @@ class ReferenceDropdownFieldsView(APIView):
                 cfg["group_label"],
                 {"referenceField": slugify(cfg["group_label"]), "label": cfg["group_label"], "tables": []},
             )
+            # Built-in columns renamed under "Manage Fields" show their new label, and the
+            # table's user-added fields follow its built-in value columns.
+            renamed = builtin_labels(table)
+
+            def relabel(column):
+                return {"field": column["field"], "label": renamed.get(column["field"], column["label"])}
+
             group["tables"].append(
                 {
                     "table": table,
                     "label": cfg["label"],
-                    "labelField": dict(cfg["label_field"]),
-                    "valueFields": [dict(column) for column in cfg["value_fields"]],
+                    "labelField": relabel(cfg["label_field"]),
+                    "valueFields": [relabel(column) for column in cfg["value_fields"]] + extra_value_fields(table),
                 }
             )
         return Response(list(groups.values()))
@@ -365,7 +373,9 @@ class ReferenceDropdownValuesView(APIView):
             raise ValidationError(
                 {"detail": f"Unsupported label_field '{label_field}' for table '{table}'. Allowed: {cfg['label_field']['field']}."}
             )
-        allowed_values = [column["field"] for column in cfg["value_fields"]]
+        allowed_values = [column["field"] for column in cfg["value_fields"]] + [
+            column["field"] for column in extra_value_fields(table)
+        ]
         if value_field is not None and value_field not in allowed_values:
             raise ValidationError(
                 {
@@ -377,6 +387,6 @@ class ReferenceDropdownValuesView(APIView):
         value_column = value_field or label_field
         rows = (
             cfg["model"].objects.exclude(Q(**{f"{label_field}__isnull": True}) | Q(**{label_field: ""}))
-            .values("id", label_field, value_column)
+            .values("id", *query_columns([label_field, value_column]))
         )
-        return Response([{"id": row["id"], "label": row[label_field], "value": row[value_column]} for row in rows])
+        return Response([{"id": row["id"], "label": row[label_field], "value": read_value(row, value_column)} for row in rows])

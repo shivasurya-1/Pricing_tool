@@ -435,7 +435,7 @@ class ReferenceDropdownApiTests(TestCase):
         # so a column added to a model later without being listed here fails this test.
         from reference.views import REFERENCE_DROPDOWN_FIELDS
 
-        bookkeeping = {"id", "order", "updated_by", "updated_at"}
+        bookkeeping = {"id", "order", "updated_by", "updated_at", "extra"}
         for table, cfg in REFERENCE_DROPDOWN_FIELDS.items():
             with self.subTest(table=table):
                 model_columns = {f.name for f in cfg["model"]._meta.concrete_fields} - bookkeeping

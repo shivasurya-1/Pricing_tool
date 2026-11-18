@@ -1,6 +1,7 @@
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { extraOf } from '@/components/reference/masterTableFields'
 import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useReferenceStore, type ShaftBandDto, type ShellBandDto } from '@/store/referenceStore'
 import { formatCurrency } from '@/lib/format'
@@ -87,11 +88,13 @@ export function RawForgingPricesPage() {
       <div className="space-y-5">
         <ReferenceCrudTable
           title="Shaft"
+          tableKey="shaft-bands"
           rows={shaftBands}
           columns={shaftColumns}
           addLabel="Add Shaft Band"
           onCreate={(v) =>
             createShaftBand({
+              ...extraOf(v),
               material: String(v.material ?? ''),
               diameter: String(v.diameter ?? ''),
               length: String(v.length ?? ''),
@@ -114,12 +117,14 @@ export function RawForgingPricesPage() {
 
         <ReferenceCrudTable
           title="Shell"
+          tableKey="shell-bands"
           description="All measurements in mm"
           rows={shellBands}
           columns={shellColumns}
           addLabel="Add Shell Band"
           onCreate={(v) =>
             createShellBand({
+              ...extraOf(v),
               sourcing: String(v.sourcing ?? ''),
               diameter_body: String(v.diameter_body ?? ''),
               face_width_body: String(v.face_width_body ?? ''),

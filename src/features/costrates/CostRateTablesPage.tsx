@@ -1,6 +1,7 @@
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { extraOf } from '@/components/reference/masterTableFields'
 import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useFormulaStore, type GlobalParameterDto, type MaterialRateDto, type LabourRateDto, type LogisticsRateDto } from '@/store/formulaStore'
 import { useReferenceStore, type LaggingCatalogDto } from '@/store/referenceStore'
@@ -104,11 +105,13 @@ export function CostRateTablesPage() {
       <div className="space-y-5">
         <ReferenceCrudTable
           title="A. Global Parameters"
+          tableKey="global-parameters"
           rows={globalParameters}
           columns={globalColumns}
           addLabel="Add Rate"
           onCreate={(v) =>
             createGlobalParameter({
+              ...extraOf(v),
               key: String(v.key ?? '') || `global-${Date.now()}`,
               parameter: String(v.parameter ?? ''),
               value: Number(v.value ?? 0),
@@ -123,12 +126,14 @@ export function CostRateTablesPage() {
 
         <ReferenceCrudTable
           title="B. Material Rates"
+          tableKey="material-rates"
           description="INR/kg — same figures as Raw Forging Prices, kept in sync"
           rows={materialRates}
           columns={materialColumns}
           addLabel="Add Rate"
           onCreate={(v) =>
             createMaterialRate({
+              ...extraOf(v),
               key: String(v.key ?? '') || `material-${Date.now()}`,
               material: String(v.material ?? ''),
               inr_per_kg: Number(v.inr_per_kg ?? 0),
@@ -143,12 +148,14 @@ export function CostRateTablesPage() {
 
         <ReferenceCrudTable
           title="C. Machining & Labour Rates"
+          tableKey="machining-labour-rates"
           description="INR/hour unless noted"
           rows={labourRates}
           columns={labourColumns}
           addLabel="Add Rate"
           onCreate={(v) =>
             createLabourRate({
+              ...extraOf(v),
               key: String(v.key ?? '') || `labour-${Date.now()}`,
               operation: String(v.operation ?? ''),
               inr_per_hour: Number(v.inr_per_hour ?? 0),
@@ -163,11 +170,13 @@ export function CostRateTablesPage() {
 
         <ReferenceCrudTable
           title="E. Logistics & Packing Rates"
+          tableKey="logistics-packing-rates"
           rows={logisticsRates}
           columns={logisticsColumns}
           addLabel="Add Rate"
           onCreate={(v) =>
             createLogisticsRate({
+              ...extraOf(v),
               key: String(v.key ?? '') || `logistics-${Date.now()}`,
               item: String(v.item ?? ''),
               rate: Number(v.rate ?? 0),
@@ -182,12 +191,14 @@ export function CostRateTablesPage() {
 
         <ReferenceCrudTable
           title="D. Lagging Rates"
+          tableKey="lagging-rates"
           description="INR/m²"
           rows={lagging}
           columns={laggingColumns}
           addLabel="Add Lagging Rate"
           onCreate={(v) =>
             createLagging({
+              ...extraOf(v),
               key: slugifySnakeCase(String(v.lagging_type ?? '')) || `lagging-${Date.now()}`,
               lagging_type: String(v.lagging_type ?? ''),
               thickness_mm: Number(v.thickness_mm ?? 0),

@@ -3,6 +3,7 @@ import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { extraOf } from '@/components/reference/masterTableFields'
 import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import { useReferenceStore, type InHouseHourRateDto } from '@/store/referenceStore'
 import { useDataStore } from '@/store/dataStore'
@@ -95,11 +96,13 @@ export function MhrLhrCalculatorPage() {
             </div>
             <ReferenceCrudTable
               title="MHR Rates"
+              tableKey="in-house-hours"
               rows={inHouseHourRates}
               columns={columns}
               addLabel="Add Row"
               onCreate={(v) =>
                 createInHouseHourRate({
+                  ...extraOf(v),
                   cost_head: String(v.cost_head ?? ''),
                   operation: String(v.operation ?? ''),
                   cost_centre: String(v.cost_centre ?? ''),

@@ -8,6 +8,9 @@ class ReferenceOwnedModel(models.Model):
 
     updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
     updated_at = models.DateTimeField(auto_now=True)
+    # Values of the fields a user added to this table (MasterTableField, key -> value);
+    # validated by reference.custom_fields.ExtraFieldsSerializerMixin.
+    extra = models.JSONField(default=dict, blank=True)
 
     class Meta:
         abstract = True
@@ -346,3 +349,37 @@ class InHouseHourRate(ReferenceOwnedModel):
 
     def __str__(self) -> str:
         return f"{self.cost_head}: {self.mhr_rate}"
+
+
+class MasterTableField(models.Model):
+    """A field definition on a master-data table, managed from that table's "Manage
+    Fields" dialog. `table` is the table's slug (a key of
+    reference.views.REFERENCE_DROPDOWN_FIELDS, e.g. "shell-bands").
+
+    Two kinds, told apart by `is_builtin` (set automatically from `key`):
+    - a user-added field: its values live in each record's `extra[key]`; it can be
+      fully edited and deleted;
+    - an override of a built-in model column (key = the column name): only its
+      `label` and `hidden` apply, since pricing code reads built-in columns by name.
+      Deleting the override restores the default label/visibility."""
+
+    FIELD_TYPES = [("text", "Text"), ("number", "Number"), ("select", "Select")]
+
+    table = models.CharField(max_length=60)
+    key = models.CharField(max_length=60)
+    label = models.CharField(max_length=200)
+    field_type = models.CharField(max_length=10, choices=FIELD_TYPES, default="text")
+    options = models.JSONField(default=list, blank=True)
+    required = models.BooleanField(default=False)
+    is_builtin = models.BooleanField(default=False)
+    hidden = models.BooleanField(default=False)
+    order = models.PositiveIntegerField(default=0)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["table", "order", "id"]
+        constraints = [models.UniqueConstraint(fields=["table", "key"], name="unique_master_table_field")]
+
+    def __str__(self) -> str:
+        return f"{self.table}.{self.key}"

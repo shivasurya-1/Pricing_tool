@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .custom_fields import ExtraFieldsSerializerMixin
 from .models import (
     next_operation_code,
     BearingCatalogEntry,
@@ -20,7 +21,7 @@ from .models import (
 )
 
 
-class CostRateTableSerializer(serializers.ModelSerializer):
+class CostRateTableSerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     """Shared by the four Cost Rate Tables serializers. Every field is editable except
     `key`: it's the variable name formulas read the rate under, so renaming it would
     silently break every formula that references it — delete and re-add instead."""
@@ -69,7 +70,7 @@ class LogisticsPackingRateSerializer(CostRateTableSerializer):
         read_only_fields = ["id"]
 
 
-class ShaftForgingBandSerializer(serializers.ModelSerializer):
+class ShaftForgingBandSerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = ShaftForgingBand
         fields = [
@@ -93,7 +94,7 @@ class ShaftForgingBandSerializer(serializers.ModelSerializer):
         return super().to_internal_value(data)
 
 
-class ShellForgingBandSerializer(serializers.ModelSerializer):
+class ShellForgingBandSerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = ShellForgingBand
         fields = [
@@ -104,45 +105,45 @@ class ShellForgingBandSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "updated_at"]
 
 
-class BearingCatalogEntrySerializer(serializers.ModelSerializer):
+class BearingCatalogEntrySerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = BearingCatalogEntry
         fields = ["id", "designation", "bore_mm", "price_inr", "price_eur", "delivery_days"]
 
 
-class SleeveCatalogEntrySerializer(serializers.ModelSerializer):
+class SleeveCatalogEntrySerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = SleeveCatalogEntry
         fields = ["id", "for_bearing", "sleeve_code", "price_eur", "price_inr"]
 
 
-class LagDataEntrySerializer(serializers.ModelSerializer):
+class LagDataEntrySerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = LagDataEntry
         fields = ["id", "lagging_type", "thickness_mm", "price_inr_per_m2", "delivery_days", "description", "updated_at"]
         read_only_fields = ["id", "updated_at"]
 
 
-class LcdDataEntrySerializer(serializers.ModelSerializer):
+class LcdDataEntrySerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = LcdDataEntry
         fields = ["id", "model_size", "indicative_price", "negotiated_rate_inr", "remarks", "updated_at"]
         read_only_fields = ["id", "updated_at"]
 
 
-class HousingCatalogEntrySerializer(serializers.ModelSerializer):
+class HousingCatalogEntrySerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = HousingCatalogEntry
         fields = ["id", "for_bearing", "housing_designation", "price_inr", "delivery_days"]
 
 
-class LaggingCatalogEntrySerializer(serializers.ModelSerializer):
+class LaggingCatalogEntrySerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = LaggingCatalogEntry
         fields = ["id", "key", "lagging_type", "thickness_mm", "price_inr_per_m2", "delivery_days", "description"]
 
 
-class LockingDeviceCatalogEntrySerializer(serializers.ModelSerializer):
+class LockingDeviceCatalogEntrySerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     model = serializers.CharField(source="model_name")
 
     class Meta:
@@ -150,7 +151,7 @@ class LockingDeviceCatalogEntrySerializer(serializers.ModelSerializer):
         fields = ["id", "model", "negotiated_rate_inr", "remarks"]
 
 
-class InHouseHourRateSerializer(serializers.ModelSerializer):
+class InHouseHourRateSerializer(ExtraFieldsSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = InHouseHourRate
         fields = [

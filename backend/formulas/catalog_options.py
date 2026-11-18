@@ -12,6 +12,7 @@ from urllib.parse import unquote
 
 from django.db.models import Q
 
+from reference.custom_fields import is_extra_field, query_columns, read_value
 from reference.views import REFERENCE_DROPDOWN_FIELDS
 
 
@@ -27,6 +28,10 @@ def parse_options_source(options_source: str) -> dict | None:
         return None
     allowed = [column["field"] for column in cfg["value_fields"]]
     picked_value_field = parts[2] if len(parts) > 2 else ""
+    # A user-added field ("extra.<key>", see reference.custom_fields) is accepted by
+    # name without a DB lookup; if it was since deleted its values just read as None.
+    if is_extra_field(picked_value_field):
+        allowed = allowed + [picked_value_field]
     # Each option's catalog price: the value column picked on the Formulas page if any,
     # else the table's first value column (its INR price for every catalog). Kept even
     # for a label-valued field, since a paired price field (bearing1Price) is looked up
@@ -70,7 +75,7 @@ def catalog_options(options_source: str, cache: dict | None = None) -> list[dict
     if cache is not None and cache_key in cache:
         return cache[cache_key]
 
-    columns = [label_field] + ([price_field] if price_field and price_field != label_field else [])
+    columns = query_columns([label_field, price_field])
     rows = link["model"].objects.exclude(Q(**{f"{label_field}__isnull": True}) | Q(**{label_field: ""})).values(*columns)
     options, seen = [], set()
     for row in rows:
@@ -78,7 +83,7 @@ def catalog_options(options_source: str, cache: dict | None = None) -> list[dict
         if label in seen:
             continue
         seen.add(label)
-        options.append({"label": label, "price": row.get(price_field) if price_field else None})
+        options.append({"label": label, "price": read_value(row, price_field) if price_field else None})
 
     if cache is not None:
         cache[cache_key] = options

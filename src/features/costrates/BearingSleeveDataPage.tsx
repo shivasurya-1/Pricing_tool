@@ -1,6 +1,7 @@
 import { Info } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
 import { ReferenceCrudTable, type ReferenceColumn } from '@/components/reference/ReferenceCrudTable'
+import { extraOf } from '@/components/reference/masterTableFields'
 import { RequireLoaded } from '@/components/reference/RequireLoaded'
 import {
   useReferenceStore,
@@ -106,6 +107,7 @@ export function BearingSleeveDataPage() {
       <div className="space-y-5">
         <ReferenceCrudTable
           title="A. Spherical Roller Bearings"
+          tableKey="bearings"
           description={`${bearings.length} designations`}
           rows={bearings}
           columns={bearingColumns}
@@ -113,6 +115,7 @@ export function BearingSleeveDataPage() {
           searchable
           onCreate={(v) =>
             createBearing({
+              ...extraOf(v),
               designation: String(v.designation ?? ''),
               bore_mm: Number(v.bore_mm ?? 0),
               price_inr: Number(v.price_inr ?? 0),
@@ -126,6 +129,7 @@ export function BearingSleeveDataPage() {
 
         <ReferenceCrudTable
           title="B. Adapter Sleeves"
+          tableKey="sleeves"
           description={`${sleeves.length} codes — matched by bearing designation`}
           rows={sleeves}
           columns={sleeveColumns}
@@ -133,6 +137,7 @@ export function BearingSleeveDataPage() {
           searchable
           onCreate={(v) =>
             createSleeve({
+              ...extraOf(v),
               sleeve_code: String(v.sleeve_code ?? ''),
               for_bearing: String(v.for_bearing ?? ''),
               price_inr: Number(v.price_inr ?? 0),
@@ -145,6 +150,7 @@ export function BearingSleeveDataPage() {
 
         <ReferenceCrudTable
           title="C. Bearing Housings"
+          tableKey="housings"
           description={`${housings.length} designations — matched by bearing designation`}
           rows={housings}
           columns={housingColumns}
@@ -152,6 +158,7 @@ export function BearingSleeveDataPage() {
           searchable
           onCreate={(v) =>
             createHousing({
+              ...extraOf(v),
               housing_designation: String(v.housing_designation ?? ''),
               for_bearing: String(v.for_bearing ?? ''),
               price_inr: Number(v.price_inr ?? 0),
@@ -164,6 +171,7 @@ export function BearingSleeveDataPage() {
 
         <ReferenceCrudTable
           title="D. Lagging"
+          tableKey="lagging-rates"
           description={`${lagging.length} types — also editable on Cost Rate Tables → D. Lagging Rates`}
           rows={lagging}
           columns={laggingColumns}
@@ -171,6 +179,7 @@ export function BearingSleeveDataPage() {
           searchable
           onCreate={(v) =>
             createLagging({
+              ...extraOf(v),
               key: slugifySnakeCase(String(v.lagging_type ?? '')) || `lagging-${Date.now()}`,
               lagging_type: String(v.lagging_type ?? ''),
               thickness_mm: Number(v.thickness_mm ?? 0),
@@ -185,6 +194,7 @@ export function BearingSleeveDataPage() {
 
         <ReferenceCrudTable
           title="E. Locking Devices"
+          tableKey="lcd-data"
           description={`${lockingDevices.length} models`}
           rows={lockingDevices}
           columns={lockingDeviceColumns}
@@ -192,6 +202,7 @@ export function BearingSleeveDataPage() {
           searchable
           onCreate={(v) =>
             createLockingDevice({
+              ...extraOf(v),
               model_size: String(v.model_size ?? ''),
               indicative_price: String(v.indicative_price ?? ''),
               negotiated_rate_inr: Number(v.negotiated_rate_inr ?? 0),
