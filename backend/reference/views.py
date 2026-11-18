@@ -140,37 +140,69 @@ class OrganizationSettingsView(generics.RetrieveUpdateAPIView):
 # Two-level dependent dropdown (catalogs/dropdown-fields → catalogs/dropdown-values).
 # Explicit allowlist: request params are only ever used as keys into this mapping,
 # never as model or field names, so nothing outside it can be queried.
-# Each table has one fixed label_field (identifies a record) and optional value_fields
-# that can be pulled from the same row instead. Tables sharing a group_label are nested
-# under one reference field (page) in dropdown-fields; insertion order is response order.
+# Each table has one fixed label_field (identifies a record) and value_fields that can
+# be pulled from the same row instead: every data column of the master table, so the
+# Formulas page can pull any of them. Only bookkeeping columns (id, order, updated_by,
+# updated_at) are left out. A table's FIRST value field is its default price column
+# (formulas.catalog_options falls back to it), so new columns go after it, never before.
+# Tables sharing a group_label are nested under one reference field (page) in
+# dropdown-fields; insertion order is response order.
 REFERENCE_DROPDOWN_FIELDS = {
     "bearings": {
         "model": BearingCatalogEntry,
         "label": "Bearings",
         "group_label": "Bearing Data",
         "label_field": {"field": "designation", "label": "Designation"},
-        "value_fields": [{"field": "price_inr", "label": "INR/piece"}, {"field": "price_eur", "label": "EUR/piece"}],
+        "value_fields": [
+            {"field": "price_inr", "label": "INR/piece"},
+            {"field": "price_eur", "label": "EUR/piece"},
+            {"field": "bore_mm", "label": "Bore (mm)"},
+            {"field": "delivery_days", "label": "Delivery (days)"},
+        ],
     },
     "sleeves": {
         "model": SleeveCatalogEntry,
         "label": "Sleeves",
         "group_label": "Sleeve Data",
         "label_field": {"field": "sleeve_code", "label": "Sleeve Code"},
-        "value_fields": [{"field": "price_inr", "label": "INR/piece"}, {"field": "price_eur", "label": "EUR/piece"}],
+        "value_fields": [
+            {"field": "price_inr", "label": "INR/piece"},
+            {"field": "price_eur", "label": "EUR/piece"},
+            {"field": "for_bearing", "label": "For Bearing"},
+        ],
     },
     "housings": {
         "model": HousingCatalogEntry,
         "label": "Housings",
         "group_label": "Housing Data",
         "label_field": {"field": "housing_designation", "label": "Housing Designation"},
-        "value_fields": [{"field": "price_inr", "label": "INR/piece"}],
+        "value_fields": [
+            {"field": "price_inr", "label": "INR/piece"},
+            {"field": "for_bearing", "label": "For Bearing"},
+            {"field": "delivery_days", "label": "Delivery (days)"},
+        ],
+    },
+    "locking-devices": {
+        "model": LockingDeviceCatalogEntry,
+        "label": "Locking Devices",
+        "group_label": "Locking Device Data",
+        "label_field": {"field": "model_name", "label": "Model"},
+        "value_fields": [
+            {"field": "negotiated_rate_inr", "label": "Negotiated Rate (INR)"},
+            {"field": "remarks", "label": "Remarks"},
+        ],
     },
     "lag-data": {
         "model": LagDataEntry,
         "label": "Lag Data",
         "group_label": "Lag Data",
         "label_field": {"field": "lagging_type", "label": "Lagging Type"},
-        "value_fields": [{"field": "price_inr_per_m2", "label": "INR/m²"}],
+        "value_fields": [
+            {"field": "price_inr_per_m2", "label": "INR/m²"},
+            {"field": "thickness_mm", "label": "Thickness (mm)"},
+            {"field": "delivery_days", "label": "Delivery (days)"},
+            {"field": "description", "label": "Description"},
+        ],
     },
     "lcd-data": {
         "model": LcdDataEntry,
@@ -180,6 +212,7 @@ REFERENCE_DROPDOWN_FIELDS = {
         "value_fields": [
             {"field": "negotiated_rate_inr", "label": "Negotiated Rate"},
             {"field": "indicative_price", "label": "Indicative Price"},
+            {"field": "remarks", "label": "Remarks"},
         ],
     },
     "shaft-bands": {
@@ -204,6 +237,10 @@ REFERENCE_DROPDOWN_FIELDS = {
             {"field": "face_width_body", "label": "Face Width Body"},
             {"field": "plate_rate_inr_per_kg", "label": "Plate Rate (₹/kg)"},
             {"field": "end_disc_hub_rate_inr_per_kg", "label": "End Disc / Hub Rate (₹/kg)"},
+            {"field": "sourcing", "label": "Sourcing"},
+            {"field": "wall_thickness", "label": "Wall Thickness"},
+            {"field": "welded_in_plate_thickness", "label": "Welded-in Plate Thickness"},
+            {"field": "t_bottom_thickness", "label": "T-Bottom Thickness"},
         ],
     },
     "global-parameters": {
@@ -211,28 +248,77 @@ REFERENCE_DROPDOWN_FIELDS = {
         "label": "Global Parameters",
         "group_label": "Cost Rate Tables",
         "label_field": {"field": "parameter", "label": "Parameter"},
-        "value_fields": [{"field": "value", "label": "Value"}],
+        "value_fields": [
+            {"field": "value", "label": "Value"},
+            {"field": "unit", "label": "Unit"},
+            {"field": "notes", "label": "Notes"},
+            {"field": "key", "label": "Key"},
+        ],
     },
     "material-rates": {
         "model": MaterialRate,
         "label": "Material Rates",
         "group_label": "Cost Rate Tables",
         "label_field": {"field": "material", "label": "Material"},
-        "value_fields": [{"field": "inr_per_kg", "label": "INR/kg"}, {"field": "eur_per_kg", "label": "EUR/kg"}],
+        "value_fields": [
+            {"field": "inr_per_kg", "label": "INR/kg"},
+            {"field": "eur_per_kg", "label": "EUR/kg"},
+            {"field": "notes", "label": "Notes"},
+            {"field": "key", "label": "Key"},
+        ],
     },
     "machining-labour-rates": {
         "model": MachiningLabourRate,
         "label": "Machining & Labour Rates",
         "group_label": "Cost Rate Tables",
         "label_field": {"field": "operation", "label": "Operation"},
-        "value_fields": [{"field": "inr_per_hour", "label": "INR/h"}, {"field": "eur_per_hour", "label": "EUR/h"}],
+        "value_fields": [
+            {"field": "inr_per_hour", "label": "INR/h"},
+            {"field": "eur_per_hour", "label": "EUR/h"},
+            {"field": "sourcing_default", "label": "Sourcing Default"},
+            {"field": "key", "label": "Key"},
+        ],
     },
     "logistics-packing-rates": {
         "model": LogisticsPackingRate,
         "label": "Logistics & Packing Rates",
         "group_label": "Cost Rate Tables",
         "label_field": {"field": "item", "label": "Item"},
-        "value_fields": [{"field": "rate", "label": "Rate"}],
+        "value_fields": [
+            {"field": "rate", "label": "Rate"},
+            {"field": "unit", "label": "Unit"},
+            {"field": "notes", "label": "Notes"},
+            {"field": "key", "label": "Key"},
+        ],
+    },
+    "lagging-rates": {
+        "model": LaggingCatalogEntry,
+        "label": "Lagging Rates",
+        "group_label": "Cost Rate Tables",
+        "label_field": {"field": "lagging_type", "label": "Lagging Type"},
+        "value_fields": [
+            {"field": "price_inr_per_m2", "label": "INR/m²"},
+            {"field": "thickness_mm", "label": "Thickness (mm)"},
+            {"field": "delivery_days", "label": "Delivery (days)"},
+            {"field": "description", "label": "Description"},
+            {"field": "key", "label": "Key"},
+        ],
+    },
+    "in-house-hours": {
+        "model": InHouseHourRate,
+        "label": "In-House Hours",
+        "group_label": "In-House Hours",
+        # Activity Description, not Operation: several rows share an Operation.
+        "label_field": {"field": "activity_description", "label": "Activity Description"},
+        "value_fields": [
+            {"field": "mhr_rate", "label": "MHR Rate (INR/h)"},
+            {"field": "default_run_min", "label": "Default Run (min)"},
+            {"field": "default_setup_min", "label": "Default Setup (min)"},
+            {"field": "cost_head", "label": "Cost Head"},
+            {"field": "operation", "label": "Operation"},
+            {"field": "cost_centre", "label": "Cost Centre"},
+            {"field": "operation_code", "label": "Operation Code"},
+        ],
     },
 }
 

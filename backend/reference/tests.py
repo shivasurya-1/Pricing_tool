@@ -9,7 +9,9 @@ from .models import (
     HousingCatalogEntry,
     InHouseHourRate,
     LagDataEntry,
+    LaggingCatalogEntry,
     LcdDataEntry,
+    LockingDeviceCatalogEntry,
     LogisticsPackingRate,
     MachiningLabourRate,
     MaterialRate,
@@ -373,6 +375,9 @@ class ReferenceDropdownApiTests(TestCase):
         MaterialRate.objects.create(key="ddMat", material="S355", inr_per_kg=80)
         MachiningLabourRate.objects.create(key="ddOp", operation="Turning", inr_per_hour=900)
         LogisticsPackingRate.objects.create(key="ddPack", item="Crate", rate=5000)
+        LockingDeviceCatalogEntry.objects.create(model_name="RCK 15", negotiated_rate_inr=4200)
+        LaggingCatalogEntry.objects.create(key="ddLag", lagging_type="Rubber 12mm", thickness_mm=12, price_inr_per_m2=1500, delivery_days=7)
+        InHouseHourRate.objects.create(cost_head="10b. Rolling", operation="Rolling", activity_description="C1. Rolling", operation_code="c1", mhr_rate=79)
 
     def values(self, table, label_field, value_field=None):
         params = {"table": table, "label_field": label_field}
@@ -393,10 +398,15 @@ class ReferenceDropdownApiTests(TestCase):
                 ("bearing-data", ["bearings"]),
                 ("sleeve-data", ["sleeves"]),
                 ("housing-data", ["housings"]),
+                ("locking-device-data", ["locking-devices"]),
                 ("lag-data", ["lag-data"]),
                 ("lcd-data", ["lcd-data"]),
                 ("raw-forging-prices", ["shaft-bands", "shell-bands"]),
-                ("cost-rate-tables", ["global-parameters", "material-rates", "machining-labour-rates", "logistics-packing-rates"]),
+                (
+                    "cost-rate-tables",
+                    ["global-parameters", "material-rates", "machining-labour-rates", "logistics-packing-rates", "lagging-rates"],
+                ),
+                ("in-house-hours", ["in-house-hours"]),
             ],
         )
         self.assertEqual(
@@ -409,11 +419,38 @@ class ReferenceDropdownApiTests(TestCase):
                         "table": "bearings",
                         "label": "Bearings",
                         "labelField": {"field": "designation", "label": "Designation"},
-                        "valueFields": [{"field": "price_inr", "label": "INR/piece"}, {"field": "price_eur", "label": "EUR/piece"}],
+                        "valueFields": [
+                            {"field": "price_inr", "label": "INR/piece"},
+                            {"field": "price_eur", "label": "EUR/piece"},
+                            {"field": "bore_mm", "label": "Bore (mm)"},
+                            {"field": "delivery_days", "label": "Delivery (days)"},
+                        ],
                     }
                 ],
             },
         )
+
+    def test_every_data_column_is_offered(self):
+        # Every master-table column except the label and bookkeeping ones is pullable,
+        # so a column added to a model later without being listed here fails this test.
+        from reference.views import REFERENCE_DROPDOWN_FIELDS
+
+        bookkeeping = {"id", "order", "updated_by", "updated_at"}
+        for table, cfg in REFERENCE_DROPDOWN_FIELDS.items():
+            with self.subTest(table=table):
+                model_columns = {f.name for f in cfg["model"]._meta.concrete_fields} - bookkeeping
+                offered = {cfg["label_field"]["field"]} | {c["field"] for c in cfg["value_fields"]}
+                self.assertEqual(offered, model_columns)
+
+    def test_new_value_columns_resolve(self):
+        response = self.values("shell-bands", "diameter_body", "face_width_body")
+        self.assertEqual(response.json(), [{"id": self.shell.id, "label": "300 - <=500", "value": "800-1200"}])
+        response = self.values("bearings", "designation", "bore_mm")
+        self.assertEqual(response.json(), [{"id": self.bearing.id, "label": "22220 E", "value": 100.0}])
+        response = self.values("in-house-hours", "activity_description", "mhr_rate")
+        self.assertEqual(response.json()[0]["value"], 79.0)
+        response = self.values("locking-devices", "model_name", "negotiated_rate_inr")
+        self.assertEqual(response.json()[0], {"id": response.json()[0]["id"], "label": "RCK 15", "value": 4200.0})
 
     def test_every_declared_label_and_value_field_is_queryable(self):
         for group in self.fields():
@@ -476,7 +513,7 @@ class ReferenceDropdownApiTests(TestCase):
                 self.assertIn("detail", response.json())
 
     def test_invalid_value_field(self):
-        for value_field in ("for_bearing", "id", "designation", "bore_mm"):
+        for value_field in ("for_bearing", "id", "designation", "updated_at", "updated_by"):
             with self.subTest(value_field=value_field):
                 response = self.values("bearings", "designation", value_field)
                 self.assertEqual(response.status_code, 400)

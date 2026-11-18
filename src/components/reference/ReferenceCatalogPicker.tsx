@@ -30,9 +30,17 @@ export interface DropdownReferenceFieldDto {
   tables: DropdownTableDto[]
 }
 
-interface Row {
+export interface CatalogRow {
   label: string
   value: string
+}
+type Row = CatalogRow
+
+/** What the picker currently points at, reported in `onCatalogChange` mode: the
+ * "table::label_field::value_field" prefix of an options_source key, and every row. */
+export interface CatalogSelection {
+  sourcePrefix: string
+  rows: CatalogRow[]
 }
 
 /** Accepts the target `{label, value}` shape, but also falls back gracefully for a
@@ -78,9 +86,12 @@ export function ReferenceCatalogPicker({
   sourceKey,
   onSourceChange,
   pickedValue: controlledPickedValue,
+  onCatalogChange,
+  pickedLabel,
+  onPickLabel,
 }: {
   /** Every row's resolved value (the price, if Price Field is set — otherwise the label). */
-  onImport: (values: string[]) => void
+  onImport?: (values: string[]) => void
   /** Called when one Reference Value is picked, with every row's resolved value — lets
    * the caller use it as the field's fixed value. Without it the value list is browse-only. */
   onPickValue?: (value: string, allValues: string[]) => void
@@ -89,7 +100,18 @@ export function ReferenceCatalogPicker({
   onSourceChange?: (key: string) => void
   /** The saved resolved value to show as picked (e.g. the field's fixed value). */
   pickedValue?: string
+  /** Rows-only mode: the picker stops at Reference Field -> Table -> Price Field and
+   * hands every loaded row to the caller (which lets the user pick one elsewhere, e.g.
+   * a Fixed value dropdown). Hides Reference Value and the "Use these values" button.
+   * Called with null once the user clears the selection. */
+  onCatalogChange?: (selection: CatalogSelection | null) => void
+  /** Rows-only mode: the row label currently picked by the caller (its Fixed value),
+   * shown in the record dropdown (Designation, Sleeve Code, ...). */
+  pickedLabel?: string
+  /** Rows-only mode: a record was picked in the record dropdown ('' = cleared). */
+  onPickLabel?: (label: string) => void
 }) {
+  const rowsOnly = !!onCatalogChange
   const pushToast = useUiStore((s) => s.pushToast)
   const [referenceFields, setReferenceFields] = useState<DropdownReferenceFieldDto[]>([])
   const [fieldsLoading, setFieldsLoading] = useState(true)
@@ -103,6 +125,7 @@ export function ReferenceCatalogPicker({
   const [rowsLoading, setRowsLoading] = useState(false)
   const [rowsLoadedOnce, setRowsLoadedOnce] = useState(false)
   const requestIdRef = useRef(0)
+  const rowsLoadFailedRef = useRef(false)
 
   const referenceFieldObj = referenceFields.find((r) => r.referenceField === selectedReferenceField) ?? null
   const tables = referenceFieldObj?.tables ?? []
@@ -125,6 +148,16 @@ export function ReferenceCatalogPicker({
     // function each render, which would otherwise refire this on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, selectedLabel])
+
+  // Rows-only mode: report each freshly loaded row set (a new table or Price Field).
+  // Not while loading, and not after a failed load, so a transient error never wipes
+  // the caller's pick.
+  useEffect(() => {
+    if (!onCatalogChange || !tableObj || !rowsLoadedOnce || rowsLoadFailedRef.current) return
+    onCatalogChange({ sourcePrefix: `${tableObj.table}::${tableObj.labelField.field}::${selectedPriceField}`, rows })
+    // onCatalogChange excluded for the same reason as onPickValue above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, rowsLoadedOnce])
 
   useEffect(() => {
     let cancelled = false
@@ -217,11 +250,13 @@ export function ReferenceCatalogPicker({
     setRows([])
     setRowsLoadedOnce(false)
     onSourceChange?.('')
+    onCatalogChange?.(null)
   }
 
   function loadRows(table: string, labelField: string, valueField: string) {
     setRows([])
     setRowsLoadedOnce(false)
+    rowsLoadFailedRef.current = false
     if (!table || !labelField) return
 
     const requestId = ++requestIdRef.current
@@ -235,6 +270,7 @@ export function ReferenceCatalogPicker({
       })
       .catch((err) => {
         if (requestId !== requestIdRef.current) return
+        rowsLoadFailedRef.current = true
         pushToast(err instanceof ApiError ? err.message : 'Failed to load reference values.', 'error')
       })
       .finally(() => {
@@ -245,6 +281,106 @@ export function ReferenceCatalogPicker({
   }
 
   const displayedLabel = selectedLabel || (controlledPickedValue && rows.find((r) => r.value === controlledPickedValue)?.label) || ''
+
+  const priceFieldSelect = (
+    <div>
+      <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Price Field</label>
+      <select value={selectedPriceField} onChange={(e) => handleSelectPriceField(e.target.value)} className={selectClass}>
+        <option value="">{tableObj?.labelField.label ?? 'Label'} itself</option>
+        {valueFields.map((f) => (
+          <option key={f.field} value={f.field}>
+            {f.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+
+  if (rowsOnly) {
+    // The table's record column (Designation, Sleeve Code, Lagging Type, ...): picking a
+    // record here makes it the caller's Fixed value, and vice versa.
+    const uniqueLabels = [...new Set(rows.map((r) => r.label))]
+    const recordSelect = (
+      <div>
+        <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">{tableObj?.labelField.label ?? 'Reference Value'}</label>
+        <select
+          value={pickedLabel && uniqueLabels.includes(pickedLabel) ? pickedLabel : ''}
+          onChange={(e) => onPickLabel?.(e.target.value)}
+          disabled={!tableObj || rowsLoading || rows.length === 0}
+          className={selectClass}
+        >
+          <option value="">
+            {!tableObj
+              ? showTablePicker
+                ? 'Select a Table first'
+                : 'Select a Reference Field first'
+              : rowsLoading
+                ? 'Loading...'
+                : rows.length === 0
+                  ? 'No records found'
+                  : 'Select...'}
+          </option>
+          {uniqueLabels.map((label) => (
+            <option key={label} value={label}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+    )
+
+    return (
+      <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+        <p className="text-xs font-medium text-[var(--color-ink-soft)]">Values from a master data table</p>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Reference Field</label>
+            <select
+              value={selectedReferenceField}
+              onChange={(e) => handleSelectReferenceField(e.target.value)}
+              disabled={fieldsLoading}
+              className={selectClass}
+            >
+              <option value="">{fieldsLoading ? 'Loading...' : 'Select Reference Field...'}</option>
+              {referenceFields.map((rf) => (
+                <option key={rf.referenceField} value={rf.referenceField}>
+                  {rf.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {showTablePicker && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Table</label>
+              <select value={selectedTable} onChange={(e) => handleSelectTable(e.target.value)} className={selectClass}>
+                <option value="">Select Table...</option>
+                {tables.map((t) => (
+                  <option key={t.table} value={t.table}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {recordSelect}
+          {showPriceFieldPicker && priceFieldSelect}
+        </div>
+        {tableObj && (
+          <p className="flex items-center gap-1.5 text-xs text-[var(--color-ink-faint)]">
+            {rowsLoading ? (
+              <>
+                <Loader2 size={12} className="animate-spin" /> Loading values...
+              </>
+            ) : rowsLoadedOnce && rows.length === 0 ? (
+              'This table has no records yet.'
+            ) : rowsLoadedOnce ? (
+              `${rows.length} record${rows.length === 1 ? '' : 's'} loaded. Pick a ${tableObj.labelField.label} and Price Field above (or under Fixed value below), or leave it for Sales to pick on each RFQ.`
+            ) : null}
+          </p>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
@@ -377,7 +513,7 @@ export function ReferenceCatalogPicker({
           variant="secondary"
           disabled={rows.length === 0}
           icon={rowsLoading ? <Loader2 size={12} className="animate-spin" /> : undefined}
-          onClick={() => onImport(rows.map((r) => r.value))}
+          onClick={() => onImport?.(rows.map((r) => r.value))}
         >
           Use these {rows.length || ''} value{rows.length === 1 ? '' : 's'} as Options
         </Button>

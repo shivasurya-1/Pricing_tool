@@ -9,7 +9,7 @@ import { Tabs } from '@/components/ui/Tabs'
 import { EmptyState } from '@/components/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { ReferenceCatalogPicker } from '@/components/reference/ReferenceCatalogPicker'
+import { ReferenceCatalogPicker, type CatalogRow, type CatalogSelection } from '@/components/reference/ReferenceCatalogPicker'
 import { useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
 import { FormulaSearch, type SearchItem } from '@/features/formulas/FormulaSearch'
@@ -207,6 +207,37 @@ function slugifyToCamelCase(label: string): string {
     .join('')
 }
 
+/** One option per catalog row label (first row wins, as the backend's catalog_options does). */
+function uniqueCatalogRows(catalog: CatalogSelection): CatalogRow[] {
+  const seen = new Set<string>()
+  return catalog.rows.filter((r) => (seen.has(r.label) ? false : (seen.add(r.label), true)))
+}
+
+/** What Fixed value shows for a catalog row: only the Price Field's value (e.g. 4330),
+ * or the label itself (e.g. 22216 EK) when the Price Field is "<label> itself". The
+ * option's underlying value stays the row label, so rows sharing a price (two at 110)
+ * are still distinct; the record dropdown above shows which row is picked. */
+function catalogRowText(row: CatalogRow): string {
+  return row.value
+}
+
+/** The options_source key for a catalog-linked select: the picker's
+ * "table::label_field::value_field" plus the picked row label (empty = none picked). */
+function catalogSourceKey(catalog: CatalogSelection, pickedLabel: string): string {
+  return `${catalog.sourcePrefix}::${pickedLabel ? encodeURIComponent(pickedLabel) : ''}`
+}
+
+/** Form state after the catalog picker reports a new table / Price Field (or a clear):
+ * the options become the table's row labels (a catalog-linked select stores and shows
+ * the row label; the backend resolves its value live), and an already-picked fixed
+ * value is kept only if that row is still in the table. */
+function applyCatalogSelection(catalog: CatalogSelection | null, currentFixed: string) {
+  if (!catalog) return { catalog: null, options: [] as string[], fixed: '', source: '' }
+  const options = uniqueCatalogRows(catalog).map((r) => r.label)
+  const fixed = options.includes(currentFixed.trim()) ? currentFixed.trim() : ''
+  return { catalog, options, fixed, source: catalogSourceKey(catalog, fixed) }
+}
+
 /** An Auto expression that's just one other field's key (e.g. "bearing1Designation",
  * whitespace allowed around it) copies that field's raw value instead of calculating —
  * matches the backend's own copy_from detection. Returns null for anything else,
@@ -259,10 +290,10 @@ export function FormulasPage() {
   const [formulaTab, setFormulaTab] = useState<(typeof FORMULA_TABS)[number]>('Pricing Tool Formulas')
 
   const rfqsWithTechData = useMemo(() => rfqs.filter((r) => r.items.some((it) => isTechDataFilled(it.technicalData))), [rfqs])
-  const [rfqId, setRfqId] = useState(rfqsWithTechData[0]?.id ?? '')
+  const [rfqId] = useState(rfqsWithTechData[0]?.id ?? '')
   const rfq = rfqs.find((r) => r.id === rfqId)
   const items = useMemo(() => (rfq ? rfq.items.filter((it) => isTechDataFilled(it.technicalData)) : []), [rfq])
-  const [itemId, setItemId] = useState(items[0]?.id ?? '')
+  const [itemId] = useState(items[0]?.id ?? '')
   const item = items.find((it) => it.id === itemId) ?? items[0]
 
   // Auto fields this sample item has been manually overridden on (see
@@ -1283,14 +1314,29 @@ function AddTechDataFieldModal({
   const [section, setSection] = useState(existingSections[0] ?? '')
   const [unit, setUnit] = useState('')
   const [fieldType, setFieldType] = useState<'text' | 'number' | 'select'>('text')
-  const [optionsText, setOptionsText] = useState('')
+  const [optionList, setOptionList] = useState<string[]>([])
   const [optionsSource, setOptionsSource] = useState('')
+  const [catalog, setCatalog] = useState<CatalogSelection | null>(null)
   const [fixedValue, setFixedValue] = useState('')
   const [isAuto, setIsAuto] = useState(false)
   const [expression, setExpression] = useState('')
   const [insertKey, setInsertKey] = useState('')
   const [saving, setSaving] = useState(false)
   const expressionRef = useRef<HTMLTextAreaElement>(null)
+
+  const handleCatalogChange = (selection: CatalogSelection | null) => {
+    const next = applyCatalogSelection(selection, fixedValue)
+    setCatalog(next.catalog)
+    setOptionList(next.options)
+    setFixedValue(next.fixed)
+    setOptionsSource(next.source)
+  }
+
+  // One pick, two places: the picker's record dropdown (Designation, ...) and Fixed value.
+  const pickCatalogRow = (label: string) => {
+    setFixedValue(label)
+    if (catalog) setOptionsSource(catalogSourceKey(catalog, label))
+  }
 
   const reset = () => {
     setLabel('')
@@ -1299,8 +1345,9 @@ function AddTechDataFieldModal({
     setSection(existingSections[0] ?? '')
     setUnit('')
     setFieldType('text')
-    setOptionsText('')
+    setOptionList([])
     setOptionsSource('')
+    setCatalog(null)
     setFixedValue('')
     setIsAuto(false)
     setExpression('')
@@ -1368,13 +1415,13 @@ function AddTechDataFieldModal({
       ? "A Text/Select Auto field can only copy another field: enter just that field's key"
       : null
 
-  const parsedOptions = optionsText.split(',').map((o) => o.trim()).filter(Boolean)
+  const parsedOptions = optionList
   const trimmedFixed = fixedValue.trim()
   // Same checks as the Edit form / backend's perform_update fixed_value validation.
   const fixedValueError = !trimmedFixed
     ? null
     : fieldType === 'select' && !parsedOptions.includes(trimmedFixed)
-      ? `'${trimmedFixed}' isn't one of the options above.`
+      ? `'${trimmedFixed}' isn't in the selected table.`
       : fieldType === 'number' && Number.isNaN(Number(trimmedFixed))
         ? 'Must be a number for a Number field.'
         : null
@@ -1383,7 +1430,7 @@ function AddTechDataFieldModal({
     label.trim() &&
     key.trim() &&
     section &&
-    (fieldType !== 'select' || isAuto || optionsText.trim()) &&
+    (fieldType !== 'select' || isAuto || parsedOptions.length > 0) &&
     !fixedValueError &&
     !autoTypeError &&
     (!isAuto || (expression.trim() && !preview?.error))
@@ -1482,37 +1529,26 @@ function AddTechDataFieldModal({
         </div>
 
         {fieldType === 'select' && !isAuto && (
-          <>
-            <ReferenceCatalogPicker
-              sourceKey={optionsSource}
-              onSourceChange={setOptionsSource}
-              pickedValue={trimmedFixed}
-              onImport={(values) => setOptionsText(values.join(', '))}
-              onPickValue={(value, allValues) => {
-                // Picking one catalog value makes it the fixed value; pull in the whole
-                // catalog as options too if the picked value isn't already among them.
-                if (!parsedOptions.includes(value)) setOptionsText(allValues.join(', '))
-                setFixedValue(value)
-              }}
-            />
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
-              <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} placeholder="Option A, Option B, Option C" />
-            </div>
-          </>
+          <ReferenceCatalogPicker sourceKey={optionsSource} onCatalogChange={handleCatalogChange} pickedLabel={fixedValue.trim()} onPickLabel={pickCatalogRow} />
         )}
 
         {!isAuto && (
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Fixed value</label>
             {fieldType === 'select' ? (
-              <select value={trimmedFixed} onChange={(e) => setFixedValue(e.target.value)} className={inputClass}>
-                <option value="">None — Sales picks from a dropdown on each RFQ</option>
-                {parsedOptions.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
+              <select
+                value={trimmedFixed}
+                disabled={!catalog}
+                onChange={(e) => pickCatalogRow(e.target.value)}
+                className={clsx(inputClass, 'disabled:bg-[var(--color-surface)] disabled:text-[var(--color-ink-faint)]')}
+              >
+                <option value="">{catalog ? 'None — Sales picks from a dropdown on each RFQ' : 'Select a Reference Field above first'}</option>
+                {catalog &&
+                  uniqueCatalogRows(catalog).map((r) => (
+                    <option key={r.label} value={r.label}>
+                      {catalogRowText(r)}
+                    </option>
+                  ))}
               </select>
             ) : (
               <input
@@ -1657,7 +1693,8 @@ function EditTechDataFieldModal({
   const [section, setSection] = useState('')
   const [unit, setUnit] = useState('')
   const [fieldType, setFieldType] = useState<TechDataFieldDto['field_type']>('text')
-  const [optionsText, setOptionsText] = useState('')
+  const [optionList, setOptionList] = useState<string[]>([])
+  const [catalog, setCatalog] = useState<CatalogSelection | null>(null)
   const [isAuto, setIsAuto] = useState(false)
   const [expression, setExpression] = useState('')
   const [insertKey, setInsertKey] = useState('')
@@ -1673,7 +1710,8 @@ function EditTechDataFieldModal({
     setSection(field.section)
     setUnit(field.unit)
     setFieldType(field.field_type)
-    setOptionsText(field.options.join(', '))
+    setOptionList(field.options)
+    setCatalog(null)
     setFixedValue(field.fixed_value ?? '')
     setOptionsSource(field.options_source ?? '')
     setIsAuto(field.is_auto)
@@ -1762,13 +1800,18 @@ function EditTechDataFieldModal({
       ? "A Text/Select Auto field can only copy another field: enter just that field's key"
       : null
 
-  const parsedOptions = optionsText.split(',').map((o) => o.trim()).filter(Boolean)
+  const parsedOptions = optionList
+  // One pick, two places: the picker's record dropdown (Designation, ...) and Fixed value.
+  const pickCatalogRow = (label: string) => {
+    setFixedValue(label)
+    if (catalog) setOptionsSource(catalogSourceKey(catalog, label))
+  }
   // Same checks as perform_update's fixed_value validation.
   const trimmedFixed = fixedValue.trim()
   const fixedValueError = !trimmedFixed
     ? null
     : fieldType === 'select' && !parsedOptions.includes(trimmedFixed)
-      ? `'${trimmedFixed}' isn't one of the options above.`
+      ? `'${trimmedFixed}' isn't in the selected table.`
       : fieldType === 'number' && Number.isNaN(Number(trimmedFixed))
         ? 'Must be a number for a Number field.'
         : null
@@ -1896,41 +1939,43 @@ function EditTechDataFieldModal({
         </div>
 
         {isManualSelect && (
-          <>
+          <div>
             <ReferenceCatalogPicker
               sourceKey={optionsSource}
-              onSourceChange={setOptionsSource}
-              pickedValue={trimmedFixed}
-              onImport={(values) => setOptionsText(values.join(', '))}
-              onPickValue={(value, allValues) => {
-                // Picking one catalog value makes it the fixed value; pull in the whole
-                // catalog as options too if the picked value isn't already among them.
-                if (!parsedOptions.includes(value)) setOptionsText(allValues.join(', '))
-                setFixedValue(value)
+              onCatalogChange={(selection) => {
+                const next = applyCatalogSelection(selection, fixedValue)
+                setCatalog(next.catalog)
+                setOptionList(next.options)
+                setFixedValue(next.fixed)
+                setOptionsSource(next.source)
               }}
+              pickedLabel={trimmedFixed}
+              onPickLabel={pickCatalogRow}
             />
-            <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Options (comma-separated)</label>
-              <input value={optionsText} onChange={(e) => setOptionsText(e.target.value)} className={inputClass} />
-              {parsedOptions.length === 0 && (
-                <p className="mt-1 text-xs text-[var(--color-red)]">Add at least one option (or import from a catalog above) to save.</p>
-              )}
-            </div>
-          </>
+            {parsedOptions.length === 0 && (
+              <p className="mt-1 text-xs text-[var(--color-red)]">Pick a Reference Field with at least one record to save.</p>
+            )}
+          </div>
         )}
 
         {!field.is_read_only && !isAuto && (
           <div>
             <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">Fixed value</label>
             {fieldType === 'select' ? (
-              <select value={trimmedFixed} onChange={(e) => setFixedValue(e.target.value)} className={inputClass}>
+              <select value={trimmedFixed} onChange={(e) => pickCatalogRow(e.target.value)} className={inputClass}>
                 <option value="">None — Sales picks from a dropdown on each RFQ</option>
                 {trimmedFixed && !parsedOptions.includes(trimmedFixed) && <option value={trimmedFixed}>{trimmedFixed}</option>}
-                {parsedOptions.map((o) => (
-                  <option key={o} value={o}>
-                    {catalogDisplayValue(field.option_prices, o)}
-                  </option>
-                ))}
+                {catalog
+                  ? uniqueCatalogRows(catalog).map((r) => (
+                      <option key={r.label} value={r.label}>
+                        {catalogRowText(r)}
+                      </option>
+                    ))
+                  : parsedOptions.map((o) => (
+                      <option key={o} value={o}>
+                        {catalogDisplayValue(field.option_prices, o)}
+                      </option>
+                    ))}
               </select>
             ) : (
               <input
