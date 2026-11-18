@@ -94,3 +94,19 @@ body {
     inset: 0;
   }
 }
+
+/* Formulas page search: briefly highlights the row or section you jumped to. */
+@keyframes flash-row-bg {
+  from { background-color: var(--color-amber-100); }
+  to { background-color: transparent; }
+}
+@keyframes flash-card-ring {
+  0% { box-shadow: 0 0 0 3px var(--color-blue); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+.flash-row td { animation: flash-row-bg 2.4s ease-out; }
+.flash-card { animation: flash-card-ring 2.4s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .flash-row td { animation: none; background-color: var(--color-amber-100); }
+  .flash-card { animation: none; box-shadow: 0 0 0 3px var(--color-blue); }
+}

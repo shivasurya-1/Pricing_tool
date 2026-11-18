@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { FileSpreadsheet, Info, Layers, ListTree, Pencil, Plus, RotateCcw, Save, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { PageHeader } from '@/components/PageHeader'
@@ -12,10 +12,11 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ReferenceCatalogPicker } from '@/components/reference/ReferenceCatalogPicker'
 import { useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
+import { FormulaSearch, type SearchItem } from '@/features/formulas/FormulaSearch'
 import { useFormulaStore, type FormulaDefinitionDto, type SectionDto, type SheetTab, type TechDataFieldDto } from '@/store/formulaStore'
 import { useUiStore } from '@/store/uiStore'
 import { isTechDataFilled } from '@/components/pulley/PulleyTechDataForm'
-import { catalogDisplayValue, IN_HOUSE_OPERATIONS } from '@/data/pulleyTechDataSchema'
+import { catalogDisplayValue, IN_HOUSE_OPERATIONS, TECH_DATA_SECTIONS } from '@/data/pulleyTechDataSchema'
 import { computeAutoFields, fieldNumericVars, toNumericVars } from '@/lib/pulleyTechDataCalc'
 import { computePulleyPricing, buildPricingVariables } from '@/lib/pulleyPricingCalc'
 import { evaluateFormula, FormulaError } from '@/lib/formulaEval'
@@ -44,10 +45,63 @@ const CATALOG_PRICE_LABELS: Record<string, string> = {
   lockingDevicePrice: 'Locking device price — E. Locking Devices',
 }
 
-const SHEET_GROUP_LABELS: Record<SheetTab, string> = {
-  tech_sheet: 'Technical Data Sheet fields — entered on each RFQ',
-  pricing_tool: 'Pricing Tool fields',
+const SHEET_NAMES: Record<SheetTab, string> = {
+  tech_sheet: 'Technical Data Sheet',
+  pricing_tool: 'Pricing Tool',
 }
+
+/* The Technical Data Sheet's own order (src/data/pulleyTechDataSchema.ts: "1. PROJECT INFORMATION",
+ * "2. PULLEY BODY DIMENSIONS", ... and each section's fields top to bottom). This is what decides the
+ * order, not the stored `order` numbers: those can all be equal (then the server returns the fields
+ * A-Z by key). A field added later, or moved to another section, has no place in that definition, so
+ * it goes after the sheet's own fields in its section, in the order it was added. */
+const SHEET_SECTION_POS = new Map(TECH_DATA_SECTIONS.map((sec, i) => [sec.title, i]))
+const SHEET_FIELD_POS = new Map(TECH_DATA_SECTIONS.flatMap((sec) => sec.fields.map((f, i) => [f.key, { section: sec.title, pos: i }] as const)))
+
+/** Where a section comes among all sections: the sheet's own sections first, then the rest in Manage Sections order. */
+function sectionRank(label: string, sections: SectionDto[]): number {
+  const fixed = SHEET_SECTION_POS.get(label)
+  if (fixed !== undefined) return fixed
+  return 1000 + (sections.find((sec) => sec.label === label)?.order ?? 999)
+}
+
+/** Sort comparator for fields and formulas: section by section, each in the order of the sheet. */
+function compareInSheetOrder(
+  a: { key: string; section: string; order: number; id?: number },
+  b: { key: string; section: string; order: number; id?: number },
+  sections: SectionDto[],
+): number {
+  const place = (x: typeof a) => {
+    const own = SHEET_FIELD_POS.get(x.key)
+    return own && own.section === x.section ? own.pos : 1000 + x.order
+  }
+  return (
+    sectionRank(a.section, sections) - sectionRank(b.section, sections) ||
+    a.section.localeCompare(b.section) ||
+    place(a) - place(b) ||
+    (a.id ?? 0) - (b.id ?? 0)
+  )
+}
+
+/** Fields or formulas in Technical Data Sheet order. Every "insert a field" picker uses this
+ * instead of A to Z, so the list reads top to bottom like the sheet. */
+function inSheetOrder<T extends { key: string; section: string; order: number; id?: number }>(items: T[], sections: SectionDto[]): T[] {
+  return [...items].sort((x, y) => compareInSheetOrder(x, y, sections))
+}
+
+/** Splits an already ordered list into runs that share a section, keeping the order. */
+function bySectionRuns<T extends { section: string }>(items: T[]): { section: string; list: T[] }[] {
+  const runs: { section: string; list: T[] }[] = []
+  for (const item of items) {
+    const last = runs[runs.length - 1]
+    if (last && last.section === item.section) last.list.push(item)
+    else runs.push({ section: item.section, list: [item] })
+  }
+  return runs
+}
+
+/** The element id of a section's block, so the search can scroll to it. */
+const sectionAnchor = (section: string) => `sec-${section.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
 
 /** The option groups of every "Insert a field/variable" picker, each labelled with the
  * page and table its numbers come from, so a key like c1RateInrPerHour isn't a mystery.
@@ -56,9 +110,11 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
   const formulaVariables = useFormulaStore((s) => s.formulaVariables)
 
   const fieldKeys = new Set(fields.map((f) => f.key))
+  // `fields` and `formulas` arrive in sheet order; one group per section keeps that order and
+  // labels each stretch with its section, like the headings on the sheet.
   const fieldGroups = (['tech_sheet', 'pricing_tool'] as SheetTab[])
-    .map((sheet) => [sheet, fields.filter((f) => (f.sheet ?? 'tech_sheet') === sheet)] as const)
-    .filter(([, list]) => list.length > 0)
+    .flatMap((sheet) => bySectionRuns(fields.filter((f) => (f.sheet ?? 'tech_sheet') === sheet)).map((run) => [sheet, run.section, run.list] as const))
+    .filter(([, , list]) => list.length > 0)
   const costRateGroups = [...new Set(formulaVariables.cost_rates.map((r) => r.table_label))].map(
     (tableLabel) => [tableLabel, formulaVariables.cost_rates.filter((r) => r.table_label === tableLabel)] as const,
   )
@@ -66,19 +122,18 @@ function InsertVariableOptions({ fields, formulas }: { fields: TechDataFieldDto[
 
   return (
     <>
-      {formulas && formulas.length > 0 && (
-        <optgroup label="Pricing formulas — Formulas page (Sections A–F)">
-          {formulas
-            .filter((f) => !fieldKeys.has(f.key))
-            .map((f) => (
+      {formulas &&
+        bySectionRuns(formulas.filter((f) => !fieldKeys.has(f.key))).map((run) => (
+          <optgroup key={`formula-${run.section}`} label={`Pricing formulas — ${run.section}`}>
+            {run.list.map((f) => (
               <option key={f.key} value={f.key}>
                 {f.label} ({f.key})
               </option>
             ))}
-        </optgroup>
-      )}
-      {fieldGroups.map(([sheet, list]) => (
-        <optgroup key={sheet} label={SHEET_GROUP_LABELS[sheet]}>
+          </optgroup>
+        ))}
+      {fieldGroups.map(([sheet, section, list]) => (
+        <optgroup key={`${sheet}-${section}`} label={`${SHEET_NAMES[sheet]} — ${section}`}>
           {list.map((f) => (
             <option key={f.key} value={f.key}>
               {f.label} ({f.key})
@@ -271,7 +326,6 @@ export function FormulasPage() {
     return { ...fixedValues, ...values, ...computeAutoFields(values) }
   }, [item, techDataFields])
 
-  const sectionOrder = useMemo(() => Object.fromEntries(sections.map((s) => [s.label, s.order])), [sections])
   const sectionLabels = useMemo(() => [...sections].sort((a, b) => a.order - b.order).map((s) => s.label), [sections])
   const activeSheet: SheetTab = formulaTab === 'Pricing Tool Formulas' ? 'pricing_tool' : 'tech_sheet'
   // Add Field / Add Formula only offer sections of the tab you're on, so whatever you
@@ -317,25 +371,59 @@ export function FormulasPage() {
       bySection[f.section] = bySection[f.section] ?? []
       bySection[f.section].push(f)
     }
-    for (const list of Object.values(bySection)) list.sort((a, b) => a.order - b.order)
+    for (const list of Object.values(bySection)) list.sort((a, b) => compareInSheetOrder(a, b, sections))
     return bySection
-  }, [techDataFields])
+  }, [techDataFields, sections])
 
-  // Every section on one sheet that has anything to show, in Manage Sections order.
+  // Every section on one sheet that has anything to show: the Technical Data Sheet's own sections
+  // in sheet order, then any others in Manage Sections order.
   // A row's sheet comes from the backend (`sheet`, resolved from its section's tab).
   const sheetSections = (sheet: SheetTab) => {
     const labels = new Set<string>()
     for (const f of Object.values(techDataFields)) if ((f.sheet ?? 'tech_sheet') === sheet) labels.add(f.section)
     for (const [label, list] of Object.entries(grouped)) if ((list[0].sheet ?? 'pricing_tool') === sheet) labels.add(label)
-    return [...labels].sort((a, b) => (sectionOrder[a] ?? 999) - (sectionOrder[b] ?? 999) || a.localeCompare(b))
+    return [...labels].sort((a, b) => sectionRank(a, sections) - sectionRank(b, sections) || a.localeCompare(b))
   }
-  const pricingSheetSections = useMemo(() => sheetSections('pricing_tool'), [techDataFields, grouped, sectionOrder])
-  const techSheetSections = useMemo(() => sheetSections('tech_sheet'), [techDataFields, grouped, sectionOrder])
+  const pricingSheetSections = useMemo(() => sheetSections('pricing_tool'), [techDataFields, grouped, sections])
+  const techSheetSections = useMemo(() => sheetSections('tech_sheet'), [techDataFields, grouped, sections])
   // The "View Technical Data Sheet" preview — only fields that actually render there.
   const techDataSections = useMemo(() => techSheetSections.filter((s) => techDataBySection[s]?.length), [techSheetSections, techDataBySection])
 
+  // Everything the search can jump to: each section that has content, every field, every formula
+  // shown on this page (a formula behind an Auto field is reached through that field).
+  const searchItems = useMemo<SearchItem[]>(() => {
+    const items: SearchItem[] = []
+    const add = (it: Omit<SearchItem, 'haystack'>) => items.push({ ...it, haystack: `${it.title} ${it.detail} ${it.section}`.toLowerCase() })
+    for (const label of techSheetSections) add({ kind: 'section', id: `s-t-${label}`, title: label, detail: 'Section · Technical Data Sheet', section: label, sheet: 'tech_sheet' })
+    for (const label of pricingSheetSections) add({ kind: 'section', id: `s-p-${label}`, title: label, detail: 'Section · Pricing Tool', section: label, sheet: 'pricing_tool' })
+    for (const f of inSheetOrder(Object.values(techDataFields), sections)) {
+      add({ kind: 'field', id: `f-${f.key}`, title: f.label, detail: f.key, section: f.section, sheet: f.sheet ?? 'tech_sheet', rowKey: f.key })
+    }
+    for (const f of inSheetOrder(Object.values(grouped).flat(), sections)) {
+      add({ kind: 'formula', id: `x-${f.key}`, title: f.label, detail: f.key, section: f.section, sheet: f.sheet ?? (f.section === TECH_DATA_AUTO_SECTION_LABEL ? 'tech_sheet' : 'pricing_tool'), rowKey: f.key })
+    }
+    return items
+  }, [techSheetSections, pricingSheetSections, techDataFields, grouped, sections])
+
+  /** Opens the tab the result lives on, scrolls to it and flashes it so the eye finds it. */
+  const goTo = (item: SearchItem) => {
+    setFormulaTab(item.sheet === 'pricing_tool' ? 'Pricing Tool Formulas' : 'Technical Sheet Formulas')
+    // Wait a moment: switching tab renders the target first.
+    setTimeout(() => {
+      const row = item.rowKey ? document.getElementById(`row-${item.rowKey}`) : null
+      const target = row ?? document.getElementById(sectionAnchor(item.section))
+      if (!target) return
+      const cls = row ? 'flash-row' : 'flash-card'
+      target.scrollIntoView({ block: row ? 'center' : 'start', behavior: 'smooth' })
+      target.classList.remove(cls)
+      void target.offsetWidth // restart the animation if it was just used
+      target.classList.add(cls)
+      setTimeout(() => target.classList.remove(cls), 2600)
+    }, 120)
+  }
+
   const renderSheetSection = (section: string) => (
-    <Fragment key={section}>
+    <div key={section} id={sectionAnchor(section)} className="scroll-mt-24 space-y-5 rounded-lg">
       {grouped[section]?.length > 0 && (
         <FormulaSectionCard
           title={section}
@@ -361,7 +449,7 @@ export function FormulasPage() {
           onDelete={setDeleteTarget}
         />
       )}
-    </Fragment>
+    </div>
   )
 
   if (loading) return <EmptyState title="Loading formulas..." />
@@ -419,28 +507,11 @@ export function FormulasPage() {
         </p>
       </div>
 
-      <Card className="mb-5">
-        <div className="flex flex-wrap items-center gap-3 p-4">
-          <label className="text-xs font-medium text-[var(--color-ink-soft)]">Preview against RFQ</label>
-          <select value={rfqId} onChange={(e) => setRfqId(e.target.value)} className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-sm">
-            <option value="">No sample — show 0 for every input</option>
-            {rfqsWithTechData.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.rfqNumber} — {r.endCustomer}
-              </option>
-            ))}
-          </select>
-          {items.length > 1 && (
-            <select value={itemId} onChange={(e) => setItemId(e.target.value)} className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-sm">
-              {items.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.productName}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-      </Card>
+
+
+      <div className="sticky top-0 z-20 -mx-1 mb-4 bg-[var(--color-surface)] px-1 pb-1 pt-1">
+        <FormulaSearch items={searchItems} onPick={goTo} />
+      </div>
 
       <Card className="mb-5">
         <Tabs tabs={[...FORMULA_TABS]} active={formulaTab} onChange={(t) => setFormulaTab(t as (typeof FORMULA_TABS)[number])} />
@@ -894,6 +965,7 @@ function AddFormulaModal({
 }) {
   const formulas = useFormulaStore((s) => s.formulas)
   const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const sections = useFormulaStore((s) => s.sections)
   const formulaVariables = useFormulaStore((s) => s.formulaVariables)
   const [label, setLabel] = useState('')
   const [key, setKey] = useState('')
@@ -1037,7 +1109,7 @@ function AddFormulaModal({
                 className={inputClass}
               >
                 <option value="">Pick a formula or field to insert...</option>
-                <InsertVariableOptions fields={Object.values(techDataFields).filter((f) => f.key !== key).sort((a, b) => a.label.localeCompare(b.label))} formulas={Object.values(formulas).filter((f) => f.key !== key).sort((a, b) => a.key.localeCompare(b.key))} />
+                <InsertVariableOptions fields={inSheetOrder(Object.values(techDataFields).filter((f) => f.key !== key), sections)} formulas={inSheetOrder(Object.values(formulas).filter((f) => f.key !== key), sections)} />
               </select>
             </div>
             <div>
@@ -1120,7 +1192,7 @@ function TechDataFieldSectionCard({
           </thead>
           <tbody>
             {fields.map((f) => (
-              <tr key={f.key} className="border-b border-[var(--color-border)] last:border-0">
+              <tr key={f.key} id={`row-${f.key}`} className="scroll-mt-24 border-b border-[var(--color-border)] last:border-0">
                 <td className="px-4 py-2.5 font-medium">
                   {f.label}
                   {f.unit && <span className="ml-1 text-xs text-[var(--color-ink-faint)]">({f.unit})</span>}
@@ -1203,6 +1275,7 @@ function AddTechDataFieldModal({
   }) => Promise<void>
 }) {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const sheetSections = useFormulaStore((s) => s.sections)
   const formulaVariables = useFormulaStore((s) => s.formulaVariables)
   const [label, setLabel] = useState('')
   const [key, setKey] = useState('')
@@ -1239,15 +1312,9 @@ function AddTechDataFieldModal({
     if (!keyEdited) setKey(slugifyToCamelCase(v))
   }
 
-  // Sorted for the picker; the field currently being created is excluded (referencing
-  // itself in its own formula would always be a circular-dependency mistake).
-  const insertableFields = useMemo(
-    () =>
-      Object.values(techDataFields)
-        .filter((f) => f.key !== key)
-        .sort((a, b) => a.label.localeCompare(b.label)),
-    [techDataFields, key],
-  )
+  // In Technical Data Sheet order for the picker; the field currently being created is excluded
+  // (referencing itself in its own formula would always be a circular-dependency mistake).
+  const insertableFields = useMemo(() => inSheetOrder(Object.values(techDataFields).filter((f) => f.key !== key), sheetSections), [techDataFields, key, sheetSections])
   const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
   const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
 
@@ -1581,6 +1648,7 @@ function EditTechDataFieldModal({
   }) => Promise<void>
 }) {
   const techDataFields = useFormulaStore((s) => s.techDataFields)
+  const sheetSections = useFormulaStore((s) => s.sections)
   const formulaVariables = useFormulaStore((s) => s.formulaVariables)
   const [keyValue, setKeyValue] = useState('')
   const [label, setLabel] = useState('')
@@ -1612,15 +1680,9 @@ function EditTechDataFieldModal({
     setExpression(field.expression ?? '')
   }
 
-  // Sorted for the picker; the field currently being edited is excluded (referencing
-  // itself in its own formula would always be a circular-dependency mistake).
-  const insertableFields = useMemo(
-    () =>
-      Object.values(techDataFields)
-        .filter((f) => f.key !== field?.key)
-        .sort((a, b) => a.label.localeCompare(b.label)),
-    [techDataFields, field?.key],
-  )
+  // In Technical Data Sheet order for the picker; the field currently being edited is excluded
+  // (referencing itself in its own formula would always be a circular-dependency mistake).
+  const insertableFields = useMemo(() => inSheetOrder(Object.values(techDataFields).filter((f) => f.key !== field?.key), sheetSections), [techDataFields, field?.key, sheetSections])
   const costRateKeys = useMemo(() => formulaVariables.cost_rates.map((r) => r.key), [formulaVariables])
   const labourRateLookupKeys = formulaVariables.labour_rate_lookups.length > 0 ? formulaVariables.labour_rate_lookups : INJECTED_RATE_VARIABLES
 
@@ -2057,7 +2119,7 @@ function FormulaRow({
   }
 
   return (
-    <tr className={clsx('border-b border-[var(--color-border)] align-top last:border-0', dirty && 'bg-[var(--color-amber-50)]')}>
+    <tr id={`row-${formula.key}`} className={clsx('scroll-mt-24 border-b border-[var(--color-border)] align-top last:border-0', dirty && 'bg-[var(--color-amber-50)]')}>
       <td className="px-4 py-2.5 font-medium">
         {formula.label}
         {formula.output_unit && <span className="ml-1 text-xs text-[var(--color-ink-faint)]">({formula.output_unit})</span>}

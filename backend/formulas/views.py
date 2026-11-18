@@ -1,6 +1,7 @@
 import re
 
 from django.db import transaction
+from django.db.models import Max
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -442,12 +443,18 @@ class TechDataFieldDefinitionViewSet(
                 field_type=data["field_type"],
                 options=data["options"],
                 formula=formula,
-                order=data["order"],
+                # No order given: last in its section, like a row appended to the sheet (0 would put it first).
+                order=data["order"] if data["order"] is not None else self._next_order(data["section"]),
                 is_core=False,
                 created_by=request.user,
             )
 
         return Response(TechDataFieldDefinitionSerializer(field).data, status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _next_order(section: str) -> int:
+        top = TechDataFieldDefinition.objects.filter(section=section).aggregate(top=Max("order"))["top"]
+        return 0 if top is None else top + 1
 
     def perform_update(self, serializer):
         field: TechDataFieldDefinition = serializer.instance

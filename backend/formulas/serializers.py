@@ -213,7 +213,8 @@ class TechDataFieldCreateSerializer(serializers.Serializer):
     unit = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
     field_type = serializers.ChoiceField(choices=["text", "number", "select"])
     options = serializers.ListField(child=serializers.CharField(), required=False, default=list)
-    order = serializers.IntegerField(required=False, default=0)
+    # Left out, the field goes to the end of its section (the view works that out).
+    order = serializers.IntegerField(required=False, allow_null=True, min_value=0, default=None)
 
     is_auto = serializers.BooleanField(default=False)
     expression = serializers.CharField(required=False, allow_blank=True, default="")

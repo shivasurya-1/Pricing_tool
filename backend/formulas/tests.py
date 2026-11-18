@@ -920,3 +920,56 @@ class SheetAssignmentTests(TestCase):
         response = self.client_.patch("/api/formulas/tech-data-fields/editField/", {"section": "Custom Tech"}, format="json")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["sheet"], "tech_sheet")
+
+
+class FieldOrderTests(TestCase):
+    """A new field lands at the end of its section, and tied sheet fields are put back in sheet order."""
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser("admin-order", "admin-order@example.com", "adminpass123", role="Admin")
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(self.admin)}")
+        Section.objects.create(key="t-project", label="1. PROJECT INFORMATION", tab="tech_sheet")
+
+    def make(self, key, order, section="1. PROJECT INFORMATION", core=True):
+        return TechDataFieldDefinition.objects.create(key=key, label=key, section=section, field_type="text", is_core=core, order=order)
+
+    def test_a_new_field_goes_to_the_end_of_its_section(self):
+        self.make("quoteReference", 0)
+        self.make("pulleyTag", 1)
+        payload = {"key": "customerPo", "label": "Customer PO", "section": "1. PROJECT INFORMATION", "field_type": "text", "is_auto": False}
+        res = self.client.post("/api/formulas/tech-data-fields/", payload, format="json")
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["order"], 2)  # not 0, which would put it first
+        second = self.client.post("/api/formulas/tech-data-fields/", {**payload, "key": "customerPo2", "label": "Customer PO 2"}, format="json")
+        self.assertEqual(second.data["order"], 3)
+
+    def test_the_first_field_in_an_empty_section_is_order_0_and_an_explicit_order_is_kept(self):
+        payload = {"key": "firstOne", "label": "First one", "section": "1. PROJECT INFORMATION", "field_type": "text", "is_auto": False}
+        self.assertEqual(self.client.post("/api/formulas/tech-data-fields/", payload, format="json").data["order"], 0)
+        explicit = self.client.post("/api/formulas/tech-data-fields/", {**payload, "key": "pinned", "label": "Pinned", "order": 7}, format="json")
+        self.assertEqual(explicit.data["order"], 7)
+
+    def test_tied_core_fields_are_renumbered_into_sheet_order(self):
+        from .field_order import heal_tied_core_field_order
+        from .management.commands.backfill_tech_data_fields import FIELD_ROWS
+
+        # every order is 0, so the API would hand these over A-Z by key
+        for key in ("qty", "pulleyStructure", "pulleyTag", "quoteReference"):
+            self.make(key, 0)
+        self.make("addedLater", 0, core=False)
+        changed = heal_tied_core_field_order(TechDataFieldDefinition, FIELD_ROWS)
+        self.assertGreater(changed, 0)
+        order = list(TechDataFieldDefinition.objects.filter(section="1. PROJECT INFORMATION").order_by("order", "id").values_list("key", flat=True))
+        self.assertEqual(order, ["quoteReference", "pulleyTag", "pulleyStructure", "qty", "addedLater"])
+
+    def test_a_section_an_admin_already_ordered_is_left_alone(self):
+        from .field_order import heal_tied_core_field_order
+        from .management.commands.backfill_tech_data_fields import FIELD_ROWS
+
+        # distinct numbers = deliberate arrangement (here: reversed), so nothing is touched
+        for i, key in enumerate(("qty", "pulleyStructure", "pulleyTag", "quoteReference")):
+            self.make(key, i)
+        self.assertEqual(heal_tied_core_field_order(TechDataFieldDefinition, FIELD_ROWS), 0)
+        order = list(TechDataFieldDefinition.objects.order_by("order").values_list("key", flat=True))
+        self.assertEqual(order, ["qty", "pulleyStructure", "pulleyTag", "quoteReference"])
