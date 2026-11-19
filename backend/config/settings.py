@@ -149,6 +149,16 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
+# The refresh token lives in this httpOnly cookie (accounts/tokens.py), never in the page's
+# JavaScript or localStorage, so an injected script can't read it. Scoped to /api/auth/ so the
+# browser sends it only to login / refresh / logout / change-password. SameSite=Strict keeps
+# other websites from using it; the frontend and API must therefore be on the same site
+# (e.g. one domain with the API under /api/, or localhost:5173 + localhost:8000 in development).
+REFRESH_COOKIE_NAME = "pt_refresh"
+REFRESH_COOKIE_PATH = os.environ.get("REFRESH_COOKIE_PATH", "/api/auth/")
+REFRESH_COOKIE_SECURE = not DEBUG  # HTTPS only in production
+REFRESH_COOKIE_SAMESITE = os.environ.get("REFRESH_COOKIE_SAMESITE", "Strict")
+
 # --- Cache ---
 # Holds the rate-limit counters. A database table (created by accounts migration 0004) so every
 # worker process shares one count and restarts don't reset it; Django's default in-memory cache
@@ -189,6 +199,9 @@ PASSWORD_RESET_TIMEOUT = int(os.environ.get("PASSWORD_RESET_TIMEOUT", "3600"))
 # same time whether or not the address has an account (waiting for the mail server would give
 # that away). Tests switch it off to check the email synchronously.
 PASSWORD_RESET_EMAIL_IN_BACKGROUND = True
+# How long the "set your password" link in a new user's welcome email works, in seconds
+# (default 72 hours). The link also stops working once the password has been set.
+NEW_USER_LINK_TIMEOUT = int(os.environ.get("NEW_USER_LINK_TIMEOUT", str(72 * 3600)))
 EMAIL_BACKEND = (
     "django.core.mail.backends.smtp.EmailBackend"
     if EMAIL_HOST_USER

@@ -31,16 +31,17 @@ def email_branding() -> dict:
     }
 
 
-def send_new_user_email(user, password: str) -> bool:
-    """Emails a newly created user their username, password and role. Best-effort:
-    returns False (and logs) if the mail server fails, so the account still exists
-    and the Admin can be told to pass the details on another way."""
+def send_new_user_email(user, set_password_url: str, valid_hours: int) -> bool:
+    """Emails a newly created user their username, role and a one-time link to choose their
+    own password (no password is ever emailed). Best-effort: returns False (and logs) if the
+    mail server fails, so the account still exists and the Admin can pass the link on."""
     context = {
         **email_branding(),
         "name": user.get_full_name() or user.username,
         "username": user.username,
-        "password": password,
         "role": user.role,
+        "set_password_url": set_password_url,
+        "valid_hours": valid_hours,
     }
     subject = render_to_string(f"{TEMPLATE_DIR}/new_user_subject.txt", context).strip()
     text_body = render_to_string(f"{TEMPLATE_DIR}/new_user.txt", context)

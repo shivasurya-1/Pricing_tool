@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Eye, EyeOff, Pencil, Trash2, Plus, Shield, User, Users } from 'lucide-react'
+import { Eye, Pencil, Trash2, Plus, Shield, User, Users } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { PERMISSION_ACTIONS, PERMISSION_MODULES, sameGrid, useRolePermissionsStore, type PermissionGrid } from '@/store/rolePermissionsStore'
 import { useUsersStore, type UserAdminDto } from '@/store/usersStore'
@@ -110,6 +110,8 @@ export function UsersRolesPage() {
   const rolesLoaded = useRolePermissionsStore((s) => s.loaded)
   useRolePermissionsStore((s) => s.grids) // re-render when a role's permissions are saved
   const [addOpen, setAddOpen] = useState(false)
+  // Shown only when a new user's welcome email failed: their one-time set-password link.
+  const [inviteLink, setInviteLink] = useState<{ username: string; url: string; hours: number } | null>(null)
   const [editing, setEditing] = useState<UserAdminDto | null>(null)
   const [deleting, setDeleting] = useState<UserAdminDto | null>(null)
 
@@ -294,9 +296,10 @@ export function UsersRolesPage() {
         onClose={() => setAddOpen(false)}
         onCreate={async (input) => {
           try {
-            const { emailSent } = await createUser(input)
-            if (emailSent) pushToast(`User created. Login details were emailed to ${input.email}.`, 'success')
-            else pushToast("User created, but the email couldn't be sent. Share the username and password with them directly.", 'warning')
+            const { emailSent, setPasswordUrl, linkValidHours } = await createUser(input)
+            if (emailSent) pushToast(`User created. A link to choose their password was emailed to ${input.email}.`, 'success')
+            else if (setPasswordUrl) setInviteLink({ username: input.username, url: setPasswordUrl, hours: linkValidHours })
+            else pushToast("User created, but no email could be sent. Once email works, they can use 'Forgot password?' on the login page.", 'warning')
             setAddOpen(false)
             return { ok: true }
           } catch (err) {
@@ -315,6 +318,37 @@ export function UsersRolesPage() {
           }
         }}
       />
+
+      <Modal
+        open={inviteLink !== null}
+        onClose={() => setInviteLink(null)}
+        title="Email could not be sent"
+        footer={
+          <>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                if (inviteLink) void navigator.clipboard?.writeText(inviteLink.url).then(() => pushToast('Link copied.', 'success'))
+              }}
+            >
+              Copy link
+            </Button>
+            <Button variant="primary" onClick={() => setInviteLink(null)}>
+              Done
+            </Button>
+          </>
+        }
+      >
+        {inviteLink && (
+          <div className="space-y-3 text-sm">
+            <p>
+              <b>{inviteLink.username}</b> was created, but the welcome email couldn't be sent. Pass this one-time link to them
+              privately; it lets them choose their password and works for {inviteLink.hours} hours.
+            </p>
+            <input readOnly value={inviteLink.url} onFocus={(e) => e.currentTarget.select()} className={inputClass} />
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
@@ -471,16 +505,14 @@ function AddUserModal({
 }: {
   open: boolean
   onClose: () => void
-  onCreate: (input: { username: string; first_name: string; last_name: string; email: string; role: Role; password: string }) => Promise<{ ok: boolean; emailError?: string }>
+  onCreate: (input: { username: string; first_name: string; last_name: string; email: string; role: Role }) => Promise<{ ok: boolean; emailError?: string }>
 }) {
   const [username, setUsername] = useState('')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
   const [role, setRole] = useState<Role>('Sales')
-  const [password, setPassword] = useState('')
   const [emailError, setEmailError] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const reset = () => {
@@ -489,17 +521,15 @@ function AddUserModal({
     setLastName('')
     setEmail('')
     setRole('Sales')
-    setPassword('')
-    setShowPassword(false)
     setEmailError('')
   }
 
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-  const canSave = username.trim().length > 0 && emailValid && password.trim().length >= 8
+  const canSave = username.trim().length > 0 && emailValid
 
   const handleSave = async () => {
     setSaving(true)
-    const res = await onCreate({ username: username.trim(), first_name: firstName, last_name: lastName, email: email.trim(), role, password })
+    const res = await onCreate({ username: username.trim(), first_name: firstName, last_name: lastName, email: email.trim(), role })
     setSaving(false)
     if (res.ok) reset()
     else if (res.emailError) setEmailError(res.emailError)
@@ -571,30 +601,9 @@ function AddUserModal({
             ))}
           </select>
         </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-[var(--color-ink-soft)]">
-            Password <span className="text-[var(--color-red)]">*</span>
-          </label>
-          <div className="relative">
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className={`${inputClass} pr-9`}
-              placeholder="At least 8 characters"
-              autoComplete="new-password"
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((v) => !v)}
-              aria-label={showPassword ? 'Hide password' : 'Show password'}
-              title={showPassword ? 'Hide password' : 'Show password'}
-              className="absolute inset-y-0 right-0 flex w-9 items-center justify-center text-[var(--color-ink-faint)] hover:text-[var(--color-ink)]"
-            >
-              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
-        </div>
+        <p className="rounded-md bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-ink-soft)]">
+          No password is needed here. The new user is emailed a one-time link to choose their own password (valid for 72 hours).
+        </p>
       </div>
     </Modal>
   )

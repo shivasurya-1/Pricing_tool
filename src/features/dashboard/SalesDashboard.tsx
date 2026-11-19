@@ -9,9 +9,11 @@ import { StageFunnel } from '@/components/charts/StageFunnel'
 import { DonutChart } from '@/components/charts/Charts'
 import { countStage, sortByAgeDesc } from '@/lib/dashboardStats'
 import { STAGE_OWNER } from '@/lib/workflow'
+import { canDo, useAuthStore } from '@/store/authStore'
 
 export function SalesDashboard() {
   const navigate = useNavigate()
+  const canCreate = useAuthStore((s) => canDo(s, 'Create RFQ', 'create'))
   const rfqs = useDataStore((s) => s.rfqs)
   const quotations = useDataStore((s) => s.quotations)
 
@@ -85,9 +87,11 @@ export function SalesDashboard() {
         <Card>
           <CardHeader title="Quick Actions" />
           <div className="flex flex-col gap-2 p-4">
-            <Button data-tour="primary-action" variant="primary" icon={<Plus size={15} />} onClick={() => navigate('/rfqs/new')}>
-              Create RFQ
-            </Button>
+            {canCreate && (
+              <Button data-tour="primary-action" variant="primary" icon={<Plus size={15} />} onClick={() => navigate('/rfqs/new')}>
+                Create RFQ
+              </Button>
+            )}
             <Button variant="secondary" icon={<FileText size={15} />} onClick={() => navigate('/rfqs')}>
               View RFQs
             </Button>

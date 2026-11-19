@@ -227,6 +227,9 @@ class AuditEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         qs = AuditEvent.objects.select_related("rfq").all()
+        # User and permission changes (no RFQ, accounts/audit.py) are for Admins only.
+        if not self.request.user.is_admin:
+            qs = qs.filter(rfq__isnull=False)
         rfq_id = self.request.query_params.get("rfqId")
         if rfq_id:
             qs = qs.filter(rfq_id=rfq_id)
@@ -337,9 +340,10 @@ class RFQViewSet(SourcingCostsMixin, mixins.ListModelMixin, mixins.RetrieveModel
 
     # ---- create -----------------------------------------------------------------
     def create(self, request):
-        # Deliberately not gated on the grid: any role can create an RFQ today (the
-        # frontend's RFQ list shows "Create RFQ" to everyone, and Controlling creates
-        # RFQs with field overrides), and the default grids must not change that.
+        # Needs Create on the "Create RFQ" module: Sales and Admin under the default grids;
+        # an Admin can grant it to other roles (e.g. Controlling) on Users & Roles.
+        if not has_any_permission(request.user, ("Create RFQ",), "create"):
+            raise PermissionDenied("Your role can't create RFQs (needs 'create' on 'Create RFQ').")
         data = request.data
         customer = get_object_or_404(Customer, pk=data.get("customerId"))
         submit = bool(data.get("submit"))
@@ -537,6 +541,10 @@ class RFQViewSet(SourcingCostsMixin, mixins.ListModelMixin, mixins.RetrieveModel
         duplicated here. `fieldOverrides` is optional; omitted means unchanged."""
         rfq = self.get_object()
         _actor_name, role = self._actor(request)
+        # Same stages as adding/removing pulleys: once a quotation exists its pulleys are
+        # fixed, so the quotation always matches the RFQ it was made from.
+        if rfq.stage not in ITEM_EDITABLE_STAGES:
+            raise ValidationError({"detail": f"Pulleys can't be changed once the RFQ is at '{rfq.stage}'."})
         try:
             require_can_act(request.user, rfq.stage)
         except WorkflowError as exc:

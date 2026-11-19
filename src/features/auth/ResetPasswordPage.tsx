@@ -11,8 +11,11 @@ type Phase = 'checking' | 'invalid' | 'form' | 'done'
  * Step 2 of resetting a password: the page the emailed link opens
  * (/reset-password?uid=...&token=...). It checks the link first, so an expired one is
  * explained before anyone types a password, then sets the new password.
+ *
+ * With `welcome`, the same page is the new-user "choose your password" page that the welcome
+ * email links to (/set-password?uid=...&token=...): same backend endpoints, welcome wording.
  */
-export function ResetPasswordPage() {
+export function ResetPasswordPage({ welcome = false }: { welcome?: boolean }) {
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const uid = params.get('uid') ?? ''
@@ -76,7 +79,7 @@ export function ResetPasswordPage() {
   if (phase === 'checking') {
     return (
       <AuthLayout>
-        <p className="text-sm text-[var(--color-ink-soft)]">Checking your reset link...</p>
+        <p className="text-sm text-[var(--color-ink-soft)]">{welcome ? 'Checking your link...' : 'Checking your reset link...'}</p>
       </AuthLayout>
     )
   }
@@ -91,6 +94,9 @@ export function ResetPasswordPage() {
         <p role="alert" className="mt-2 text-sm text-[var(--color-ink-soft)]">
           {invalidMessage}
         </p>
+        {welcome && (
+          <p className="mt-2 text-sm text-[var(--color-ink-soft)]">Enter your email on the next page to get a new link to choose your password.</p>
+        )}
         <div className="mt-6 space-y-2">
           <Link to="/forgot-password">
             <Button variant="primary" className="w-full">
@@ -111,8 +117,12 @@ export function ResetPasswordPage() {
         <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--color-green-50)] text-[var(--color-green)]">
           <CheckCircle2 size={22} />
         </div>
-        <h2 className="mt-4 text-xl font-semibold text-[var(--color-ink)]">Password changed</h2>
-        <p className="mt-2 text-sm text-[var(--color-ink-soft)]">Your password has been updated. For your security you've been signed out everywhere, so sign in again with the new password.</p>
+        <h2 className="mt-4 text-xl font-semibold text-[var(--color-ink)]">{welcome ? 'Password set' : 'Password changed'}</h2>
+        <p className="mt-2 text-sm text-[var(--color-ink-soft)]">
+          {welcome
+            ? 'Your password is set. Sign in with your username and the password you just chose.'
+            : "Your password has been updated. For your security you've been signed out everywhere, so sign in again with the new password."}
+        </p>
         <Button variant="primary" className="mt-6 w-full" onClick={() => navigate('/login', { replace: true })}>
           Go to sign in
         </Button>
@@ -123,7 +133,7 @@ export function ResetPasswordPage() {
   const field = 'w-full rounded-md border border-[var(--color-border)] px-3 py-2 pr-9 text-sm outline-none focus:border-[var(--color-blue)]'
   return (
     <AuthLayout>
-      <h2 className="text-xl font-semibold text-[var(--color-ink)]">Choose a new password</h2>
+      <h2 className="text-xl font-semibold text-[var(--color-ink)]">{welcome ? 'Welcome - choose your password' : 'Choose a new password'}</h2>
       <p className="mt-1 text-sm text-[var(--color-ink-faint)]">Pick a password you don't use anywhere else.</p>
 
       <form className="mt-6 space-y-3" onSubmit={handleSubmit}>
@@ -168,7 +178,7 @@ export function ResetPasswordPage() {
         )}
 
         <Button variant="primary" type="submit" className="w-full" disabled={!canSubmit}>
-          {submitting ? 'Saving...' : 'Change password'}
+          {submitting ? 'Saving...' : welcome ? 'Set password' : 'Change password'}
         </Button>
       </form>
 

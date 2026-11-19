@@ -1,9 +1,26 @@
 import type { Quotation, RFQ } from '@/types'
 import { formatCurrency, formatDate } from '@/lib/format'
-import { summarizeCostBreakdown } from '@/lib/pricing'
+
+/** Same figures as the PDF (backend rfq/pdf.py quotation_lines), built so they add up: each
+ * pulley's Amount is its selling price BEFORE tax, Subtotal is their sum, and Subtotal + Tax =
+ * Grand Total. Freight, duties, other charges and discount are already inside each price. */
+function quotationLines(rfq: RFQ) {
+  let subtotal = 0
+  let tax = 0
+  const rows = rfq.items.map((item) => {
+    const line = rfq.costBreakdown.find((l) => l.itemId === item.id)
+    const amount = line ? line.sellingPrice : item.targetPrice * item.quantity
+    if (line) tax += line.taxValue
+    subtotal += amount
+    return { item, amount, unitPrice: item.quantity ? amount / item.quantity : amount }
+  })
+  return { rows, subtotal, tax, grandTotal: subtotal + tax }
+}
+
+export const PRICES_NOTE = 'Prices include packing, freight, duties and other charges, with any discount already applied. Tax is added below.'
 
 export function QuotationPreview({ rfq, quotation }: { rfq: RFQ; quotation: Quotation }) {
-  const summary = summarizeCostBreakdown(rfq.costBreakdown)
+  const { rows, subtotal, tax, grandTotal } = quotationLines(rfq)
 
   return (
     <div id="print-area" className="mx-auto max-w-3xl bg-white p-10 text-sm text-[var(--color-ink)] shadow-sm">
@@ -55,9 +72,7 @@ export function QuotationPreview({ rfq, quotation }: { rfq: RFQ; quotation: Quot
           </tr>
         </thead>
         <tbody>
-          {rfq.items.map((item) => {
-            const line = rfq.costBreakdown.find((l) => l.itemId === item.id)
-            const unitPrice = line ? line.finalPrice / item.quantity : item.targetPrice
+          {rows.map(({ item, amount, unitPrice }) => {
             return (
               <tr key={item.id} className="border-b border-[var(--color-border)]">
                 <td className="py-2">{item.itemNo}</td>
@@ -69,22 +84,21 @@ export function QuotationPreview({ rfq, quotation }: { rfq: RFQ; quotation: Quot
                   {item.quantity} {item.unit}
                 </td>
                 <td className="py-2 text-right">{formatCurrency(unitPrice, rfq.currency)}</td>
-                <td className="py-2 text-right font-medium">{formatCurrency(line?.finalPrice ?? unitPrice * item.quantity, rfq.currency)}</td>
+                <td className="py-2 text-right font-medium">{formatCurrency(amount, rfq.currency)}</td>
               </tr>
             )
           })}
         </tbody>
       </table>
 
+      <p className="mb-2 text-xs text-[var(--color-ink-faint)]">{PRICES_NOTE}</p>
       <div className="mb-6 flex justify-end">
         <div className="w-64 space-y-1 text-xs">
-          <Row label="Subtotal" value={formatCurrency(summary.totalCost + summary.grossMargin, rfq.currency)} />
-          <Row label="Discount" value={`- ${formatCurrency(summary.totalDiscount, rfq.currency)}`} />
-          <Row label="Freight" value={formatCurrency(summary.totalFreight, rfq.currency)} />
-          <Row label="Tax" value={formatCurrency(summary.totalTax, rfq.currency)} />
+          <Row label="Subtotal" value={formatCurrency(subtotal, rfq.currency)} />
+          <Row label="Tax" value={formatCurrency(tax, rfq.currency)} />
           <div className="mt-1 flex justify-between border-t-2 border-[var(--color-navy)] pt-1.5 text-sm font-bold">
             <span>Grand Total</span>
-            <span>{formatCurrency(summary.grandTotal, rfq.currency)}</span>
+            <span>{formatCurrency(grandTotal, rfq.currency)}</span>
           </div>
         </div>
       </div>

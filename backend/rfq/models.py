@@ -298,7 +298,8 @@ class Quotation(models.Model):
 
 class AuditEvent(models.Model):
     id = models.CharField(primary_key=True, max_length=40, default=generate_audit_id)
-    rfq = models.ForeignKey(RFQ, on_delete=models.CASCADE, related_name="audit_events")
+    # Empty for administration events that aren't about one RFQ (user and permission changes).
+    rfq = models.ForeignKey(RFQ, on_delete=models.CASCADE, related_name="audit_events", null=True, blank=True)
     timestamp = models.CharField(max_length=40, blank=True)
     user = models.CharField(max_length=120)
     role = models.CharField(max_length=20)

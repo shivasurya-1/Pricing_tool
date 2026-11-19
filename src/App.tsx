@@ -1,6 +1,6 @@
 import { useEffect, type ReactElement } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/store/authStore'
+import { canDo, useAuthStore } from '@/store/authStore'
 import { useDataStore } from '@/store/dataStore'
 import { useFormulaStore } from '@/store/formulaStore'
 import { useReferenceStore } from '@/store/referenceStore'
@@ -41,8 +41,17 @@ import { SettingsPage } from '@/features/admin/SettingsPage'
 function RequireAuth({ children }: { children: ReactElement }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const token = useAuthStore((s) => s.token)
-  if (!isAuthenticated || !token) return <Navigate to="/login" replace />
+  const sessionChecked = useAuthStore((s) => s.sessionChecked)
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  // After a reload the access token (memory only) is being renewed from the refresh cookie.
+  if (!token) return sessionChecked ? <Navigate to="/login" replace /> : null
   return children
+}
+
+/** The Create RFQ page needs Create on the "Create RFQ" module, as the backend does. */
+function RequireCreateRfq({ children }: { children: ReactElement }) {
+  const canCreate = useAuthStore((s) => canDo(s, 'Create RFQ', 'create'))
+  return canCreate ? children : <Navigate to="/rfqs" replace />
 }
 
 export default function App() {
@@ -83,6 +92,7 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/set-password" element={<ResetPasswordPage welcome />} />
       <Route
         element={
           <RequireAuth>
@@ -94,7 +104,7 @@ export default function App() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/rfqs" element={<RFQListPage />} />
         <Route path="/approvals" element={<ApprovalsPage />} />
-        <Route path="/rfqs/new" element={<RFQCreatePage />} />
+        <Route path="/rfqs/new" element={<RequireCreateRfq><RFQCreatePage /></RequireCreateRfq>} />
         <Route path="/rfqs/:id" element={<RFQDetailPage />} />
         <Route path="/rfqs/:id/operations" element={<OperationsReviewScreen />} />
         <Route path="/rfqs/:id/sourcing" element={<SourcingScreen />} />

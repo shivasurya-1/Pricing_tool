@@ -82,7 +82,7 @@ class CostBreakdownLineSerializer(CamelCaseSerializer):
 
 
 class AuditEventSerializer(CamelCaseSerializer):
-    rfq_id = serializers.CharField(source="rfq.id", read_only=True)
+    rfq_id = serializers.CharField(source="rfq.id", read_only=True, allow_null=True)
 
     class Meta:
         model = AuditEvent

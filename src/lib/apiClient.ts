@@ -6,10 +6,11 @@ import { navigateTo } from '@/lib/navigation'
  * from a real username/password login, or no auth header when signed out. The backend no
  * longer accepts the old X-Demo-Role header, so there is no password-free path.
  *
- * The access token lasts 15 minutes. A 401 means it ran out: the refresh token (7 days) gets a
- * new pair from /auth/refresh/ and the call is sent again, so the user never notices. Only when
- * the refresh token is no good either (7 days unused, signed out, password changed) is the
- * store cleared and the user sent to /login.
+ * The access token lasts 15 minutes and is kept in memory only. The refresh token (7 days) is
+ * an httpOnly cookie that scripts on the page can't read; the browser sends it to /auth/ only.
+ * A 401 means the access token ran out: /auth/refresh/ gets a new one with the cookie and the
+ * call is sent again, so the user never notices. Only when the refresh is refused (7 days
+ * unused, signed out, password changed, account deactivated) is the user sent to /login.
  *
  * If the backend isn't reachable (not running locally, or not deployed yet), every
  * call here rejects and callers fall back to the existing static frontend data —
@@ -39,48 +40,41 @@ function authHeaders(): Record<string, string> {
 const isSessionCall = (path: string) =>
   path.startsWith('/auth/login') || path.startsWith('/auth/logout') || path.startsWith('/auth/refresh')
 
-/** The refresh token another tab last saved — it may have renewed the pair moments ago. */
-function storedRefreshToken(): string | null {
-  try {
-    const raw = localStorage.getItem(useAuthStore.persist.getOptions().name ?? '')
-    const t = raw ? JSON.parse(raw)?.state?.refreshToken : null
-    return typeof t === 'string' && t ? t : null
-  } catch {
-    return null
-  }
-}
+/** Only the /auth/ calls need the refresh cookie (login, refresh, logout, change-password set
+ * or read it); everything else stays a plain same-origin request. */
+const credentialsFor = (path: string): RequestCredentials => (path.startsWith('/auth/') ? 'include' : 'same-origin')
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 let refreshing: Promise<boolean> | null = null
 
-/** Gets a new access + refresh pair with the stored refresh token. Calls that hit a 401 at the
- * same time share one request (each refresh token works only once). True when there is a
- * usable access token afterwards. */
-function refreshSession(): Promise<boolean> {
+/** Gets a new access token (and a new refresh cookie) with the refresh cookie. Calls that hit a
+ * 401 at the same time share one request (each refresh token works only once). True when
+ * there is a usable access token afterwards. */
+export function refreshSession(): Promise<boolean> {
   if (refreshing) return refreshing
   refreshing = (async () => {
-    const used = useAuthStore.getState().refreshToken
-    if (!used) return false
-    try {
-      const res = await fetch(`${API_BASE}/auth/refresh/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh: used }),
-      })
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let res: Response
+      try {
+        res = await fetch(`${API_BASE}/auth/refresh/`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+      } catch {
+        return false // server unreachable — keep the session, the next call will try again
+      }
       if (res.ok) {
-        const body = (await res.json()) as { access: string; refresh?: string }
-        useAuthStore.getState().setTokens(body.access, body.refresh ?? used)
+        const body = (await res.json()) as { access: string }
+        useAuthStore.getState().setAccess(body.access)
         return true
       }
-      if (res.status !== 401 && res.status !== 400) return false // server trouble — keep the session
-    } catch {
-      return false // server unreachable — keep the session, the next call will try again
-    }
-    // Refused. Another tab may have just renewed with this same refresh token: take its pair.
-    const other = storedRefreshToken()
-    if (other && other !== used) {
-      useAuthStore.setState({ refreshToken: other })
-      refreshing = null
-      return refreshSession()
+      if (res.status !== 401) return false // server trouble — keep the session
+      // Refused. Another tab may have renewed with the same cookie a moment ago; the browser
+      // then already holds that tab's new cookie, so one more try after a short pause.
+      if (attempt === 0) await wait(400)
     }
     expireSession()
     return false
@@ -90,30 +84,36 @@ function refreshSession(): Promise<boolean> {
   return refreshing
 }
 
-/** The session is really over: sign out locally and go to the login page. */
+/** The session is really over: sign out locally and go to the login page. Local only — the
+ * server has already refused this session, and a logout call could retire a newer cookie
+ * another tab has just received. */
 function expireSession() {
-  const { isAuthenticated, logout } = useAuthStore.getState()
+  const { isAuthenticated, clearSession } = useAuthStore.getState()
   if (!isAuthenticated) return
-  logout()
+  clearSession()
   navigateTo('/login')
 }
 
 /** A 401 still standing after a refresh try: the session is gone. */
 function handleUnauthorized(status: number, path: string) {
   if (status !== 401 || isSessionCall(path)) return
-  const { isAuthenticated, logout } = useAuthStore.getState()
-  if (!isAuthenticated) return
-  logout()
-  navigateTo('/login')
+  expireSession()
 }
 
 async function request<T>(path: string, options: RequestInit = {}, retried = false): Promise<T> {
+  // After a page reload there is no access token yet (it is never stored): get one from the
+  // refresh cookie before the first call instead of letting it fail.
+  if (!isSessionCall(path)) {
+    const { token, isAuthenticated } = useAuthStore.getState()
+    if (!token && isAuthenticated) await refreshSession()
+  }
   // FormData bodies (file uploads) must NOT get a manual Content-Type — the browser
   // sets the multipart boundary itself; forcing 'application/json' here would break it.
   const isFormData = options.body instanceof FormData
   const sentToken = useAuthStore.getState().token
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
+    credentials: credentialsFor(path),
     headers: {
       ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...authHeaders(),
@@ -153,11 +153,13 @@ export const api = {
 }
 
 /**
- * A plain `<a href>` can't carry the `Authorization: Token ...` header a download
+ * A plain `<a href>` can't carry the `Authorization: Bearer ...` header a download
  * needs, so this fetches the file with the same auth as every other call, then
  * triggers a save via a throwaway object URL.
  */
 export async function downloadFile(path: string, filename: string): Promise<void> {
+  const { token, isAuthenticated } = useAuthStore.getState()
+  if (!token && isAuthenticated) await refreshSession()
   const sentToken = useAuthStore.getState().token
   let res = await fetch(`${API_BASE}${path}`, { headers: { ...authHeaders() } })
   if (res.status === 401 && sentToken) {

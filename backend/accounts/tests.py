@@ -51,6 +51,8 @@ class LoginAndMeViewTests(TestCase):
         response = client.post("/api/auth/login/", {"username": "realuser", "password": "correct-password-123"}, format="json")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("token", response.data)
+        self.assertNotIn("refresh", response.data)  # only ever in the httpOnly cookie
+        self.assertIn(settings.REFRESH_COOKIE_NAME, response.cookies)
         self.assertEqual(str(AccessToken(response.data["access"])["user_id"]), str(self.user.pk))
         self.assertEqual(OutstandingToken.objects.filter(user=self.user).count(), 1)
 
@@ -117,7 +119,8 @@ class LoginAndMeViewTests(TestCase):
 
 
 class JwtSessionTests(TestCase):
-    """Access token (15 min) + refresh token (7 days), one pair per sign-in."""
+    """Access token (15 min) in the body + refresh token (7 days) in an httpOnly cookie, one
+    pair per sign-in."""
 
     def setUp(self):
         self.user = User.objects.create_user("jwtuser", password="correct-password-123", role=Role.SALES)
@@ -125,7 +128,8 @@ class JwtSessionTests(TestCase):
     def sign_in(self):
         res = APIClient().post("/api/auth/login/", {"username": "jwtuser", "password": "correct-password-123"}, format="json")
         self.assertEqual(res.status_code, 200)
-        return res.data["access"], res.data["refresh"]
+        self.assertNotIn("refresh", res.data)
+        return res.data["access"], res.cookies[settings.REFRESH_COOKIE_NAME].value
 
     @staticmethod
     def me(access):
@@ -134,8 +138,15 @@ class JwtSessionTests(TestCase):
         return c.get("/api/auth/me/").status_code
 
     @staticmethod
-    def refresh(token):
-        return APIClient().post("/api/auth/refresh/", {"refresh": token}, format="json")
+    def cookie_client(refresh):
+        c = APIClient()
+        if refresh is not None:
+            c.cookies[settings.REFRESH_COOKIE_NAME] = refresh
+        return c
+
+    def refresh(self, token):
+        """POST /refresh/ the way the browser does: the refresh token in the cookie, no body."""
+        return self.cookie_client(token).post("/api/auth/refresh/", {}, format="json")
 
     def test_lifetimes_are_15_minutes_and_7_days(self):
         from datetime import timedelta
@@ -148,6 +159,14 @@ class JwtSessionTests(TestCase):
         a, r = AccessToken(access), RefreshToken(refresh)
         self.assertEqual(a["exp"] - a["iat"], 15 * 60)
         self.assertEqual(r["exp"] - r["iat"], 7 * 24 * 3600)
+
+    def test_the_refresh_cookie_is_httponly_strict_and_scoped_to_auth(self):
+        res = APIClient().post("/api/auth/login/", {"username": "jwtuser", "password": "correct-password-123"}, format="json")
+        cookie = res.cookies[settings.REFRESH_COOKIE_NAME]
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Strict")
+        self.assertEqual(cookie["path"], "/api/auth/")
+        self.assertEqual(int(cookie["max-age"]), 7 * 24 * 3600)
 
     def test_the_old_token_header_is_not_accepted(self):
         access, _ = self.sign_in()
@@ -162,14 +181,16 @@ class JwtSessionTests(TestCase):
         token.set_exp(lifetime=-timedelta(seconds=1))
         self.assertEqual(self.me(str(token)), 401)
 
-    def test_refresh_gives_a_new_pair_and_the_old_refresh_token_works_once(self):
+    def test_refresh_gives_a_new_access_token_and_cookie_and_the_old_refresh_token_works_once(self):
         _, refresh = self.sign_in()
         res = self.refresh(refresh)
         self.assertEqual(res.status_code, 200)
+        self.assertNotIn("refresh", res.data)
         self.assertEqual(self.me(res.data["access"]), 200)
-        self.assertNotEqual(res.data["refresh"], refresh)
+        rotated = res.cookies[settings.REFRESH_COOKIE_NAME].value
+        self.assertNotEqual(rotated, refresh)
         self.assertEqual(self.refresh(refresh).status_code, 401)  # already used
-        self.assertEqual(self.refresh(res.data["refresh"]).status_code, 200)
+        self.assertEqual(self.refresh(rotated).status_code, 200)
 
     def test_refresh_ignores_an_expired_access_token_in_the_header(self):
         from datetime import timedelta
@@ -177,13 +198,16 @@ class JwtSessionTests(TestCase):
         _, refresh = self.sign_in()
         stale = AccessToken.for_user(self.user)
         stale.set_exp(lifetime=-timedelta(seconds=1))
-        c = APIClient()
+        c = self.cookie_client(refresh)
         c.credentials(HTTP_AUTHORIZATION=f"Bearer {stale}")
-        self.assertEqual(c.post("/api/auth/refresh/", {"refresh": refresh}, format="json").status_code, 200)
+        self.assertEqual(c.post("/api/auth/refresh/", {}, format="json").status_code, 200)
 
     def test_bad_or_missing_refresh_token_is_refused(self):
-        self.assertEqual(self.refresh("not-a-token").status_code, 401)
-        self.assertEqual(APIClient().post("/api/auth/refresh/", {}, format="json").status_code, 400)
+        for token in ("not-a-token", None):
+            res = self.refresh(token)
+            self.assertEqual(res.status_code, 401)
+            # Left alone: another tab may have just received a new cookie (see RefreshView).
+            self.assertNotIn(settings.REFRESH_COOKIE_NAME, res.cookies)
 
     def test_deactivated_account_cannot_refresh(self):
         _, refresh = self.sign_in()
@@ -191,19 +215,21 @@ class JwtSessionTests(TestCase):
         self.user.save()
         self.assertEqual(self.refresh(refresh).status_code, 401)
 
-    def test_logout_signs_out_only_this_browser(self):
+    def test_logout_signs_out_only_this_browser_and_clears_its_cookie(self):
         _, refresh_a = self.sign_in()
         _, refresh_b = self.sign_in()  # same account on a second computer
-        self.assertEqual(APIClient().post("/api/auth/logout/", {"refresh": refresh_a}, format="json").status_code, 204)
+        res = self.cookie_client(refresh_a).post("/api/auth/logout/", {}, format="json")
+        self.assertEqual(res.status_code, 204)
+        self.assertEqual(res.cookies[settings.REFRESH_COOKIE_NAME].value, "")
         self.assertEqual(self.refresh(refresh_a).status_code, 401)
         self.assertEqual(self.refresh(refresh_b).status_code, 200)
 
     def test_logout_never_fails(self):
-        for body in ({}, {"refresh": ""}, {"refresh": "garbage"}):
-            self.assertEqual(APIClient().post("/api/auth/logout/", body, format="json").status_code, 204)
+        for token in (None, "", "garbage"):
+            self.assertEqual(self.cookie_client(token).post("/api/auth/logout/", {}, format="json").status_code, 204)
         _, refresh = self.sign_in()
-        APIClient().post("/api/auth/logout/", {"refresh": refresh}, format="json")
-        self.assertEqual(APIClient().post("/api/auth/logout/", {"refresh": refresh}, format="json").status_code, 204)
+        self.cookie_client(refresh).post("/api/auth/logout/", {}, format="json")
+        self.assertEqual(self.cookie_client(refresh).post("/api/auth/logout/", {}, format="json").status_code, 204)
 
 
 class UserViewSetTests(TestCase):
@@ -223,14 +249,18 @@ class UserViewSetTests(TestCase):
         response = self.admin_client.get("/api/auth/users/")
         self.assertEqual(response.status_code, 200)
 
-    def test_admin_can_create_a_user_with_a_password(self):
+    def test_admin_creates_a_user_without_a_password(self):
+        # A password sent by an older client is ignored: the user chooses their own.
         payload = {"username": "newperson", "first_name": "New", "email": "new@example.com", "role": "Sourcing", "password": "a-real-password-1"}
         response = self.admin_client.post("/api/auth/users/", payload, format="json")
         self.assertEqual(response.status_code, 201)
         self.assertNotIn("password", response.data)
         created = User.objects.get(username="newperson")
-        self.assertTrue(created.check_password("a-real-password-1"))
+        self.assertFalse(created.has_usable_password())
+        self.assertFalse(created.check_password("a-real-password-1"))
         self.assertEqual(created.role, "Sourcing")
+        login = APIClient().post("/api/auth/login/", {"username": "newperson", "password": "a-real-password-1"}, format="json")
+        self.assertEqual(login.status_code, 401)
 
     def test_non_admin_cannot_create_a_user(self):
         payload = {"username": "hacker", "role": "Admin", "password": "whatever12"}
@@ -419,17 +449,22 @@ class RolePermissionEnforcementTests(TestCase):
         self.assertFalse(has_permission(self.sourcing, "Sourcing", "edit"))
 
 
+@override_settings(FRONTEND_URL="https://app.example.test")
 class NewUserEmailTests(TestCase):
-    """Add User: email is mandatory and the new user is emailed their login details."""
+    """Add User: email is mandatory and the new user is emailed a one-time link to choose
+    their own password. No password is ever emailed or known to the Admin."""
 
     def setUp(self):
         admin = User.objects.create_user("mail-admin", password="adminpass123", role=Role.ADMIN)
         self.admin_client = token_client(admin)
-        self.payload = {"username": "newmailuser", "first_name": "New", "email": "new.user@example.com", "role": "Sourcing", "password": "a-real-password-1"}
+        self.payload = {"username": "newmailuser", "first_name": "New", "email": "new.user@example.com", "role": "Sourcing"}
+
+    def link_from(self, text):
+        match = re.search(r"https://app\.example\.test/set-password\?uid=([^&\s]+)&token=([^\s\"<]+)", text)
+        self.assertIsNotNone(match, text)
+        return match.group(1), match.group(2)
 
     def test_email_is_required(self):
-        from django.core import mail
-
         for email in (None, ""):
             payload = {k: v for k, v in self.payload.items() if k != "email"}
             if email is not None:
@@ -440,25 +475,61 @@ class NewUserEmailTests(TestCase):
         self.assertFalse(User.objects.filter(username="newmailuser").exists())
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_new_user_is_emailed_username_password_and_role(self):
-        from django.core import mail
-
+    def test_new_user_is_emailed_a_set_password_link_and_no_password(self):
         response = self.admin_client.post("/api/auth/users/", self.payload, format="json")
         self.assertEqual(response.status_code, 201)
         self.assertTrue(response.data["email_sent"])
-        self.assertNotIn("password", response.data)
+        self.assertNotIn("set_password_url", response.data)  # the link only goes to the user
+        self.assertEqual(response.data["link_valid_hours"], 72)
         self.assertEqual(len(mail.outbox), 1)
         message = mail.outbox[0]
         self.assertEqual(message.to, ["new.user@example.com"])
-        for text in ("Username: newmailuser", "Password: a-real-password-1", "Role: Sourcing"):
+        for text in ("Username: newmailuser", "Role: Sourcing", "72 hours"):
             self.assertIn(text, message.body)
-        # HTML version of the same template.
+        self.assertNotIn("Password:", message.body)
+        self.link_from(message.body)
         html, mimetype = message.alternatives[0]
         self.assertEqual(mimetype, "text/html")
-        for text in ("newmailuser", "a-real-password-1", "Sourcing", "Hello New"):
+        for text in ("newmailuser", "Sourcing", "Hello New", "Choose your password"):
             self.assertIn(text, html)
 
-    def test_user_is_still_created_when_the_email_fails(self):
+    def test_the_link_sets_the_password_once_and_then_the_user_can_sign_in(self):
+        self.admin_client.post("/api/auth/users/", self.payload, format="json")
+        uid, token = self.link_from(mail.outbox[0].body)
+        anon = APIClient()
+        self.assertEqual(anon.post("/api/auth/reset-password/check/", {"uid": uid, "token": token}, format="json").status_code, 200)
+        res = anon.post("/api/auth/reset-password/", {"uid": uid, "token": token, "password": "My-own-pass-2026"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        login = APIClient().post("/api/auth/login/", {"username": "newmailuser", "password": "My-own-pass-2026"}, format="json")
+        self.assertEqual(login.status_code, 200)
+        again = anon.post("/api/auth/reset-password/", {"uid": uid, "token": token, "password": "Another-pass-2026"}, format="json")
+        self.assertEqual(again.status_code, 400)  # the link works once
+
+    def test_the_link_expires_after_its_own_lifetime_not_the_reset_one(self):
+        self.admin_client.post("/api/auth/users/", self.payload, format="json")
+        uid, token = self.link_from(mail.outbox[0].body)
+
+        def check():
+            return APIClient().post("/api/auth/reset-password/check/", {"uid": uid, "token": token}, format="json").status_code
+
+        with override_settings(PASSWORD_RESET_TIMEOUT=-1):
+            self.assertEqual(check(), 200)  # the 1-hour reset limit doesn't apply to welcome links
+        with override_settings(NEW_USER_LINK_TIMEOUT=-1):
+            self.assertEqual(check(), 400)
+
+    def test_a_reset_token_is_not_a_welcome_token_and_vice_versa(self):
+        from django.contrib.auth.tokens import default_token_generator
+
+        from .tokens import set_password_link_generator
+
+        self.admin_client.post("/api/auth/users/", self.payload, format="json")
+        user = User.objects.get(username="newmailuser")
+        _, welcome = self.link_from(mail.outbox[0].body)
+        self.assertTrue(set_password_link_generator.check_token(user, welcome))
+        self.assertFalse(default_token_generator.check_token(user, welcome))
+        self.assertFalse(set_password_link_generator.check_token(user, default_token_generator.make_token(user)))
+
+    def test_user_is_still_created_when_the_email_fails_and_the_admin_gets_the_link(self):
         from unittest import mock
 
         with (
@@ -469,7 +540,17 @@ class NewUserEmailTests(TestCase):
         self.assertIn("Couldn't send the new-account email", logs.output[0])
         self.assertEqual(response.status_code, 201)
         self.assertFalse(response.data["email_sent"])
-        self.assertTrue(User.objects.get(username="newmailuser").check_password("a-real-password-1"))
+        self.assertTrue(response.data["set_password_url"].startswith("https://app.example.test/set-password?uid="))
+        self.assertFalse(User.objects.get(username="newmailuser").has_usable_password())
+
+    @override_settings(PASSWORD_RESET_EMAIL_IN_BACKGROUND=False)
+    def test_a_new_user_who_lost_the_link_can_use_forgot_password(self):
+        self.admin_client.post("/api/auth/users/", self.payload, format="json")
+        mail.outbox.clear()
+        cache.clear()
+        APIClient().post("/api/auth/forgot-password/", {"email": "new.user@example.com"}, format="json")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("/reset-password?uid=", mail.outbox[0].body)
 
 
 class UserDeleteTests(TestCase):
@@ -724,15 +805,18 @@ class ChangePasswordTests(TestCase):
 
     def test_this_browser_stays_signed_in_and_other_sessions_end(self):
         res = self.change()
+        self.assertNotIn("refresh", res.data)  # the new refresh token comes as the httpOnly cookie
 
         def refresh(t):
-            return APIClient().post("/api/auth/refresh/", {"refresh": t}, format="json").status_code
+            c = APIClient()
+            c.cookies[settings.REFRESH_COOKIE_NAME] = t
+            return c.post("/api/auth/refresh/", {}, format="json").status_code
 
         self.assertEqual(refresh(self.tokens["refresh"]), 401)  # other sessions can't renew
         fresh = APIClient()
         fresh.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
         self.assertEqual(fresh.get("/api/auth/me/").status_code, 200)
-        self.assertEqual(refresh(res.data["refresh"]), 200)  # this browser keeps going
+        self.assertEqual(refresh(res.cookies[settings.REFRESH_COOKIE_NAME].value), 200)  # this browser keeps going
 
     def test_wrong_current_password_is_a_400_not_a_401(self):
         res = self.change(current="Not-my-password-1")
@@ -756,3 +840,51 @@ class ChangePasswordTests(TestCase):
         with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"password_change": "2/hour"}):
             codes = [self.change(current="wrong-one-1").status_code for _ in range(3)]
         self.assertEqual(codes, [400, 400, 429])
+
+
+class AdminAuditLogTests(TestCase):
+    """User and permission changes are written to the Audit Log (Admins only can read them)."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user("audit-admin", first_name="Asha", last_name="Admin", password="adminpass123", role=Role.ADMIN)
+        self.admin_client = token_client(self.admin)
+        self.sales = User.objects.create_user("audit-sales", password="salespass123", role=Role.SALES)
+
+    def admin_events(self):
+        from rfq.models import AuditEvent
+
+        return list(AuditEvent.objects.filter(rfq__isnull=True).order_by("timestamp"))
+
+    def test_a_permission_change_is_logged_with_who_and_what(self):
+        grid = {"Create RFQ": ["view", "create", "edit"], "Masters": ["view"], "Costing": ["view"]}
+        self.assertEqual(self.admin_client.patch("/api/auth/roles/Sales/", {"permissions": grid}, format="json").status_code, 200)
+        [event] = self.admin_events()
+        self.assertEqual((event.user, event.role, event.module), ("Asha Admin", "Admin", "Users & Roles"))
+        self.assertEqual(event.action, "Changed permissions of Sales")
+        self.assertIn("Create RFQ: -delete", event.comment)
+        self.assertIn("Costing: +view", event.comment)
+
+    def test_saving_an_unchanged_grid_logs_nothing(self):
+        from .role_permissions import role_permissions
+
+        self.admin_client.patch("/api/auth/roles/Sales/", {"permissions": role_permissions("Sales")}, format="json")
+        self.assertEqual(self.admin_events(), [])
+
+    def test_user_changes_are_logged(self):
+        self.admin_client.post("/api/auth/users/", {"username": "audit-new", "email": "n@example.test", "role": "Sourcing"}, format="json")
+        self.admin_client.patch(f"/api/auth/users/{self.sales.id}/", {"role": "Operations"}, format="json")
+        self.admin_client.patch(f"/api/auth/users/{self.sales.id}/", {"is_active": False}, format="json")
+        self.admin_client.delete(f"/api/auth/users/{self.sales.id}/")
+        actions = [e.action for e in self.admin_events()]
+        self.assertEqual(actions, [
+            "Added user audit-new (Sourcing)",
+            "Edited user audit-sales",
+            "Deactivated user audit-sales",
+            "Deleted user audit-sales (Operations)",
+        ])
+        self.assertIn("role: Sales -> Operations", self.admin_events()[1].comment)
+
+    def test_only_admins_see_administration_events(self):
+        self.admin_client.patch("/api/auth/roles/Sales/", {"permissions": {"Create RFQ": ["view"]}}, format="json")
+        self.assertEqual(len(self.admin_client.get("/api/rfq/audit-log/").data), 1)
+        self.assertEqual(token_client(self.sales).get("/api/rfq/audit-log/").data, [])

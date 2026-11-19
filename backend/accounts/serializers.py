@@ -29,18 +29,18 @@ class UserAdminSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=8)
+    """New user without a password: they choose one themselves from the "set your password"
+    link in their welcome email (accounts.views.UserViewSet.create)."""
 
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "role", "password"]
-        # Required: the new user's login details are emailed to this address.
+        fields = ["id", "username", "first_name", "last_name", "email", "role"]
+        # Required: the set-password link is emailed to this address.
         extra_kwargs = {"email": {"required": True, "allow_blank": False}}
 
     def create(self, validated_data):
-        password = validated_data.pop("password")
         user = User(**validated_data)
-        user.set_password(password)
+        user.set_unusable_password()  # nobody can sign in until the user sets one
         user.save()
         return user
 

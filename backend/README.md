@@ -38,17 +38,19 @@ real PostgreSQL instance — required for production.
 
 ## API
 
-- `POST /api/auth/login/` — `{username, password}` → `{access, refresh, user}`. The access token (15 min, `JWT_ACCESS_MINUTES`) goes in `Authorization: Bearer <access>`; the refresh token (7 days from last use, `JWT_REFRESH_DAYS`) renews it. Each sign-in gets its own pair
-- `POST /api/auth/refresh/` — `{refresh}` → `{access, refresh}`; the refresh token sent is retired (works once). 401 if expired, used, signed out or the account is inactive
-- `POST /api/auth/logout/` — `{refresh}` → 204; signs out this browser only (no access token needed)
+- `POST /api/auth/login/` — `{username, password}` → `{access, user}` plus the refresh token as an httpOnly cookie (`pt_refresh`, path `/api/auth/`, SameSite=Strict, Secure when `DEBUG=false`). The access token (15 min, `JWT_ACCESS_MINUTES`) goes in `Authorization: Bearer <access>` and is kept in memory by the frontend; the refresh token (7 days from last use, `JWT_REFRESH_DAYS`) renews it and is never readable by page scripts. Each sign-in gets its own pair. The frontend and API must be on the same site for the cookie to be sent
+- `POST /api/auth/refresh/` — refresh cookie → `{access}` and a new refresh cookie; the refresh token sent is retired (works once). 401 if missing, expired, used, signed out or the account is inactive (a body `{refresh}` is also accepted for non-browser clients)
+- `POST /api/auth/logout/` — refresh cookie → 204 and the cookie cleared; signs out this browser only (no access token needed)
 - `GET /api/auth/me/`
 - `POST /api/auth/forgot-password/` — `{email}` → always 200 for a well-formed address (never says whether an account exists); emails a one-time link to `{FRONTEND_URL}/reset-password?uid=…&token=…`
 - `POST /api/auth/reset-password/check/` — `{uid, token}` → 200 if the link is still good, else 400
 - `POST /api/auth/reset-password/` — `{uid, token, password}` → sets the new password and signs the account out everywhere; 400 with `errors[]` if the password is too weak
 
-- `POST /api/auth/change-password/` — signed-in users only; `{current_password, new_password}` → `{access, refresh}`. A wrong current password is a 400 (not a 401); other devices are signed out (their refresh tokens are retired) and the response carries a fresh pair for this one (`PASSWORD_CHANGE_RATE`, default 10/hour)
+- `POST /api/auth/change-password/` — signed-in users only; `{current_password, new_password}` → `{access}` plus a new refresh cookie. A wrong current password is a 400 (not a 401); other devices are signed out (their refresh tokens are retired) and this browser gets a fresh pair (`PASSWORD_CHANGE_RATE`, default 10/hour)
 
 The three password-reset endpoints need no login, are rate limited (`PASSWORD_RESET_RATE`, default 10/hour per client IP), and the link lasts `PASSWORD_RESET_TIMEOUT` seconds (default 1 hour; the forgot-password reply returns it as `valid_minutes`). Set `FRONTEND_URL` in `.env` for production; without SMTP credentials the email prints to the server log instead of sending. The reset email is sent from a background thread so the reply time doesn't reveal whether an account exists.
+
+New users (`POST /api/auth/users/`, Admin only) are created without a password: the welcome email carries a one-time link to `{FRONTEND_URL}/set-password?uid=…&token=…` (`NEW_USER_LINK_TIMEOUT` seconds, default 72 hours) that the reset-password endpoints accept. If the email fails, the response includes `set_password_url` so the Admin can pass the link on. User changes and role-permission changes are written to the Audit Log (module "Users & Roles", Admins only).
 
 Rate-limit counters live in a database cache table (`django_cache`, created by `migrate`), shared by all workers. Behind a proxy the client IP is read from the last `X-Forwarded-For` entry; `NUM_PROXIES` (default 1 with `DEBUG=false`, 0 with `DEBUG=true`) must match the number of proxies in front of Django.
 

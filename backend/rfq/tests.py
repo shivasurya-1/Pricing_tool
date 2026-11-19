@@ -482,6 +482,25 @@ class QuotationPdfTests(TestCase):
         self.approval.post(f"/api/rfq/rfqs/{rfq_id}/approve-final/", {"actorName": "Approver"}, format="json")
         gen = self.sales.post(f"/api/rfq/rfqs/{rfq_id}/generate-quotation/", {"actorName": "Sales"}, format="json")
         self.quotation_id = gen.data["id"]
+        self.rfq_id = rfq_id
+
+    def test_quotation_figures_add_up(self):
+        """Review example: base 1,00,000, freight 2,000, duties 5,000, other 1,000 -> adjusted
+        1,08,000; +15% = selling 1,24,200; +18% tax 22,356 = final 1,46,556."""
+        from .pdf import quotation_lines
+
+        rfq = RFQ.objects.get(id=self.rfq_id)
+        CostBreakdownLine.objects.filter(item__rfq=rfq).update(
+            base_cost=100000, freight=2000, duties=5000, other_charges=1000, adjusted_cost=108000,
+            margin_percent=15, margin_value=16200, selling_price=124200, tax_percent=18, tax_value=22356, final_price=146556,
+        )
+        rows, totals = quotation_lines(RFQ.objects.get(id=self.rfq_id))
+        [(item, unit_price, amount)] = rows
+        self.assertEqual(amount, 124200)  # before tax; freight etc. already inside
+        self.assertEqual(unit_price, 124200 / item.quantity)
+        self.assertEqual(totals["subtotal"], sum(r[2] for r in rows))
+        self.assertEqual(totals["subtotal"] + totals["tax"], totals["grandTotal"])
+        self.assertEqual(totals["grandTotal"], 146556)  # = the quotation amount (sum of final prices)
 
     def test_pdf_download_returns_a_real_pdf(self):
         response = self.sales.get(f"/api/rfq/quotations/{self.quotation_id}/pdf/")
@@ -617,6 +636,9 @@ class RFQItemFieldOverrideTests(TestCase):
             ),
         )
         self.select_override = {"bearing1Designation": {"fieldType": "select", "options": ["22232 CCK/W33", " 22220 EK "]}}
+        # These tests create RFQs as Controlling, which needs Create on "Create RFQ" (not held by default).
+        grid = {"Costing": ["view", "create", "edit", "delete"], "Masters": ["view"], "Create RFQ": ["view", "create"]}
+        self.assertEqual(client_as("Admin").patch("/api/auth/roles/Controlling/", {"permissions": grid}, format="json").status_code, 200)
 
     def _create(self, role, overrides):
         return client_as(role).post(
@@ -817,6 +839,28 @@ class RFQRolePermissionGridTests(TestCase):
         self._save_grid("Sales", {"Create RFQ": ["view", "create", "edit", "delete"], "Operations Review": ["edit"]})
         response = self.sales.post(f"/api/rfq/rfqs/{rfq_id}/approve-operations/", {"actorName": "Sales"}, format="json")
         self.assertEqual(response.status_code, 200)
+
+    def test_creating_an_rfq_needs_create_on_the_create_rfq_module(self):
+        self.assertEqual(self._create_rfq(self.operations).status_code, 403)
+        self.assertEqual(self._create_rfq(client_as("Controlling")).status_code, 403)
+        self.assertEqual(self._create_rfq(self.sales).status_code, 201)
+        self.assertEqual(self._create_rfq(self.admin).status_code, 201)
+        self._save_grid("Operations", {"Operations Review": ["view", "create", "edit", "delete"], "Masters": ["view"], "Create RFQ": ["create"]})
+        self.assertEqual(self._create_rfq(self.operations).status_code, 201)
+        self._save_grid("Sales", {"Create RFQ": ["view", "edit"]})
+        self.assertEqual(self._create_rfq(self.sales).status_code, 403)
+
+    def test_pulley_tech_data_is_locked_once_a_quotation_exists(self):
+        rfq_id = self._create_rfq(self.sales, submit=False).data["id"]
+        item_id = RFQ.objects.get(id=rfq_id).items.first().id
+        body = {"actorName": "Sales", "itemId": item_id, "technicalData": {"faceWidth": 1200}}
+        self.assertEqual(self.sales.patch(f"/api/rfq/rfqs/{rfq_id}/item-tech-data/", body, format="json").status_code, 200)
+        for stage in ("Quotation Generated", "Quotation Sent"):
+            RFQ.objects.filter(id=rfq_id).update(stage=stage)
+            for client in (self.sales, self.admin):
+                response = client.patch(f"/api/rfq/rfqs/{rfq_id}/item-tech-data/", body, format="json")
+                self.assertEqual(response.status_code, 400, stage)
+                self.assertIn("can't be changed", response.data["detail"])
 
 
 class SourcingOutsourcedCostTests(TestCase):

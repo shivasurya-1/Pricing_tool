@@ -20,13 +20,22 @@ export interface UserAdminDto {
   date_joined: string
 }
 
+/** No password: the new user chooses their own from the link in their welcome email. */
 export interface NewUserInput {
   username: string
   first_name?: string
   last_name?: string
   email?: string
   role: Role
-  password: string
+}
+
+export interface CreateUserResult {
+  /** Whether the welcome email with the set-password link went out. */
+  emailSent: boolean
+  /** Only when the email failed: the one-time link, for the Admin to pass on another way. */
+  setPasswordUrl?: string
+  /** How long the link works. */
+  linkValidHours: number
 }
 
 interface UsersState {
@@ -35,8 +44,8 @@ interface UsersState {
   users: UserAdminDto[]
 
   loadAll: () => Promise<void>
-  /** Resolves with whether the backend managed to email the new user their login details. */
-  createUser: (input: NewUserInput) => Promise<{ emailSent: boolean }>
+  /** Resolves with whether the backend managed to email the new user their set-password link. */
+  createUser: (input: NewUserInput) => Promise<CreateUserResult>
   deleteUser: (id: number) => Promise<void>
   updateUser: (id: number, patch: Partial<Pick<UserAdminDto, 'role' | 'is_active' | 'first_name' | 'last_name' | 'email'>>) => Promise<void>
 }
@@ -59,12 +68,14 @@ export const useUsersStore = create<UsersState>((set, get) => ({
   },
 
   createUser: async (input) => {
-    // POST /auth/users/ returns the user plus email_sent; the flag isn't part of the user record.
-    const { email_sent, ...created } = await api.post<Partial<UserAdminDto> & Pick<UserAdminDto, 'id' | 'username' | 'role'> & { email_sent?: boolean }>('/auth/users/', input)
-    // The create response omits the account-status fields; a new account is active and has never logged in.
+    // POST /auth/users/ returns the user plus email_sent / link_valid_hours (and set_password_url
+    // only when the email failed); those flags aren't part of the user record.
+    const { email_sent, set_password_url, link_valid_hours, ...created } = await api.post<
+      Partial<UserAdminDto> & Pick<UserAdminDto, 'id' | 'username' | 'role'> & { email_sent?: boolean; set_password_url?: string; link_valid_hours?: number }
+    >('/auth/users/', input)
     const user: UserAdminDto = { first_name: '', last_name: '', email: '', is_active: true, last_login: null, date_joined: new Date().toISOString(), ...created }
     set((s) => ({ users: [...s.users, user] }))
-    return { emailSent: email_sent === true }
+    return { emailSent: email_sent === true, setPasswordUrl: set_password_url || undefined, linkValidHours: link_valid_hours ?? 72 }
   },
 
   deleteUser: async (id) => {

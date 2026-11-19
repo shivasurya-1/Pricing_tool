@@ -33,8 +33,10 @@ interface EditableLine {
   taxPercent: number
 }
 
-// Default freight / duties / other charges as a share of the base cost.
-const FREIGHT_RATE = 0.02
+// Default freight / duties / other charges as a share of the base cost. Freight defaults to 0:
+// the base cost (Pricing Tool section E) already includes packing, inbound freight and outbound
+// shipping to the FOB point, so Controlling adds Freight only for delivery beyond FOB.
+const FREIGHT_RATE = 0
 const DUTIES_RATE = 0.05
 const OTHER_RATE = 0.01
 
@@ -172,7 +174,7 @@ export function ControllingScreen() {
                   <th className="px-2 py-2 text-right">Other</th>
                   <th className="px-2 py-2 text-right">Discount</th>
                   <th className="px-2 py-2 text-right">Adjusted Cost</th>
-                  <th className="px-2 py-2 text-right">Margin %</th>
+                  <th className="px-2 py-2 text-right" title="Added on top of the Adjusted Cost (a markup on cost)">Margin %</th>
                   <th className="px-2 py-2 text-right">Selling Price</th>
                   <th className="px-2 py-2 text-right">Tax %</th>
                   <th className="px-2 py-2 text-right">Final Price</th>
@@ -222,6 +224,11 @@ export function ControllingScreen() {
                 })}
               </tbody>
             </table>
+            <p className="mt-2 px-2 text-[11px] text-[var(--color-ink-faint)]">
+              Margin % is calculated on cost: Selling Price = Adjusted Cost + Margin % of Adjusted Cost (15% on 1,00,000 gives
+              1,15,000). Freight starts at 0: the Base Cost already includes packing and shipping to the FOB point, so add Freight
+              only for delivery beyond it.
+            </p>
           </div>
         </Card>
 

@@ -51,22 +51,28 @@ def format_date(iso: str) -> str:
         return iso
 
 
-def summarize_cost_breakdown(items) -> dict:
-    """Straight port of src/lib/pricing.ts's summarizeCostBreakdown — a pure sum over
-    already-stored CostBreakdownLine fields, so the PDF's totals can't drift from the
-    ones already computed and saved by Controlling."""
-    lines = [item.cost_breakdown for item in items if hasattr(item, "cost_breakdown")]
-    total_cost = sum(l.adjusted_cost for l in lines)
-    total_selling_price = sum(l.selling_price for l in lines)
-    total_tax = sum(l.tax_value for l in lines)
-    total_freight = sum(l.freight for l in lines)
-    total_discount = sum(l.discount for l in lines)
-    grand_total = sum(l.final_price for l in lines)
-    gross_margin = total_selling_price - total_cost
-    return {
-        "totalCost": total_cost, "grossMargin": gross_margin, "totalTax": total_tax,
-        "totalFreight": total_freight, "totalDiscount": total_discount, "grandTotal": grand_total,
-    }
+PRICES_NOTE = "Prices include packing, freight, duties and other charges, with any discount already applied. Tax is added below."
+
+
+def quotation_lines(rfq) -> tuple[list[tuple], dict]:
+    """The customer-facing figures, built so they always add up: each pulley's Amount is its
+    selling price BEFORE tax (Controlling's Final Price less its tax), Subtotal is the sum of
+    those amounts, and Subtotal + Tax = Grand Total = the sum of Final Prices (the quotation's
+    amount). Freight, duties, other charges and discount are already inside each selling price,
+    so they are not listed again. Returns ([(item, unit_price, amount), ...], totals)."""
+    rows, subtotal, tax = [], 0.0, 0.0
+    for item in rfq.items.all():
+        cb = getattr(item, "cost_breakdown", None)
+        qty = item.quantity or 0
+        if cb:
+            amount = float(cb.selling_price or 0)
+            tax += float(cb.tax_value or 0)
+        else:  # no cost breakdown yet: the target price, untaxed
+            amount = float(item.target_price or 0) * qty
+        unit_price = amount / qty if qty else amount
+        rows.append((item, unit_price, amount))
+        subtotal += amount
+    return rows, {"subtotal": subtotal, "tax": tax, "grandTotal": subtotal + tax}
 
 
 def build_quotation_pdf(quotation, rfq) -> bytes:
@@ -118,10 +124,8 @@ def build_quotation_pdf(quotation, rfq) -> bytes:
 
     items_header = ["#", "Description", "Qty", "Unit Price", "Amount"]
     items_rows = [items_header]
-    for item in rfq.items.all():
-        cb = getattr(item, "cost_breakdown", None)
-        unit_price = (cb.final_price / item.quantity) if cb and item.quantity else item.target_price
-        amount = cb.final_price if cb else unit_price * item.quantity
+    lines, totals = quotation_lines(rfq)
+    for item, unit_price, amount in lines:
         desc = f"<b>{item.product_name}</b><br/><font color='#6b7280'>{item.description}</font>"
         items_rows.append([
             str(item.item_no), Paragraph(desc, small), f"{item.quantity:g} {item.unit}",
@@ -143,13 +147,12 @@ def build_quotation_pdf(quotation, rfq) -> bytes:
     story.append(items_table)
     story.append(Spacer(1, 14))
 
-    summary = summarize_cost_breakdown(rfq.items.all())
+    story.append(Paragraph(PRICES_NOTE, small))
+    story.append(Spacer(1, 6))
     totals_rows = [
-        ["Subtotal", format_currency(summary["totalCost"] + summary["grossMargin"], rfq.currency)],
-        ["Discount", f"- {format_currency(summary['totalDiscount'], rfq.currency)}"],
-        ["Freight", format_currency(summary["totalFreight"], rfq.currency)],
-        ["Tax", format_currency(summary["totalTax"], rfq.currency)],
-        ["Grand Total", format_currency(summary["grandTotal"], rfq.currency)],
+        ["Subtotal", format_currency(totals["subtotal"], rfq.currency)],
+        ["Tax", format_currency(totals["tax"], rfq.currency)],
+        ["Grand Total", format_currency(totals["grandTotal"], rfq.currency)],
     ]
     totals_table = Table(totals_rows, colWidths=[35 * mm, 35 * mm], hAlign="RIGHT")
     totals_table.setStyle(TableStyle([

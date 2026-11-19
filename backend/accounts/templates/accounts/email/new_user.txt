@@ -3,12 +3,15 @@
 An account has been created for you on {{ company }}.
 
 Username: {{ username }}
-Password: {{ password }}
 Role: {{ role }}
-{% if login_url %}
-Sign in here: {{ login_url }}
-{% endif %}
-Please sign in and keep these details private.
+
+Choose your password here (the link works once, for {{ valid_hours }} hours):
+{{ set_password_url }}
+
+After that, sign in with your username and the password you chose.{% if login_url %}
+Sign in here: {{ login_url }}{% endif %}
+
+If the link has expired, use "Forgot password?" on the sign-in page to get a new one.
 {% if contact_line %}
 Questions? Contact us: {{ contact_line }}
 {% endif %}

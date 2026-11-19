@@ -199,7 +199,8 @@ export interface CostBreakdownLine {
 
 export interface AuditEvent {
   id: string
-  rfqId: string
+  /** null for administration events (user and permission changes, module "Users & Roles"). */
+  rfqId: string | null
   timestamp: string
   user: string
   role: Role

@@ -12,12 +12,15 @@ import { formatCurrency, formatDate } from '@/lib/format'
 import { downloadCsv } from '@/lib/csv'
 import type { RFQ } from '@/types'
 import { useUiStore } from '@/store/uiStore'
+import { canDo, useAuthStore } from '@/store/authStore'
 
 export function RFQListPage() {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const rfqs = useDataStore((s) => s.rfqs)
   const pushToast = useUiStore((s) => s.pushToast)
+  // Same rule as the backend: Create on the "Create RFQ" module (Sales and Admin by default).
+  const canCreate = useAuthStore((s) => canDo(s, 'Create RFQ', 'create'))
 
   const [search, setSearch] = useState('')
   // The stage filter lives in the URL (?stage=...), not component state: the sidebar's
@@ -105,9 +108,11 @@ export function RFQListPage() {
             <Button variant="secondary" icon={<Download size={15} />} onClick={exportCsv}>
               Export
             </Button>
-            <Button variant="primary" icon={<Plus size={15} />} onClick={() => navigate('/rfqs/new')} data-tour="primary-action">
-              Create RFQ
-            </Button>
+            {canCreate && (
+              <Button variant="primary" icon={<Plus size={15} />} onClick={() => navigate('/rfqs/new')} data-tour="primary-action">
+                Create RFQ
+              </Button>
+            )}
           </>
         }
       />
@@ -163,9 +168,11 @@ export function RFQListPage() {
               <Button size="sm" variant="secondary" onClick={clearFilters}>
                 Clear Filters
               </Button>
-              <Button size="sm" variant="primary" onClick={() => navigate('/rfqs/new')}>
-                Create RFQ
-              </Button>
+              {canCreate && (
+                <Button size="sm" variant="primary" onClick={() => navigate('/rfqs/new')}>
+                  Create RFQ
+                </Button>
+              )}
             </>
           }
         />
