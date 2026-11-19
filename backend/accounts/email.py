@@ -31,17 +31,19 @@ def email_branding() -> dict:
     }
 
 
-def send_new_user_email(user, set_password_url: str, valid_hours: int) -> bool:
-    """Emails a newly created user their username, role and a one-time link to choose their
-    own password (no password is ever emailed). Best-effort: returns False (and logs) if the
-    mail server fails, so the account still exists and the Admin can pass the link on."""
+def send_new_user_email(user, temporary_password: str, reset_url: str) -> bool:
+    """Emails a newly created user their username, temporary password, role and a "Reset
+    password" button (`reset_url`, the "Reset your password" page). The temporary password can't
+    sign in; it only lets them choose their own on that page. Best-effort: returns False (and
+    logs) if the mail server fails, so the account still exists and the Admin can pass the
+    details on."""
     context = {
         **email_branding(),
         "name": user.get_full_name() or user.username,
         "username": user.username,
+        "password": temporary_password,
         "role": user.role,
-        "set_password_url": set_password_url,
-        "valid_hours": valid_hours,
+        "reset_url": reset_url,
     }
     subject = render_to_string(f"{TEMPLATE_DIR}/new_user_subject.txt", context).strip()
     text_body = render_to_string(f"{TEMPLATE_DIR}/new_user.txt", context)

@@ -42,7 +42,7 @@ interface AuthState {
   toursSeen: Partial<Record<Role, boolean>>
 
   /** `role` is the card picked on the login page; the backend refuses (403) if the account's role differs. */
-  login: (username: string, password: string, role?: Role) => Promise<{ ok: true } | { ok: false; error: string }>
+  login: (username: string, password: string, role?: Role) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>
   /** Signs this browser out on the server (retires its refresh cookie) and locally. */
   logout: () => void
   /** Local sign-out only, for a session the server has already ended (refresh refused). */
@@ -92,7 +92,8 @@ export const useAuthStore = create<AuthState>()(
           })
           return { ok: true }
         } catch (err) {
-          return { ok: false, error: err instanceof ApiError ? err.message : 'Could not reach the server.' }
+          // `code` 'password_change_required': the account still has its temporary password.
+          return { ok: false, error: err instanceof ApiError ? err.message : 'Could not reach the server.', code: err instanceof ApiError ? err.code : undefined }
         }
       },
 

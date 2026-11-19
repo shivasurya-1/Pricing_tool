@@ -24,10 +24,13 @@ export class ApiError extends Error {
   status: number
   /** Every message of a save error ({ detail, errors: [...] }), when the backend sends them. */
   errors: string[]
-  constructor(status: number, message: string, errors: string[] = []) {
+  /** A machine-readable reason, when the backend sends one (e.g. 'password_change_required'). */
+  code?: string
+  constructor(status: number, message: string, errors: string[] = [], code?: string) {
     super(message)
     this.status = status
     this.errors = errors
+    this.code = code
   }
 }
 
@@ -131,14 +134,16 @@ async function request<T>(path: string, options: RequestInit = {}, retried = fal
     handleUnauthorized(res.status, path)
     let detail = res.statusText
     let errors: string[] = []
+    let code: string | undefined
     try {
       const body = await res.json()
       detail = body.detail || JSON.stringify(body)
       if (Array.isArray(body.errors)) errors = body.errors.map(String)
+      if (typeof body.code === 'string') code = body.code
     } catch {
       /* response wasn't JSON */
     }
-    throw new ApiError(res.status, detail, errors)
+    throw new ApiError(res.status, detail, errors, code)
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>

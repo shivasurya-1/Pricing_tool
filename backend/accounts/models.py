@@ -13,6 +13,10 @@ class Role(models.TextChoices):
 
 class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.SALES)
+    # True while the account still has the temporary password emailed when it was created.
+    # That password can't sign in; it only works on the "Reset your password" page
+    # (POST /api/auth/initial-password/), which clears this flag.
+    must_change_password = models.BooleanField(default=False)
 
     @property
     def is_admin(self) -> bool:

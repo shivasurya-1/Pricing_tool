@@ -29,18 +29,18 @@ class UserAdminSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    """New user without a password: they choose one themselves from the "set your password"
-    link in their welcome email (accounts.views.UserViewSet.create)."""
+    """New user. The password is a random temporary one set by UserViewSet.create and emailed
+    to the user, who must replace it on the "Reset your password" page before signing in."""
 
     class Meta:
         model = User
         fields = ["id", "username", "first_name", "last_name", "email", "role"]
-        # Required: the set-password link is emailed to this address.
+        # Required: the login details are emailed to this address.
         extra_kwargs = {"email": {"required": True, "allow_blank": False}}
 
     def create(self, validated_data):
         user = User(**validated_data)
-        user.set_unusable_password()  # nobody can sign in until the user sets one
+        user.set_unusable_password()  # replaced at once by the temporary password
         user.save()
         return user
 

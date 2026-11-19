@@ -110,8 +110,8 @@ export function UsersRolesPage() {
   const rolesLoaded = useRolePermissionsStore((s) => s.loaded)
   useRolePermissionsStore((s) => s.grids) // re-render when a role's permissions are saved
   const [addOpen, setAddOpen] = useState(false)
-  // Shown only when a new user's welcome email failed: their one-time set-password link.
-  const [inviteLink, setInviteLink] = useState<{ username: string; url: string; hours: number } | null>(null)
+  // Shown only when a new user's welcome email failed: their temporary password and reset link.
+  const [newLogin, setNewLogin] = useState<{ username: string; password: string; url?: string } | null>(null)
   const [editing, setEditing] = useState<UserAdminDto | null>(null)
   const [deleting, setDeleting] = useState<UserAdminDto | null>(null)
 
@@ -296,10 +296,10 @@ export function UsersRolesPage() {
         onClose={() => setAddOpen(false)}
         onCreate={async (input) => {
           try {
-            const { emailSent, setPasswordUrl, linkValidHours } = await createUser(input)
-            if (emailSent) pushToast(`User created. A link to choose their password was emailed to ${input.email}.`, 'success')
-            else if (setPasswordUrl) setInviteLink({ username: input.username, url: setPasswordUrl, hours: linkValidHours })
-            else pushToast("User created, but no email could be sent. Once email works, they can use 'Forgot password?' on the login page.", 'warning')
+            const { emailSent, temporaryPassword, resetUrl } = await createUser(input)
+            if (emailSent) pushToast(`User created. Their login details and a temporary password were emailed to ${input.email}.`, 'success')
+            else if (temporaryPassword) setNewLogin({ username: input.username, password: temporaryPassword, url: resetUrl })
+            else pushToast("User created, but the email couldn't be sent.", 'warning')
             setAddOpen(false)
             return { ok: true }
           } catch (err) {
@@ -320,32 +320,41 @@ export function UsersRolesPage() {
       />
 
       <Modal
-        open={inviteLink !== null}
-        onClose={() => setInviteLink(null)}
+        open={newLogin !== null}
+        onClose={() => setNewLogin(null)}
         title="Email could not be sent"
         footer={
           <>
             <Button
               variant="secondary"
               onClick={() => {
-                if (inviteLink) void navigator.clipboard?.writeText(inviteLink.url).then(() => pushToast('Link copied.', 'success'))
+                if (newLogin) void navigator.clipboard?.writeText(newLogin.password).then(() => pushToast('Temporary password copied.', 'success'))
               }}
             >
-              Copy link
+              Copy password
             </Button>
-            <Button variant="primary" onClick={() => setInviteLink(null)}>
+            <Button variant="primary" onClick={() => setNewLogin(null)}>
               Done
             </Button>
           </>
         }
       >
-        {inviteLink && (
+        {newLogin && (
           <div className="space-y-3 text-sm">
             <p>
-              <b>{inviteLink.username}</b> was created, but the welcome email couldn't be sent. Pass this one-time link to them
-              privately; it lets them choose their password and works for {inviteLink.hours} hours.
+              <b>{newLogin.username}</b> was created, but the welcome email couldn't be sent. Give them this temporary password
+              privately. It can't be used to sign in: they must first choose their own on the <b>Reset your password</b> page
+              {newLogin.url ? ' (link below)' : ''}.
             </p>
-            <input readOnly value={inviteLink.url} onFocus={(e) => e.currentTarget.select()} className={inputClass} />
+            <label className="block text-xs font-medium text-[var(--color-ink-soft)]">Temporary password</label>
+            <input readOnly value={newLogin.password} onFocus={(e) => e.currentTarget.select()} className={`${inputClass} font-mono`} />
+            {newLogin.url && (
+              <>
+                <label className="block text-xs font-medium text-[var(--color-ink-soft)]">Reset your password page</label>
+                <input readOnly value={newLogin.url} onFocus={(e) => e.currentTarget.select()} className={inputClass} />
+              </>
+            )}
+            <p className="text-xs text-[var(--color-ink-faint)]">This password is shown only once.</p>
           </div>
         )}
       </Modal>
@@ -602,7 +611,8 @@ function AddUserModal({
           </select>
         </div>
         <p className="rounded-md bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-ink-soft)]">
-          No password is needed here. The new user is emailed a one-time link to choose their own password (valid for 72 hours).
+          No password is needed here. A random temporary password is created and emailed to the new user with a Reset password
+          button; they must replace it with their own before they can sign in.
         </p>
       </div>
     </Modal>

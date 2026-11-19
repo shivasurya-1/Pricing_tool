@@ -15,13 +15,9 @@ Lifetimes are SIMPLE_JWT in config/settings.py (15 minutes / 7 days by default).
   already handed out keeps working until it expires (at most ACCESS_TOKEN_LIFETIME).
 - A password reset / change retires every refresh token the user has (sign out everywhere).
 
-Also here: the one-time "set your password" link emailed to a new user (SetPasswordLinkGenerator).
 """
 
 from django.conf import settings
-from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from django.utils.crypto import constant_time_compare
-from django.utils.http import base36_to_int
 from rest_framework import status
 from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.permissions import AllowAny
@@ -122,32 +118,3 @@ class LogoutView(APIView):
             except TokenError:
                 pass  # already expired / used / signed out — nothing left to end
         return clear_refresh_cookie(Response(status=status.HTTP_204_NO_CONTENT))
-
-
-# ---- the new-user "set your password" link --------------------------------------------------
-
-class SetPasswordLinkGenerator(PasswordResetTokenGenerator):
-    """Tokens for the link in a new user's welcome email. Same construction as Django's reset
-    tokens (tied to the password hash and last login, so a link dies once the password is set)
-    but with its own salt, so welcome and reset links can't be swapped, and its own lifetime,
-    NEW_USER_LINK_TIMEOUT (72 hours by default) instead of PASSWORD_RESET_TIMEOUT."""
-
-    key_salt = "accounts.tokens.SetPasswordLinkGenerator"
-
-    def check_token(self, user, token):
-        if not (user and token):
-            return False
-        try:
-            ts_b36, _hash = str(token).split("-")
-            ts = base36_to_int(ts_b36)
-        except ValueError:
-            return False
-        if (self._num_seconds(self._now()) - ts) > settings.NEW_USER_LINK_TIMEOUT:
-            return False
-        return any(
-            constant_time_compare(self._make_token_with_timestamp(user, ts, secret), token)
-            for secret in [self.secret, *self.secret_fallbacks]
-        )
-
-
-set_password_link_generator = SetPasswordLinkGenerator()

@@ -1,4 +1,6 @@
 import logging
+import secrets
+import string
 import threading
 
 from django.conf import settings
@@ -24,7 +26,7 @@ from .email import send_new_user_email, send_password_reset_email
 from .models import Role, RolePermission, User
 from .permissions import IsAdminRole
 from .role_permissions import PERMISSION_ACTIONS, PERMISSION_MODULES, all_role_permissions, role_permissions
-from .tokens import set_password_link_generator, sign_out_everywhere, signed_in_response
+from .tokens import sign_out_everywhere, signed_in_response
 from .serializers import RolePermissionUpdateSerializer, UserAdminSerializer, UserCreateSerializer, UserSerializer
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,13 @@ def login_view(request):
         return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
     if role is not None and user.role != role:
         return Response({"detail": f"This account is not a {role} account."}, status=status.HTTP_403_FORBIDDEN)
+    if user.must_change_password:
+        # Still the temporary password from the welcome email: it only works on the
+        # "Reset your password" page, never to sign in. The frontend sends the user there.
+        return Response(
+            {"detail": "Please set a new password before signing in.", "code": "password_change_required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     update_last_login(None, user)
     # A pair of its own for this sign-in (accounts/tokens.py): access 15 min in the body,
     # refresh 7 days in the httpOnly cookie.
@@ -84,23 +93,25 @@ class UserViewSet(
         return UserAdminSerializer
 
     def create(self, request, *args, **kwargs):
-        """Creates the user with no password, then emails them their username, role and a
-        one-time "set your password" link (NEW_USER_LINK_TIMEOUT, 72 hours by default). Nobody
-        but the user ever knows the password. `email_sent` is false if the mail server failed —
-        the user still exists, and `set_password_url` is returned so the Admin can pass the
-        link on another way (it is never returned when the email went out)."""
+        """Creates the user with a random temporary password and emails them their username,
+        that password, their role and a "Reset password" button. The temporary password can't
+        sign in: it only works on the "Reset your password" page, where the user enters it with
+        a new password of their own (InitialPasswordView). `email_sent` is false if the mail
+        server failed — the user still exists, and `temporary_password` / `reset_url` are
+        returned so the Admin can pass them on another way (never when the email went out)."""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        temporary = generate_temporary_password()
         user = serializer.save()
-        url = set_password_url(user)
-        valid_hours = max(settings.NEW_USER_LINK_TIMEOUT // 3600, 1)
-        email_sent = bool(url) and send_new_user_email(user, url, valid_hours)
-        if not url:
-            logger.error("FRONTEND_URL is not set, so the new user %s has no set-password link.", user.pk)
+        user.set_password(temporary)
+        user.must_change_password = True
+        user.save(update_fields=["password", "must_change_password"])
+        url = initial_password_url(user)
+        email_sent = send_new_user_email(user, temporary, url)
         record_admin_event(request.user, record=user.username, action=f"Added user {user.username} ({user.role})")
-        body = {**UserAdminSerializer(user).data, "email_sent": email_sent, "link_valid_hours": valid_hours}
-        if not email_sent and url:
-            body["set_password_url"] = url
+        body = {**UserAdminSerializer(user).data, "email_sent": email_sent}
+        if not email_sent:
+            body.update({"temporary_password": temporary, "reset_url": url})
         return Response(body, status=status.HTTP_201_CREATED)
 
     def perform_update(self, serializer):
@@ -168,25 +179,81 @@ class _PasswordResetView(APIView):
 
 
 def _user_from_reset_link(uid, token):
-    """The user a link belongs to, or None if the link is bad, expired or already used. Takes
-    both kinds of link: a forgot-password reset link and a new user's "set your password" link
-    (accounts/tokens.py). Either one dies as soon as the password is set."""
+    """The user a reset link belongs to, or None if the link is bad, expired or already used."""
     try:
         user = User.objects.get(pk=urlsafe_base64_decode(str(uid)).decode(), is_active=True)
     except (User.DoesNotExist, ValueError, TypeError, OverflowError, UnicodeDecodeError):
         return None
-    token = str(token)
-    if default_token_generator.check_token(user, token) or set_password_link_generator.check_token(user, token):
-        return user
-    return None
+    return user if default_token_generator.check_token(user, str(token)) else None
 
 
-def set_password_url(user) -> str:
-    """The one-time "set your password" link for a new user ('' if FRONTEND_URL isn't set)."""
+# ---------------------------------------------------------------------------
+# New users: temporary password + "Reset your password" page
+# ---------------------------------------------------------------------------
+
+TEMPORARY_PASSWORD_LENGTH = 12
+
+
+def generate_temporary_password() -> str:
+    """A random 12-character password with upper and lower case letters, digits and a symbol,
+    which passes AUTH_PASSWORD_VALIDATORS. Look-alike characters (O/0, l/1/I) are left out so it
+    can be typed from the email without mistakes."""
+    letters = "".join(c for c in string.ascii_letters if c not in "OlI")
+    digits = "23456789"
+    symbols = "@#$%&*!?"
+    while True:
+        chars = [secrets.choice(string.ascii_uppercase.replace("O", "").replace("I", "")),
+                 secrets.choice(string.ascii_lowercase.replace("l", "")),
+                 secrets.choice(digits), secrets.choice(symbols)]
+        chars += [secrets.choice(letters + digits) for _ in range(TEMPORARY_PASSWORD_LENGTH - len(chars))]
+        secrets.SystemRandom().shuffle(chars)
+        candidate = "".join(chars)
+        try:
+            validate_password(candidate)
+            return candidate
+        except DjangoValidationError:
+            continue
+
+
+def initial_password_url(user) -> str:
+    """The "Reset password" button in the welcome email ('' if FRONTEND_URL isn't set). It
+    carries only the username, never the password."""
     if not settings.FRONTEND_URL:
         return ""
-    uid = urlsafe_base64_encode(force_bytes(user.pk))
-    return f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={set_password_link_generator.make_token(user)}"
+    from urllib.parse import quote
+
+    return f"{settings.FRONTEND_URL}/reset-temporary-password?username={quote(user.username)}"
+
+
+class InitialPasswordView(_PasswordResetView):
+    """POST /api/auth/initial-password/ — {username, current_password, new_password}. The
+    "Reset your password" page a new user reaches from the welcome email (or from the login page
+    when they try the temporary password). Needs no sign-in: the username and current password
+    prove who it is. Sets the new password, clears must_change_password and signs the account
+    out everywhere; the user then signs in with the new password. Wrong credentials are a 400,
+    and the route is rate limited per client IP like the other password routes."""
+
+    def post(self, request):
+        username = str(request.data.get("username", "")).strip()
+        current = request.data.get("current_password", "")
+        new = request.data.get("new_password", "")
+        if not username or not isinstance(current, str) or not isinstance(new, str) or not current or not new:
+            return Response({"detail": "Enter your username, current password and a new password."}, status=status.HTTP_400_BAD_REQUEST)
+        user = authenticate(request, username=username, password=current)
+        if user is None:
+            return Response({"detail": "The username or current password is not correct."}, status=status.HTTP_400_BAD_REQUEST)
+        if new == current:
+            return Response({"detail": "Choose a password different from your current one."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            validate_password(new, user)
+        except DjangoValidationError as exc:
+            messages = list(exc.messages)
+            return Response({"detail": " ".join(messages), "errors": messages}, status=status.HTTP_400_BAD_REQUEST)
+        user.set_password(new)
+        user.must_change_password = False
+        user.save(update_fields=["password", "must_change_password"])
+        sign_out_everywhere(user)
+        return Response({"detail": "Your password has been changed. Sign in with your new password."})
 
 
 def _send_reset_email(user, url, valid_minutes):
@@ -221,8 +288,7 @@ class ForgotPasswordView(_PasswordResetView):
         if not settings.FRONTEND_URL:
             logger.error("FRONTEND_URL is not set, so password-reset emails have no link to send.")
         else:
-            # Includes new users who haven't set a password yet, so a lost or expired welcome
-            # link can be replaced from the login page.
+            # Includes new users still on their temporary password (a reset clears it too).
             for user in User.objects.filter(email__iexact=email, is_active=True):
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
                 token = default_token_generator.make_token(user)
@@ -260,7 +326,8 @@ class ResetPasswordView(_PasswordResetView):
             messages = list(exc.messages)
             return Response({"detail": " ".join(messages), "errors": messages}, status=status.HTTP_400_BAD_REQUEST)
         user.set_password(password)
-        user.save(update_fields=["password"])
+        user.must_change_password = False  # a new user who used Forgot password has chosen their own now
+        user.save(update_fields=["password", "must_change_password"])
         sign_out_everywhere(user)
         return Response({"detail": "Your password has been changed. Sign in with the new password."})
 

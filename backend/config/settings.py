@@ -199,9 +199,6 @@ PASSWORD_RESET_TIMEOUT = int(os.environ.get("PASSWORD_RESET_TIMEOUT", "3600"))
 # same time whether or not the address has an account (waiting for the mail server would give
 # that away). Tests switch it off to check the email synchronously.
 PASSWORD_RESET_EMAIL_IN_BACKGROUND = True
-# How long the "set your password" link in a new user's welcome email works, in seconds
-# (default 72 hours). The link also stops working once the password has been set.
-NEW_USER_LINK_TIMEOUT = int(os.environ.get("NEW_USER_LINK_TIMEOUT", str(72 * 3600)))
 EMAIL_BACKEND = (
     "django.core.mail.backends.smtp.EmailBackend"
     if EMAIL_HOST_USER

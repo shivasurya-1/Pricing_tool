@@ -3,15 +3,16 @@
 An account has been created for you on {{ company }}.
 
 Username: {{ username }}
+Temporary password: {{ password }}
 Role: {{ role }}
 
-Choose your password here (the link works once, for {{ valid_hours }} hours):
-{{ set_password_url }}
+Before you can sign in, reset this temporary password to one of your own:
+{% if reset_url %}{{ reset_url }}
+{% endif %}
+On that page enter your username, the temporary password above, and your new password twice.
+Then sign in with your username and new password.
 
-After that, sign in with your username and the password you chose.{% if login_url %}
-Sign in here: {{ login_url }}{% endif %}
-
-If the link has expired, use "Forgot password?" on the sign-in page to get a new one.
+Keep this email private. The temporary password only lets you choose a new one.
 {% if contact_line %}
 Questions? Contact us: {{ contact_line }}
 {% endif %}

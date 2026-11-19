@@ -249,18 +249,16 @@ class UserViewSetTests(TestCase):
         response = self.admin_client.get("/api/auth/users/")
         self.assertEqual(response.status_code, 200)
 
-    def test_admin_creates_a_user_without_a_password(self):
-        # A password sent by an older client is ignored: the user chooses their own.
+    def test_admin_creates_a_user_with_a_temporary_password_that_cannot_sign_in(self):
+        # A password sent by an older client is ignored: the system makes a random one.
         payload = {"username": "newperson", "first_name": "New", "email": "new@example.com", "role": "Sourcing", "password": "a-real-password-1"}
         response = self.admin_client.post("/api/auth/users/", payload, format="json")
         self.assertEqual(response.status_code, 201)
         self.assertNotIn("password", response.data)
         created = User.objects.get(username="newperson")
-        self.assertFalse(created.has_usable_password())
+        self.assertTrue(created.must_change_password)
         self.assertFalse(created.check_password("a-real-password-1"))
         self.assertEqual(created.role, "Sourcing")
-        login = APIClient().post("/api/auth/login/", {"username": "newperson", "password": "a-real-password-1"}, format="json")
-        self.assertEqual(login.status_code, 401)
 
     def test_non_admin_cannot_create_a_user(self):
         payload = {"username": "hacker", "role": "Admin", "password": "whatever12"}
@@ -451,18 +449,33 @@ class RolePermissionEnforcementTests(TestCase):
 
 @override_settings(FRONTEND_URL="https://app.example.test")
 class NewUserEmailTests(TestCase):
-    """Add User: email is mandatory and the new user is emailed a one-time link to choose
-    their own password. No password is ever emailed or known to the Admin."""
+    """Add User: the new user is emailed their username, a random temporary password, their
+    role and a "Reset password" button. The temporary password can't sign in; it only works on
+    the "Reset your password" page (POST /api/auth/initial-password/)."""
+
+    INITIAL = "/api/auth/initial-password/"
 
     def setUp(self):
+        cache.clear()
         admin = User.objects.create_user("mail-admin", password="adminpass123", role=Role.ADMIN)
         self.admin_client = token_client(admin)
         self.payload = {"username": "newmailuser", "first_name": "New", "email": "new.user@example.com", "role": "Sourcing"}
 
-    def link_from(self, text):
-        match = re.search(r"https://app\.example\.test/set-password\?uid=([^&\s]+)&token=([^\s\"<]+)", text)
-        self.assertIsNotNone(match, text)
-        return match.group(1), match.group(2)
+    def create(self):
+        response = self.admin_client.post("/api/auth/users/", self.payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return response
+
+    def temporary_password(self):
+        match = re.search(r"Temporary password: (\S+)", mail.outbox[-1].body)
+        self.assertIsNotNone(match, mail.outbox[-1].body)
+        return match.group(1)
+
+    def login(self, password):
+        return APIClient().post("/api/auth/login/", {"username": "newmailuser", "password": password}, format="json")
+
+    def reset(self, current, new="My-own-pass-2026", username="newmailuser"):
+        return APIClient().post(self.INITIAL, {"username": username, "current_password": current, "new_password": new}, format="json")
 
     def test_email_is_required(self):
         for email in (None, ""):
@@ -475,61 +488,78 @@ class NewUserEmailTests(TestCase):
         self.assertFalse(User.objects.filter(username="newmailuser").exists())
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_new_user_is_emailed_a_set_password_link_and_no_password(self):
-        response = self.admin_client.post("/api/auth/users/", self.payload, format="json")
-        self.assertEqual(response.status_code, 201)
+    def test_new_user_is_emailed_username_temporary_password_role_and_reset_button(self):
+        response = self.create()
         self.assertTrue(response.data["email_sent"])
-        self.assertNotIn("set_password_url", response.data)  # the link only goes to the user
-        self.assertEqual(response.data["link_valid_hours"], 72)
-        self.assertEqual(len(mail.outbox), 1)
+        self.assertNotIn("temporary_password", response.data)  # only the user gets it
         message = mail.outbox[0]
         self.assertEqual(message.to, ["new.user@example.com"])
-        for text in ("Username: newmailuser", "Role: Sourcing", "72 hours"):
+        for text in ("Username: newmailuser", "Temporary password: ", "Role: Sourcing",
+                     "https://app.example.test/reset-temporary-password?username=newmailuser"):
             self.assertIn(text, message.body)
-        self.assertNotIn("Password:", message.body)
-        self.link_from(message.body)
+        temporary = self.temporary_password()
+        self.assertEqual(len(temporary), 12)
+        self.assertTrue(User.objects.get(username="newmailuser").check_password(temporary))
         html, mimetype = message.alternatives[0]
         self.assertEqual(mimetype, "text/html")
-        for text in ("newmailuser", "Sourcing", "Hello New", "Choose your password"):
+        from html import escape
+
+        for text in ("newmailuser", escape(temporary), "Sourcing", "Hello New", "Reset password"):  # & shows as &amp; in HTML
             self.assertIn(text, html)
 
-    def test_the_link_sets_the_password_once_and_then_the_user_can_sign_in(self):
-        self.admin_client.post("/api/auth/users/", self.payload, format="json")
-        uid, token = self.link_from(mail.outbox[0].body)
-        anon = APIClient()
-        self.assertEqual(anon.post("/api/auth/reset-password/check/", {"uid": uid, "token": token}, format="json").status_code, 200)
-        res = anon.post("/api/auth/reset-password/", {"uid": uid, "token": token, "password": "My-own-pass-2026"}, format="json")
+    def test_every_temporary_password_is_different_and_passes_the_rules(self):
+        from django.contrib.auth.password_validation import validate_password
+
+        from .views import generate_temporary_password
+
+        made = {generate_temporary_password() for _ in range(50)}
+        self.assertEqual(len(made), 50)
+        for pw in made:
+            validate_password(pw)
+            self.assertTrue(any(c.isupper() for c in pw) and any(c.islower() for c in pw) and any(c.isdigit() for c in pw))
+
+    def test_the_temporary_password_cannot_sign_in(self):
+        self.create()
+        res = self.login(self.temporary_password())
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.data["code"], "password_change_required")
+        self.assertNotIn("access", res.data)
+        self.assertNotIn(settings.REFRESH_COOKIE_NAME, res.cookies)
+
+    def test_reset_page_replaces_the_temporary_password_then_sign_in_works(self):
+        self.create()
+        temporary = self.temporary_password()
+        res = self.reset(temporary)
         self.assertEqual(res.status_code, 200, res.data)
-        login = APIClient().post("/api/auth/login/", {"username": "newmailuser", "password": "My-own-pass-2026"}, format="json")
-        self.assertEqual(login.status_code, 200)
-        again = anon.post("/api/auth/reset-password/", {"uid": uid, "token": token, "password": "Another-pass-2026"}, format="json")
-        self.assertEqual(again.status_code, 400)  # the link works once
-
-    def test_the_link_expires_after_its_own_lifetime_not_the_reset_one(self):
-        self.admin_client.post("/api/auth/users/", self.payload, format="json")
-        uid, token = self.link_from(mail.outbox[0].body)
-
-        def check():
-            return APIClient().post("/api/auth/reset-password/check/", {"uid": uid, "token": token}, format="json").status_code
-
-        with override_settings(PASSWORD_RESET_TIMEOUT=-1):
-            self.assertEqual(check(), 200)  # the 1-hour reset limit doesn't apply to welcome links
-        with override_settings(NEW_USER_LINK_TIMEOUT=-1):
-            self.assertEqual(check(), 400)
-
-    def test_a_reset_token_is_not_a_welcome_token_and_vice_versa(self):
-        from django.contrib.auth.tokens import default_token_generator
-
-        from .tokens import set_password_link_generator
-
-        self.admin_client.post("/api/auth/users/", self.payload, format="json")
         user = User.objects.get(username="newmailuser")
-        _, welcome = self.link_from(mail.outbox[0].body)
-        self.assertTrue(set_password_link_generator.check_token(user, welcome))
-        self.assertFalse(default_token_generator.check_token(user, welcome))
-        self.assertFalse(set_password_link_generator.check_token(user, default_token_generator.make_token(user)))
+        self.assertFalse(user.must_change_password)
+        self.assertEqual(self.login("My-own-pass-2026").status_code, 200)
+        self.assertEqual(self.login(temporary).status_code, 401)  # the temporary one is gone
 
-    def test_user_is_still_created_when_the_email_fails_and_the_admin_gets_the_link(self):
+    def test_reset_page_refuses_wrong_details_and_weak_or_unchanged_passwords(self):
+        self.create()
+        temporary = self.temporary_password()
+        self.assertEqual(self.reset("Not-the-temp-1").status_code, 400)
+        self.assertEqual(self.reset(temporary, username="someone-else").status_code, 400)
+        weak = self.reset(temporary, new="12345678")
+        self.assertEqual(weak.status_code, 400)
+        self.assertTrue(weak.data["errors"])
+        self.assertEqual(self.reset(temporary, new=temporary).status_code, 400)
+        self.assertEqual(APIClient().post(self.INITIAL, {}, format="json").status_code, 400)
+        self.assertTrue(User.objects.get(username="newmailuser").must_change_password)  # nothing changed
+
+    def test_reset_page_is_rate_limited(self):
+        with patch.object(ScopedRateThrottle, "THROTTLE_RATES", {"password_reset": "2/hour"}):
+            codes = [self.reset("wrong-guess-1").status_code for _ in range(3)]
+        self.assertEqual(codes, [400, 400, 429])
+
+    def test_a_deactivated_new_user_cannot_use_the_reset_page(self):
+        self.create()
+        temporary = self.temporary_password()
+        User.objects.filter(username="newmailuser").update(is_active=False)
+        self.assertEqual(self.reset(temporary).status_code, 400)
+
+    def test_user_is_still_created_when_the_email_fails_and_the_admin_gets_the_details(self):
         from unittest import mock
 
         with (
@@ -540,17 +570,21 @@ class NewUserEmailTests(TestCase):
         self.assertIn("Couldn't send the new-account email", logs.output[0])
         self.assertEqual(response.status_code, 201)
         self.assertFalse(response.data["email_sent"])
-        self.assertTrue(response.data["set_password_url"].startswith("https://app.example.test/set-password?uid="))
-        self.assertFalse(User.objects.get(username="newmailuser").has_usable_password())
+        user = User.objects.get(username="newmailuser")
+        self.assertTrue(user.check_password(response.data["temporary_password"]))
+        self.assertEqual(response.data["reset_url"], "https://app.example.test/reset-temporary-password?username=newmailuser")
 
     @override_settings(PASSWORD_RESET_EMAIL_IN_BACKGROUND=False)
-    def test_a_new_user_who_lost_the_link_can_use_forgot_password(self):
-        self.admin_client.post("/api/auth/users/", self.payload, format="json")
+    def test_forgot_password_also_works_for_a_new_user_and_clears_the_flag(self):
+        self.create()
         mail.outbox.clear()
-        cache.clear()
         APIClient().post("/api/auth/forgot-password/", {"email": "new.user@example.com"}, format="json")
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertIn("/reset-password?uid=", mail.outbox[0].body)
+        match = re.search(r"/reset-password\?uid=([^&\s]+)&token=(\S+)", mail.outbox[0].body)
+        self.assertIsNotNone(match)
+        res = APIClient().post("/api/auth/reset-password/", {"uid": match.group(1), "token": match.group(2), "password": "My-own-pass-2026"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertFalse(User.objects.get(username="newmailuser").must_change_password)
+        self.assertEqual(self.login("My-own-pass-2026").status_code, 200)
 
 
 class UserDeleteTests(TestCase):

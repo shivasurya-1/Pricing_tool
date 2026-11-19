@@ -35,6 +35,9 @@ export function LoginPage() {
     setSubmitting(false)
     if (result.ok) {
       navigate('/dashboard')
+    } else if (result.code === 'password_change_required') {
+      // Still the temporary password from the welcome email: it must be replaced first.
+      navigate(`/reset-temporary-password?username=${encodeURIComponent(username.trim())}`, { state: { fromLogin: true } })
     } else {
       setError(result.error)
     }
